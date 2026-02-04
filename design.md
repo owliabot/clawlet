@@ -87,8 +87,8 @@
 - [x] M1-6: clawlet-evm — 转账构建 + 签名 + 广播
 - [x] M1-7: clawlet-rpc — HTTP server (axum) + auth middleware
 - [x] M1-8: clawlet-rpc — Routes: GET /balance, POST /transfer
-- [ ] M1-9: clawlet-cli — `clawlet init` (生成 keystore + policy)
-- [ ] M1-10: clawlet-cli — `clawlet serve` (启动 RPC server)
+- [x] M1-9: clawlet-cli — `clawlet init` (生成 keystore + policy)
+- [x] M1-10: clawlet-cli — `clawlet serve` (启动 RPC server)
 - [ ] M1-11: 集成测试（Anvil local fork）
 - [ ] M1-12: OS 用户隔离部署文档
 

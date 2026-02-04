@@ -50,6 +50,27 @@ impl Keystore {
         Ok((address, path))
     }
 
+    /// Creates a new keystore file from an existing private key.
+    ///
+    /// Returns the derived Ethereum address and the path to the keystore JSON file.
+    pub fn create_from_key(
+        dir: &Path,
+        password: &str,
+        private_key: &[u8],
+    ) -> Result<(Address, PathBuf)> {
+        std::fs::create_dir_all(dir)?;
+
+        let mut rng = rand::thread_rng();
+        let name = eth_keystore::encrypt_key(dir, &mut rng, private_key, password, None)
+            .map_err(|e| KeystoreError::Keystore(e.to_string()))?;
+
+        let path = dir.join(name);
+        let signing_key =
+            SigningKey::from_bytes(private_key.into()).map_err(|_| KeystoreError::InvalidKey)?;
+        let address = public_key_to_address(&signing_key);
+        Ok((address, path))
+    }
+
     /// Unlocks a keystore file with the given password.
     ///
     /// Returns the decrypted signing key.

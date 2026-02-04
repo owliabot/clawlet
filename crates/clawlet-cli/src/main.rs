@@ -6,11 +6,57 @@
 //! - `clawlet init`  — Generate keystore and default policy
 //! - `clawlet serve` — Start the RPC server
 
-fn main() {
-    // TODO(M1-9, M1-10): implement CLI argument parsing with clap
-    eprintln!("clawlet v{}", env!("CARGO_PKG_VERSION"));
-    eprintln!("Usage: clawlet <init|serve>");
-    eprintln!();
-    eprintln!("This is a stub. Subcommands are not yet implemented.");
-    std::process::exit(1);
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+mod commands;
+
+/// Clawlet — lightweight EVM wallet daemon with policy guardrails.
+#[derive(Parser)]
+#[command(name = "clawlet", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Initialize a new clawlet instance (keystore, config, policy).
+    Init {
+        /// Restore from an existing BIP-39 mnemonic instead of generating a new one.
+        #[arg(long)]
+        from_mnemonic: bool,
+
+        /// Data directory (default: ~/.clawlet).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
+    /// Start the RPC server.
+    Serve {
+        /// Path to config.yaml (default: ~/.clawlet/config.yaml).
+        #[arg(long, short)]
+        config: Option<PathBuf>,
+    },
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let cli = Cli::parse();
+
+    let result = match cli.command {
+        Commands::Init {
+            from_mnemonic,
+            data_dir,
+        } => commands::init::run(from_mnemonic, data_dir),
+        Commands::Serve { config } => commands::serve::run(config).await,
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }

@@ -1,0 +1,9 @@
+[package]
+name = "clawlet-signer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Key management and signing for Clawlet"
+
+[dependencies]
+clawlet-core = { path = "../clawlet-core" }

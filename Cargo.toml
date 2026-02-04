@@ -1,22 +1,14 @@
 [workspace]
-members = ["."]
+members = [
+    "crates/clawlet-core",
+    "crates/clawlet-signer",
+    "crates/clawlet-evm",
+    "crates/clawlet-rpc",
+    "crates/clawlet-cli",
+]
+resolver = "2"
 
-[package]
-name = "clawlet"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "An agent-native wallet engine for OpenClaw"
 license = "MIT"
-readme = "README.md"
-
-[[bin]]
-name = "clawlet"
-path = "src/main.rs"
-
-[lib]
-name = "clawlet_core"
-path = "src/lib.rs"
-
-[dependencies]
-
-[dev-dependencies]

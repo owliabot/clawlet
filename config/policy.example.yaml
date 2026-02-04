@@ -1,0 +1,30 @@
+# Clawlet Policy Configuration Example
+# Copy to ~/.clawlet/policy.yaml and customize.
+
+# Daily transfer limits
+limits:
+  # Maximum total daily transfer value in USD equivalent
+  daily_transfer_usd: 1000.0
+  # Maximum single transfer value in USD equivalent
+  per_transfer_usd: 500.0
+
+# Allowed ERC-20 tokens (by address on the target chain)
+# Empty list = only native ETH transfers allowed
+allowed_tokens:
+  - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC (Ethereum)
+  - "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # USDT (Ethereum)
+  - "0x6B175474E89094C44Da98b954EedeAC495271d0F"  # DAI (Ethereum)
+
+# Allowed recipient addresses
+# Empty list = any recipient allowed
+allowed_recipients: []
+
+# Chain configuration
+chain:
+  rpc_url: "https://mainnet.base.org"
+  chain_id: 8453
+
+# Audit logging
+audit:
+  enabled: true
+  path: "~/.clawlet/audit.jsonl"

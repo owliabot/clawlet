@@ -1,41 +1,66 @@
-# 🐾 clawlet
+# 🐾 Clawlet
 
-**Agent-native wallet engine for OpenClaw.**
+> Agent-native wallet engine for OpenClaw — 给本地 agent 用的链上操作引擎
 
-Clawlet is a programmable wallet engine built for autonomous agents. It provides key management, transaction signing, and chain-abstracted wallet primitives — designed to be driven by AI agents rather than human UIs.
+Clawlet is a Rust-based wallet engine designed for AI agents operating within the [OpenClaw](https://github.com/openclaw) ecosystem. It provides policy-enforced, auditable on-chain operations with a local-first architecture.
 
-## Why?
+## Features (Planned)
 
-Agents need wallets too. But existing wallet tooling assumes a human clicking buttons. Clawlet flips that: every operation is API-first, policy-gated, and designed for machine-speed decision-making.
-
-## Features (planned)
-
-- 🔐 **Key Management** — HD wallets, secure key storage, agent-scoped key derivation
-- ✍️ **Transaction Signing** — Multi-chain signing with policy enforcement
-- 🌐 **Chain Abstraction** — Unified interface across EVM, Solana, and more
-- 🤖 **OpenClaw Integration** — Native hooks for agent workflows, approvals, and audit trails
-- 🛡️ **Policy Engine** — Spending limits, allowlists, time-locks, multi-sig agent approval
-
-## Quick Start
-
-```bash
-cargo build
-cargo run
-```
+- **Policy Engine** — Configurable rules (daily limits, allowed tokens, recipient whitelists)
+- **Audit Logging** — Append-only JSONL log of every operation
+- **Keystore Management** — Encrypted key storage with BIP-44 HD derivation
+- **EVM Support** — Balance queries, transfers, and DeFi operations via alloy
+- **RPC Server** — Local HTTP API for agent integration
+- **AIS Standard** — Agent Interaction Specification for protocol-level skill definitions
 
 ## Project Structure
 
 ```
 clawlet/
-├── Cargo.toml          # Workspace + main crate
-├── src/
-│   ├── lib.rs          # Core library
-│   └── main.rs         # CLI binary
-├── design.md           # Architecture notes
-├── LICENSE             # MIT
-└── README.md
+├── crates/
+│   ├── clawlet-core/       # Core types, policy engine, audit logging
+│   ├── clawlet-signer/     # Key management and signing
+│   ├── clawlet-evm/        # EVM chain adapter
+│   ├── clawlet-rpc/        # HTTP RPC API server
+│   └── clawlet-cli/        # CLI entry point (clawlet binary)
+├── config/
+│   └── policy.example.yaml # Example policy configuration
+└── tests/
+    └── integration/        # Integration tests
 ```
+
+## Quick Start
+
+```bash
+# Build
+cargo build
+
+# Run (once implemented)
+clawlet init     # Generate keystore + default policy
+clawlet serve    # Start RPC server on 127.0.0.1:9100
+```
+
+## Architecture
+
+Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via authenticated HTTP on localhost. Private keys are managed by the human operator — the agent never has direct access to key material.
+
+```
+Agent ──HTTP──▶ clawlet-rpc ──▶ clawlet-core (policy check)
+                     │                  │
+                     ▼                  ▼
+               clawlet-evm        audit log
+                     │
+                     ▼
+               clawlet-signer ──▶ keystore (human-owned)
+```
+
+## Tech Stack
+
+- **Language**: Rust
+- **EVM Library**: alloy
+- **Registry Chain**: Base (EIP-155:8453)
+- **HTTP Server**: axum
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) for details.

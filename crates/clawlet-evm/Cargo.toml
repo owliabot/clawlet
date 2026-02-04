@@ -1,0 +1,10 @@
+[package]
+name = "clawlet-evm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVM chain adapter for Clawlet"
+
+[dependencies]
+clawlet-core = { path = "../clawlet-core" }
+clawlet-signer = { path = "../clawlet-signer" }

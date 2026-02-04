@@ -1,22 +1,86 @@
-//! Policy YAML configuration parser.
+//! Configuration parser for Clawlet.
 //!
-//! Loads and validates `policy.yaml` files into Rust types.
+//! Loads and validates the main `config.yaml` file.
 
-/// Parsed policy configuration.
-#[derive(Debug, Clone)]
-pub struct PolicyConfig {
-    /// Maximum daily transfer in USD equivalent.
-    pub daily_limit_usd: f64,
-    /// Allowed ERC-20 token addresses.
-    pub allowed_tokens: Vec<String>,
-    /// Allowed recipient addresses (empty = any).
-    pub allowed_recipients: Vec<String>,
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Top-level Clawlet configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    /// Path to the policy YAML file.
+    pub policy_path: PathBuf,
+    /// Path to the encrypted keystore directory.
+    pub keystore_path: PathBuf,
+    /// Address to bind the RPC server to.
+    #[serde(default = "default_rpc_bind")]
+    pub rpc_bind: String,
+    /// Path to the audit log file.
+    pub audit_log_path: PathBuf,
+    /// Mapping of chain ID → RPC URL.
+    #[serde(default)]
+    pub chain_rpc_urls: HashMap<u64, String>,
 }
 
-/// Loads a policy configuration from a YAML file path.
-///
-/// # Panics
-/// Not yet implemented.
-pub fn load(_path: &str) -> PolicyConfig {
-    todo!("M1-1: implement YAML policy loading")
+fn default_rpc_bind() -> String {
+    "127.0.0.1:9100".to_string()
+}
+
+impl Config {
+    /// Load configuration from a YAML string.
+    pub fn from_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
+        serde_yaml::from_str(yaml)
+    }
+
+    /// Load configuration from a YAML file.
+    pub fn from_file(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = std::fs::read_to_string(path)?;
+        Ok(Self::from_yaml(&contents)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_full_config() {
+        let yaml = r#"
+policy_path: /etc/clawlet/policy.yaml
+keystore_path: /etc/clawlet/keystore
+rpc_bind: "0.0.0.0:9200"
+audit_log_path: /var/log/clawlet/audit.jsonl
+chain_rpc_urls:
+  1: "https://eth-mainnet.example.com"
+  8453: "https://base.example.com"
+"#;
+        let config = Config::from_yaml(yaml).unwrap();
+        assert_eq!(
+            config.policy_path,
+            PathBuf::from("/etc/clawlet/policy.yaml")
+        );
+        assert_eq!(config.rpc_bind, "0.0.0.0:9200");
+        assert_eq!(config.chain_rpc_urls.len(), 2);
+        assert!(config.chain_rpc_urls.contains_key(&8453));
+    }
+
+    #[test]
+    fn default_rpc_bind_value() {
+        let yaml = r#"
+policy_path: policy.yaml
+keystore_path: keystore
+audit_log_path: audit.jsonl
+"#;
+        let config = Config::from_yaml(yaml).unwrap();
+        assert_eq!(config.rpc_bind, "127.0.0.1:9100");
+    }
+
+    #[test]
+    fn missing_required_field() {
+        let yaml = r#"
+policy_path: policy.yaml
+"#;
+        assert!(Config::from_yaml(yaml).is_err());
+    }
 }

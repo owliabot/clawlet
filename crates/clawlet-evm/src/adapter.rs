@@ -22,7 +22,10 @@ impl EvmAdapter {
     ///
     /// # Panics
     /// Not yet implemented.
-    pub fn get_balance(&self, _address: &clawlet_core::types::Address) -> clawlet_core::types::TokenAmount {
+    pub fn get_balance(
+        &self,
+        _address: &clawlet_core::types::Address,
+    ) -> clawlet_core::types::TokenAmount {
         todo!("M1-5: implement ETH balance query")
     }
 }

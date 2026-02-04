@@ -79,8 +79,8 @@
 最小可用：查余额 + 转账 + Policy 限制
 
 ### 任务清单
-- [ ] M1-1: clawlet-core — Policy engine (YAML 解析 + 规则检查)
-- [ ] M1-2: clawlet-core — Audit logger (append-only JSONL)
+- [x] M1-1: clawlet-core — Policy engine (YAML 解析 + 规则检查)
+- [x] M1-2: clawlet-core — Audit logger (append-only JSONL)
 - [ ] M1-3: clawlet-signer — Keystore 创建/解锁/签名
 - [ ] M1-4: clawlet-signer — BIP-44 HD 派生（EVM 路径）
 - [ ] M1-5: clawlet-evm — 余额查询（ETH + ERC-20）

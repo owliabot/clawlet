@@ -1,10 +1,8 @@
-//! Request handlers for API routes.
+//! Request handlers for RPC methods.
 //!
-//! Each handler processes a request, applies policy checks, and returns a response.
+//! Each handler processes a deserialized request and returns a serialized response.
+//! Handlers are transport-agnostic — they work with `&AppState` and serde types.
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -17,8 +15,8 @@ use crate::server::AppState;
 
 // ---- Request / Response types ----
 
-/// Query parameters for `GET /balance`.
-#[derive(Debug, Deserialize)]
+/// Query parameters for balance requests.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BalanceQuery {
     /// The EVM address to query (hex, 0x-prefixed).
     pub address: String,
@@ -27,7 +25,7 @@ pub struct BalanceQuery {
 }
 
 /// A single token balance entry.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TokenBalance {
     /// Token symbol (e.g. "USDC").
     pub symbol: String,
@@ -37,8 +35,8 @@ pub struct TokenBalance {
     pub address: String,
 }
 
-/// Response for `GET /balance`.
-#[derive(Debug, Serialize)]
+/// Response for balance queries.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BalanceResponse {
     /// Native ETH balance as a human-readable string.
     pub eth: String,
@@ -46,8 +44,8 @@ pub struct BalanceResponse {
     pub tokens: Vec<TokenBalance>,
 }
 
-/// Request body for `POST /transfer`.
-#[derive(Debug, Deserialize)]
+/// Request body for transfers.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransferRequest {
     /// Recipient address (hex, 0x-prefixed).
     pub to: String,
@@ -59,8 +57,8 @@ pub struct TransferRequest {
     pub chain_id: u64,
 }
 
-/// Response for `POST /transfer`.
-#[derive(Debug, Serialize)]
+/// Response for transfers.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TransferResponse {
     /// "success" or "denied".
     pub status: String,
@@ -76,7 +74,7 @@ pub struct TransferResponse {
 }
 
 /// A single AIS skill summary.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SkillSummary {
     /// Skill name.
     pub name: String,
@@ -89,14 +87,14 @@ pub struct SkillSummary {
     pub chain_id: u64,
 }
 
-/// Response for `GET /skills`.
-#[derive(Debug, Serialize)]
+/// Response for skills listing.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SkillsResponse {
     pub skills: Vec<SkillSummary>,
 }
 
-/// Request body for `POST /execute`.
-#[derive(Debug, Deserialize)]
+/// Request body for skill execution.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ExecuteRequest {
     /// Skill name (matches the AIS spec name or filename).
     pub skill: String,
@@ -105,49 +103,57 @@ pub struct ExecuteRequest {
     pub params: HashMap<String, String>,
 }
 
-/// Response for `POST /execute`.
-#[derive(Debug, Serialize)]
+/// Response for skill execution.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExecuteResponse {
     /// "success" or "error".
     pub status: String,
     /// Transaction hashes for executed actions.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tx_hashes: Vec<String>,
     /// Error message if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-// ---- Handlers ----
-
-/// `GET /health` — simple health check.
-pub async fn handle_health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+/// Errors returned by handlers.
+#[derive(Debug, thiserror::Error)]
+pub enum HandlerError {
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
-/// `GET /balance` — returns ETH balance for the given address and chain.
+// ---- Handlers ----
+
+/// Health check — always returns `{"status": "ok"}`.
+pub fn handle_health(_state: &AppState) -> serde_json::Value {
+    json!({ "status": "ok" })
+}
+
+/// Query ETH balance for the given address and chain.
 pub async fn handle_balance(
-    State(state): State<AppState>,
-    Query(params): Query<BalanceQuery>,
-) -> Result<Json<BalanceResponse>, (StatusCode, String)> {
-    let adapter = state.adapters.get(&params.chain_id).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("unsupported chain_id: {}", params.chain_id),
-        )
-    })?;
+    state: &AppState,
+    params: BalanceQuery,
+) -> Result<BalanceResponse, HandlerError> {
+    let adapter = state
+        .adapters
+        .get(&params.chain_id)
+        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {}", params.chain_id)))?;
 
     let address: clawlet_evm::Address = params
         .address
         .parse()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid address: {e}")))?;
+        .map_err(|e| HandlerError::BadRequest(format!("invalid address: {e}")))?;
 
     let wei = adapter
         .get_eth_balance(address)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("rpc error: {e}")))?;
+        .map_err(|e| HandlerError::Internal(format!("rpc error: {e}")))?;
 
-    // Convert wei to ETH string (18 decimals)
     let eth_str = format_units(wei, 18);
 
     // Log the balance query to audit
@@ -165,38 +171,29 @@ pub async fn handle_balance(
         }
     }
 
-    Ok(Json(BalanceResponse {
+    Ok(BalanceResponse {
         eth: eth_str,
         tokens: vec![],
-    }))
+    })
 }
 
-/// `POST /transfer` — execute a transfer within policy limits.
+/// Execute a transfer within policy limits.
 pub async fn handle_transfer(
-    State(state): State<AppState>,
-    Json(req): Json<TransferRequest>,
-) -> Result<Json<TransferResponse>, (StatusCode, String)> {
-    // For policy check we use the raw amount as USD approximation.
-    // A real implementation would fetch price feeds.
+    state: &AppState,
+    req: TransferRequest,
+) -> Result<TransferResponse, HandlerError> {
     let amount_usd: f64 = req
         .amount
         .parse()
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid amount".to_string()))?;
+        .map_err(|_| HandlerError::BadRequest("invalid amount".to_string()))?;
 
-    // Check policy
     let decision = state
         .policy
         .check_transfer(amount_usd, &req.token, req.chain_id)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("policy error: {e}"),
-            )
-        })?;
+        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {
         PolicyDecision::Allowed => {
-            // Generate an audit ID
             let audit_id = format!(
                 "{:016x}",
                 std::time::SystemTime::now()
@@ -206,7 +203,6 @@ pub async fn handle_transfer(
                     & 0xFFFF_FFFF_FFFF_FFFF
             );
 
-            // Log to audit
             {
                 let event = AuditEvent::new(
                     "transfer",
@@ -224,20 +220,16 @@ pub async fn handle_transfer(
                 }
             }
 
-            // In a full implementation, we would build and send the actual
-            // transaction via EvmAdapter + Signer here. For now we return
-            // a placeholder tx_hash indicating the transfer was policy-approved.
             let tx_hash = format!("0x{}", "0".repeat(64));
 
-            Ok(Json(TransferResponse {
+            Ok(TransferResponse {
                 status: "success".to_string(),
                 tx_hash: Some(tx_hash),
                 audit_id: Some(audit_id),
                 reason: None,
-            }))
+            })
         }
         PolicyDecision::Denied(reason) => {
-            // Log denial to audit
             {
                 let event = AuditEvent::new(
                     "transfer",
@@ -254,15 +246,14 @@ pub async fn handle_transfer(
                 }
             }
 
-            Ok(Json(TransferResponse {
+            Ok(TransferResponse {
                 status: "denied".to_string(),
                 tx_hash: None,
                 audit_id: None,
                 reason: Some(reason),
-            }))
+            })
         }
         PolicyDecision::RequiresApproval(reason) => {
-            // Log to audit
             {
                 let event = AuditEvent::new(
                     "transfer",
@@ -279,47 +270,33 @@ pub async fn handle_transfer(
                 }
             }
 
-            Ok(Json(TransferResponse {
+            Ok(TransferResponse {
                 status: "denied".to_string(),
                 tx_hash: None,
                 audit_id: None,
                 reason: Some(format!("requires approval: {reason}")),
-            }))
+            })
         }
     }
 }
 
-/// `GET /skills` — list available AIS specs from the skills directory.
-pub async fn handle_skills(
-    State(state): State<AppState>,
-) -> Result<Json<SkillsResponse>, (StatusCode, String)> {
+/// List available AIS specs from the skills directory.
+pub fn handle_skills(state: &AppState) -> Result<SkillsResponse, HandlerError> {
     let mut skills = Vec::new();
     let dir = &state.skills_dir;
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to read skills dir: {e}"),
-        )
-    })?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| HandlerError::Internal(format!("failed to read skills dir: {e}")))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to read skills entry: {e}"),
-            )
-        })?;
+        let entry = entry
+            .map_err(|e| HandlerError::Internal(format!("failed to read skills entry: {e}")))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
             continue;
         }
 
-        let spec = AisSpec::from_file(&path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to parse skill {}: {e}", path.display()),
-            )
-        })?;
+        let spec = AisSpec::from_file(&path)
+            .map_err(|e| HandlerError::Internal(format!("failed to parse skill {}: {e}", path.display())))?;
 
         skills.push(SkillSummary {
             name: spec.name,
@@ -329,49 +306,42 @@ pub async fn handle_skills(
         });
     }
 
-    Ok(Json(SkillsResponse { skills }))
+    Ok(SkillsResponse { skills })
 }
 
-/// `POST /execute` — execute a skill by name.
+/// Execute a skill by name.
 pub async fn handle_execute(
-    State(state): State<AppState>,
-    Json(req): Json<ExecuteRequest>,
-) -> Result<Json<ExecuteResponse>, (StatusCode, String)> {
+    state: &AppState,
+    req: ExecuteRequest,
+) -> Result<ExecuteResponse, HandlerError> {
     let skill_path = state.skills_dir.join(format!("{}.yaml", req.skill));
     if !skill_path.exists() {
-        return Err((StatusCode::NOT_FOUND, "skill not found".into()));
+        return Err(HandlerError::NotFound("skill not found".into()));
     }
 
     let spec = AisSpec::from_file(&skill_path)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid skill: {e}")))?;
+        .map_err(|e| HandlerError::BadRequest(format!("invalid skill: {e}")))?;
 
-    let adapter = state.adapters.get(&spec.chain_id).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("unsupported chain_id: {}", spec.chain_id),
-        )
-    })?;
+    let adapter = state
+        .adapters
+        .get(&spec.chain_id)
+        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {}", spec.chain_id)))?;
 
     let outputs =
         clawlet_evm::executor::execute_spec(&spec, req.params, adapter, state.signer.as_ref())
             .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("execute error: {e}"),
-                )
-            })?;
+            .map_err(|e| HandlerError::Internal(format!("execute error: {e}")))?;
 
     let tx_hashes = outputs
         .iter()
         .map(|o| format!("0x{}", hex::encode(o.tx_hash)))
         .collect();
 
-    Ok(Json(ExecuteResponse {
+    Ok(ExecuteResponse {
         status: "success".to_string(),
         tx_hashes,
         error: None,
-    }))
+    })
 }
 
 /// Convert a U256 wei value to a decimal string with the given number of decimals.
@@ -380,7 +350,9 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
     let decimals = decimals as usize;
 
     if s.len() <= decimals {
-        // Value is less than 1 unit
+        if value.is_zero() {
+            return "0.0".to_string();
+        }
         let zeros = decimals - s.len();
         let mut result = "0.".to_string();
         result.push_str(&"0".repeat(zeros));
@@ -388,15 +360,10 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
         if result.ends_with('.') {
             result.push('0');
         }
-        // Handle the zero case
-        if value.is_zero() {
-            return "0.0".to_string();
-        }
         result
     } else {
         let integer_part = &s[..s.len() - decimals];
         let fractional_part = &s[s.len() - decimals..];
-        // Trim trailing zeros from fractional part
         let fractional = fractional_part.trim_end_matches('0');
         if fractional.is_empty() {
             format!("{integer_part}.0")
@@ -431,14 +398,13 @@ mod tests {
 
     #[test]
     fn format_units_small() {
-        let wei = U256::from(1_000_000u64); // 0.000000000001 ETH
+        let wei = U256::from(1_000_000u64);
         let result = format_units(wei, 18);
         assert!(result.starts_with("0."));
     }
 
     #[test]
     fn format_units_usdc() {
-        // 1000 USDC = 1000 * 10^6
         let amount = U256::from(1_000_000_000u64);
         assert_eq!(format_units(amount, 6), "1000.0");
     }

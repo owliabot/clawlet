@@ -12,7 +12,7 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use thiserror::Error;
 
-use clawlet_core::ais::{AisAction, AisActionType, AisArg, AisApproval, AisSpec};
+use clawlet_core::ais::{AisAction, AisActionType, AisApproval, AisArg, AisSpec};
 use clawlet_signer::signer::Signer;
 
 use crate::adapter::{core_address_to_alloy, EvmAdapter};
@@ -103,8 +103,7 @@ pub async fn execute_spec(
                         .insert("block_number".to_string(), block.to_string());
                 }
                 let status = receipt.status();
-                ctx.prev
-                    .insert("status".to_string(), status.to_string());
+                ctx.prev.insert("status".to_string(), status.to_string());
             }
             outputs.push(output);
         }
@@ -170,8 +169,7 @@ async fn execute_evm_call(
         .parse()
         .map_err(|e| AisExecError::InvalidAction(format!("invalid contract address: {e}")))?;
 
-    let func = Function::parse(function)
-        .map_err(|e| AisExecError::FunctionParse(e.to_string()))?;
+    let func = Function::parse(function).map_err(|e| AisExecError::FunctionParse(e.to_string()))?;
 
     let types: Vec<DynSolType> = func
         .inputs
@@ -195,10 +193,9 @@ async fn execute_evm_call(
         .collect::<Result<Vec<_>, _>>()?;
 
     if action.requires_approval {
-        let approval = action
-            .approval
-            .as_ref()
-            .ok_or_else(|| AisExecError::InvalidAction("requires_approval missing approval".into()))?;
+        let approval = action.approval.as_ref().ok_or_else(|| {
+            AisExecError::InvalidAction("requires_approval missing approval".into())
+        })?;
         smart_approve(approval, ctx, adapter, signer).await?;
     }
 
@@ -366,7 +363,10 @@ mod tests {
 
     fn ctx() -> ExecContext {
         let mut params = HashMap::new();
-        params.insert("token".to_string(), "0x0000000000000000000000000000000000000001".into());
+        params.insert(
+            "token".to_string(),
+            "0x0000000000000000000000000000000000000001".into(),
+        );
         params.insert("amount".to_string(), "1000".into());
         let mut prev = HashMap::new();
         prev.insert("tx_hash".to_string(), "0xabc".into());

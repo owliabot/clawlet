@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-use clawlet_core::audit::AuditEvent;
 use clawlet_core::ais::AisSpec;
+use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
 
 use crate::server::AppState;
@@ -352,14 +352,15 @@ pub async fn handle_execute(
         )
     })?;
 
-    let outputs = clawlet_evm::executor::execute_spec(
-        &spec,
-        req.params,
-        adapter,
-        state.signer.as_ref(),
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("execute error: {e}")))?;
+    let outputs =
+        clawlet_evm::executor::execute_spec(&spec, req.params, adapter, state.signer.as_ref())
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("execute error: {e}"),
+                )
+            })?;
 
     let tx_hashes = outputs
         .iter()

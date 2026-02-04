@@ -47,8 +47,12 @@ mod tests {
                 "31337".to_string(),
             ]);
 
-        let container = image.start().expect("Docker must be available to run Anvil tests");
-        let host_port = container.get_host_port_ipv4(8545).expect("failed to get mapped port");
+        let container = image
+            .start()
+            .expect("Docker must be available to run Anvil tests");
+        let host_port = container
+            .get_host_port_ipv4(8545)
+            .expect("failed to get mapped port");
         let url = format!("http://127.0.0.1:{}", host_port);
         (container, url)
     }
@@ -79,7 +83,11 @@ mod tests {
 
     async fn wait_for_receipt(adapter: &EvmAdapter, tx_hash: B256) -> Option<()> {
         for _ in 0..10 {
-            let receipt = adapter.provider().get_transaction_receipt(tx_hash).await.ok()?;
+            let receipt = adapter
+                .provider()
+                .get_transaction_receipt(tx_hash)
+                .await
+                .ok()?;
             if receipt.is_some() {
                 return Some(());
             }
@@ -88,11 +96,7 @@ mod tests {
         None
     }
 
-    async fn deposit_weth(
-        adapter: &EvmAdapter,
-        signer: &LocalSigner,
-        amount: U256,
-    ) -> B256 {
+    async fn deposit_weth(adapter: &EvmAdapter, signer: &LocalSigner, amount: U256) -> B256 {
         let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
             .parse()
             .unwrap();
@@ -143,11 +147,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn aave_a_token_address(
-        adapter: &EvmAdapter,
-        pool: Address,
-        asset: Address,
-    ) -> Address {
+    async fn aave_a_token_address(adapter: &EvmAdapter, pool: Address, asset: Address) -> Address {
         let func = Function::parse("getReserveData(address)").unwrap();
         let data = func
             .abi_encode_input(&[DynSolValue::Address(asset)])
@@ -252,8 +252,8 @@ allowed_chains: []
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url)
-                .expect("should connect to Anvil");
+            let adapter =
+                clawlet_evm::adapter::EvmAdapter::new(&anvil_url).expect("should connect to Anvil");
 
             // Anvil default account 0
             let default_addr: alloy::primitives::Address =
@@ -298,8 +298,7 @@ allowed_chains: []
 
             // 2. Import Anvil's default key
             let tmp = tempfile::tempdir().unwrap();
-            let anvil_key_hex =
-                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+            let anvil_key_hex = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
             let private_key = hex::decode(anvil_key_hex).unwrap();
             let (_address, ks_path) = clawlet_signer::keystore::Keystore::create_from_key(
                 tmp.path(),
@@ -309,8 +308,7 @@ allowed_chains: []
             .unwrap();
 
             // 3. Sign and send
-            let signing_key =
-                clawlet_signer::keystore::Keystore::unlock(&ks_path, "test").unwrap();
+            let signing_key = clawlet_signer::keystore::Keystore::unlock(&ks_path, "test").unwrap();
             let signer = clawlet_signer::signer::LocalSigner::new(signing_key);
 
             let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url).unwrap();
@@ -540,7 +538,10 @@ allowed_chains: []
             let a_final = adapter.get_erc20_balance(a_token, owner).await.unwrap();
             let usdc_final = adapter.get_erc20_balance(usdc, owner).await.unwrap();
             assert!(a_final < a_after, "aToken balance should decrease");
-            assert!(usdc_final >= usdc_after_supply, "USDC balance should recover");
+            assert!(
+                usdc_final >= usdc_after_supply,
+                "USDC balance should recover"
+            );
         });
     }
 }

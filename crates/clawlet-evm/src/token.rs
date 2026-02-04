@@ -34,11 +34,7 @@ pub async fn check_allowance(
 
     let result: Bytes = adapter
         .provider()
-        .call(
-            TransactionRequest::default()
-                .to(token)
-                .input(data.into()),
-        )
+        .call(TransactionRequest::default().to(token).input(data.into()))
         .await
         .map_err(|e| TokenError::Rpc(e.to_string()))?;
 
@@ -59,14 +55,9 @@ pub async fn approve_token(
     let call = IERC20::approveCall { spender, amount };
     let data = call.abi_encode();
 
-    let mut tx_req = TransactionRequest::default()
-        .to(token)
-        .input(data.into());
+    let mut tx_req = TransactionRequest::default().to(token).input(data.into());
     // Chain ID must be populated before signing.
-    let chain_id = adapter
-        .get_chain_id()
-        .await
-        .map_err(TokenError::Adapter)?;
+    let chain_id = adapter.get_chain_id().await.map_err(TokenError::Adapter)?;
     tx_req.set_chain_id(chain_id);
 
     let tx_hash = tx::send_transaction(adapter, signer, tx_req).await?;

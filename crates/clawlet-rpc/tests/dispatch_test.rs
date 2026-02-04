@@ -29,10 +29,11 @@ fn test_state(auth_token: &str) -> (AppState, tempfile::TempDir) {
     };
 
     // Create a dummy signer (Anvil account 0)
-    let key_bytes = hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap();
-    let signer = clawlet_signer::signer::LocalSigner::from_bytes(
-        &key_bytes.try_into().expect("32 bytes"),
-    ).unwrap();
+    let key_bytes =
+        hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap();
+    let signer =
+        clawlet_signer::signer::LocalSigner::from_bytes(&key_bytes.try_into().expect("32 bytes"))
+            .unwrap();
 
     let state = AppState {
         policy: Arc::new(PolicyEngine::new(policy)),
@@ -49,7 +50,7 @@ fn test_state(auth_token: &str) -> (AppState, tempfile::TempDir) {
 fn dispatch_health_no_auth_required() {
     let (state, _tmp) = test_state("secret");
     let rt = tokio::runtime::Runtime::new().unwrap();
-    
+
     // Health should work without auth token
     let req = RpcRequest::new(RpcMethod::Health, "", b"{}");
     let resp = dispatch(&state, &req, rt.handle());
@@ -87,7 +88,10 @@ fn dispatch_protected_route_no_token_configured() {
     // Should get BadRequest (unsupported chain_id) not Unauthorized
     assert_eq!(resp.status, RpcStatus::BadRequest as u32);
     let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
-    assert!(body["error"].as_str().unwrap().contains("unsupported chain_id"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("unsupported chain_id"));
 }
 
 #[test]
@@ -100,7 +104,8 @@ fn dispatch_transfer_policy_allowed() {
         "amount": "100.0",
         "token": "ETH",
         "chain_id": 1
-    })).unwrap();
+    }))
+    .unwrap();
 
     let req = RpcRequest::new(RpcMethod::Transfer, "tok", &payload);
     let resp = dispatch(&state, &req, rt.handle());
@@ -123,7 +128,8 @@ fn dispatch_transfer_policy_denied() {
         "amount": "6000.0",
         "token": "ETH",
         "chain_id": 1
-    })).unwrap();
+    }))
+    .unwrap();
 
     let req = RpcRequest::new(RpcMethod::Transfer, "tok", &payload);
     let resp = dispatch(&state, &req, rt.handle());
@@ -180,7 +186,8 @@ fn dispatch_execute_skill_not_found() {
     let payload = serde_json::to_vec(&serde_json::json!({
         "skill": "nonexistent_skill",
         "params": {}
-    })).unwrap();
+    }))
+    .unwrap();
 
     let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
     let resp = dispatch(&state, &req, rt.handle());

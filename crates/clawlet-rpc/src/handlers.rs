@@ -139,10 +139,9 @@ pub async fn handle_balance(
     state: &AppState,
     params: BalanceQuery,
 ) -> Result<BalanceResponse, HandlerError> {
-    let adapter = state
-        .adapters
-        .get(&params.chain_id)
-        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {}", params.chain_id)))?;
+    let adapter = state.adapters.get(&params.chain_id).ok_or_else(|| {
+        HandlerError::BadRequest(format!("unsupported chain_id: {}", params.chain_id))
+    })?;
 
     let address: clawlet_evm::Address = params
         .address
@@ -295,8 +294,9 @@ pub fn handle_skills(state: &AppState) -> Result<SkillsResponse, HandlerError> {
             continue;
         }
 
-        let spec = AisSpec::from_file(&path)
-            .map_err(|e| HandlerError::Internal(format!("failed to parse skill {}: {e}", path.display())))?;
+        let spec = AisSpec::from_file(&path).map_err(|e| {
+            HandlerError::Internal(format!("failed to parse skill {}: {e}", path.display()))
+        })?;
 
         skills.push(SkillSummary {
             name: spec.name,
@@ -322,10 +322,9 @@ pub async fn handle_execute(
     let spec = AisSpec::from_file(&skill_path)
         .map_err(|e| HandlerError::BadRequest(format!("invalid skill: {e}")))?;
 
-    let adapter = state
-        .adapters
-        .get(&spec.chain_id)
-        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {}", spec.chain_id)))?;
+    let adapter = state.adapters.get(&spec.chain_id).ok_or_else(|| {
+        HandlerError::BadRequest(format!("unsupported chain_id: {}", spec.chain_id))
+    })?;
 
     let outputs =
         clawlet_evm::executor::execute_spec(&spec, req.params, adapter, state.signer.as_ref())

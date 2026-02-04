@@ -4,9 +4,7 @@
 
 use tracing::{info, warn};
 
-use crate::handlers::{
-    self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest,
-};
+use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
 use crate::server::AppState;
 use crate::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
 
@@ -28,11 +26,9 @@ pub fn dispatch(
     };
 
     // Auth check for protected methods
-    if method != RpcMethod::Health {
-        if !check_auth(state, request) {
-            warn!("unauthorized request for {:?}", method);
-            return RpcResponse::error(RpcStatus::Unauthorized, "unauthorized");
-        }
+    if method != RpcMethod::Health && !check_auth(state, request) {
+        warn!("unauthorized request for {:?}", method);
+        return RpcResponse::error(RpcStatus::Unauthorized, "unauthorized");
     }
 
     info!(?method, "dispatching RPC request");
@@ -46,7 +42,12 @@ pub fn dispatch(
         RpcMethod::Balance => {
             let query: BalanceQuery = match serde_json::from_slice(request.payload_bytes()) {
                 Ok(q) => q,
-                Err(e) => return RpcResponse::error(RpcStatus::BadRequest, &format!("invalid payload: {e}")),
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcStatus::BadRequest,
+                        &format!("invalid payload: {e}"),
+                    )
+                }
             };
             match rt.block_on(handlers::handle_balance(state, query)) {
                 Ok(resp) => {
@@ -59,7 +60,12 @@ pub fn dispatch(
         RpcMethod::Transfer => {
             let req: TransferRequest = match serde_json::from_slice(request.payload_bytes()) {
                 Ok(r) => r,
-                Err(e) => return RpcResponse::error(RpcStatus::BadRequest, &format!("invalid payload: {e}")),
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcStatus::BadRequest,
+                        &format!("invalid payload: {e}"),
+                    )
+                }
             };
             match rt.block_on(handlers::handle_transfer(state, req)) {
                 Ok(resp) => {
@@ -69,19 +75,22 @@ pub fn dispatch(
                 Err(e) => handler_error_to_response(e),
             }
         }
-        RpcMethod::Skills => {
-            match handlers::handle_skills(state) {
-                Ok(resp) => {
-                    let json = serde_json::to_vec(&resp).unwrap_or_default();
-                    RpcResponse::ok(&json)
-                }
-                Err(e) => handler_error_to_response(e),
+        RpcMethod::Skills => match handlers::handle_skills(state) {
+            Ok(resp) => {
+                let json = serde_json::to_vec(&resp).unwrap_or_default();
+                RpcResponse::ok(&json)
             }
-        }
+            Err(e) => handler_error_to_response(e),
+        },
         RpcMethod::Execute => {
             let req: ExecuteRequest = match serde_json::from_slice(request.payload_bytes()) {
                 Ok(r) => r,
-                Err(e) => return RpcResponse::error(RpcStatus::BadRequest, &format!("invalid payload: {e}")),
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcStatus::BadRequest,
+                        &format!("invalid payload: {e}"),
+                    )
+                }
             };
             match rt.block_on(handlers::handle_execute(state, req)) {
                 Ok(resp) => {

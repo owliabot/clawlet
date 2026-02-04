@@ -38,14 +38,11 @@ fn test_state(auth_token: &str, skills_dir: PathBuf) -> AppState {
         require_approval_above_usd: None,
     };
 
-    let key_bytes = hex::decode(
-        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    )
-    .unwrap();
-    let signer = clawlet_signer::signer::LocalSigner::from_bytes(
-        &key_bytes.try_into().expect("32 bytes"),
-    )
-    .unwrap();
+    let key_bytes =
+        hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap();
+    let signer =
+        clawlet_signer::signer::LocalSigner::from_bytes(&key_bytes.try_into().expect("32 bytes"))
+            .unwrap();
 
     AppState {
         policy: Arc::new(PolicyEngine::new(policy)),
@@ -233,8 +230,7 @@ fn client_server_unauthorized() {
     }))
     .unwrap();
 
-    let resp =
-        call_raw(&svc, RpcMethod::Transfer, "wrong-token", &payload).expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Transfer, "wrong-token", &payload).expect("call failed");
     assert_eq!(resp.status, RpcStatus::Unauthorized as u32);
     assert!(!resp.is_ok());
 }
@@ -295,5 +291,8 @@ fn client_server_balance_no_adapter() {
     let resp = call_raw(&svc, RpcMethod::Balance, "t", &payload).expect("call failed");
     assert_eq!(resp.status, RpcStatus::BadRequest as u32);
     let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
-    assert!(body["error"].as_str().unwrap().contains("unsupported chain_id"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("unsupported chain_id"));
 }

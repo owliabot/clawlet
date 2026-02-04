@@ -1,6 +1,8 @@
 //! Unit tests for IPC message types.
 
-use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus, PAYLOAD_BUF_SIZE, AUTH_TOKEN_SIZE};
+use clawlet_rpc::types::{
+    RpcMethod, RpcRequest, RpcResponse, RpcStatus, AUTH_TOKEN_SIZE, PAYLOAD_BUF_SIZE,
+};
 
 #[test]
 fn rpc_method_round_trip() {
@@ -97,7 +99,7 @@ fn rpc_request_repr_c_size() {
     // Ensure the struct sizes are reasonable and stable
     let req_size = std::mem::size_of::<RpcRequest>();
     let resp_size = std::mem::size_of::<RpcResponse>();
-    
+
     // method(4) + auth_token(256) + payload_len(4) + payload(65536) = 65800
     assert_eq!(req_size, 65800, "RpcRequest size should be 65800 bytes");
     // status(4) + payload_len(4) + payload(65536) = 65544

@@ -121,7 +121,11 @@ fn run_service_loop(
         .map_err(|e| format!("failed to create iceoryx2 node: {e:?}"))?;
 
     let service = node
-        .service_builder(&SERVICE_NAME.try_into().map_err(|e| format!("invalid service name: {e:?}"))?)
+        .service_builder(
+            &SERVICE_NAME
+                .try_into()
+                .map_err(|e| format!("invalid service name: {e:?}"))?,
+        )
         .request_response::<RpcRequest, RpcResponse>()
         .open_or_create()
         .map_err(|e| format!("failed to create iceoryx2 service: {e:?}"))?;
@@ -138,7 +142,7 @@ fn run_service_loop(
             .receive()
             .map_err(|e| format!("receive error: {e:?}"))?
         {
-            let rpc_response = dispatch::dispatch(&state, &*active_request, &rt);
+            let rpc_response = dispatch::dispatch(&state, &active_request, &rt);
 
             // Send the response back
             match active_request.loan_uninit() {

@@ -53,7 +53,7 @@
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| M0 | 项目初始化 + 品牌 | ⏳ 进行中 |
+| M0 | 项目初始化 + 品牌 | ✅ 完成 |
 | M1 | Wallet Engine MVP（只读 + 转账） | ⏳ 待开始 |
 | M2 | DeFi 操作（Swap + 借贷） | ⏳ 待开始 |
 | M3 | AIS Registry 合约 | ⏳ 待开始 |
@@ -66,10 +66,10 @@
 
 ### 任务清单
 - [x] M0-1: 创建 Rust 项目骨架（cargo workspace）
-- [ ] M0-2: 项目结构设计（crates 划分）
+- [x] M0-2: 项目结构设计（crates 划分）
 - [x] M0-3: README + LICENSE
 - [x] M0-4: GitHub repo 创建
-- [ ] M0-5: CI 基础配置（cargo test + clippy）
+- [x] M0-5: CI 基础配置（cargo test + clippy）
 
 ---
 

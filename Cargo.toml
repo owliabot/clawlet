@@ -1,0 +1,22 @@
+[workspace]
+members = ["."]
+
+[package]
+name = "clawlet"
+version = "0.1.0"
+edition = "2021"
+description = "An agent-native wallet engine for OpenClaw"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "clawlet"
+path = "src/main.rs"
+
+[lib]
+name = "clawlet_core"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]

@@ -7,8 +7,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 
 use clawlet_core::audit::AuditEvent;
+use clawlet_core::ais::AisSpec;
 use clawlet_core::policy::PolicyDecision;
 
 use crate::server::AppState;
@@ -71,6 +73,49 @@ pub struct TransferResponse {
     /// Denial reason (present on denial).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// A single AIS skill summary.
+#[derive(Debug, Serialize)]
+pub struct SkillSummary {
+    /// Skill name.
+    pub name: String,
+    /// Protocol name.
+    pub protocol: String,
+    /// Optional description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Chain ID.
+    pub chain_id: u64,
+}
+
+/// Response for `GET /skills`.
+#[derive(Debug, Serialize)]
+pub struct SkillsResponse {
+    pub skills: Vec<SkillSummary>,
+}
+
+/// Request body for `POST /execute`.
+#[derive(Debug, Deserialize)]
+pub struct ExecuteRequest {
+    /// Skill name (matches the AIS spec name or filename).
+    pub skill: String,
+    /// Parameter values for execution.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+}
+
+/// Response for `POST /execute`.
+#[derive(Debug, Serialize)]
+pub struct ExecuteResponse {
+    /// "success" or "error".
+    pub status: String,
+    /// Transaction hashes for executed actions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tx_hashes: Vec<String>,
+    /// Error message if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ---- Handlers ----
@@ -242,6 +287,90 @@ pub async fn handle_transfer(
             }))
         }
     }
+}
+
+/// `GET /skills` — list available AIS specs from the skills directory.
+pub async fn handle_skills(
+    State(state): State<AppState>,
+) -> Result<Json<SkillsResponse>, (StatusCode, String)> {
+    let mut skills = Vec::new();
+    let dir = &state.skills_dir;
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read skills dir: {e}"),
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read skills entry: {e}"),
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+
+        let spec = AisSpec::from_file(&path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to parse skill {}: {e}", path.display()),
+            )
+        })?;
+
+        skills.push(SkillSummary {
+            name: spec.name,
+            protocol: spec.protocol,
+            description: spec.description,
+            chain_id: spec.chain_id,
+        });
+    }
+
+    Ok(Json(SkillsResponse { skills }))
+}
+
+/// `POST /execute` — execute a skill by name.
+pub async fn handle_execute(
+    State(state): State<AppState>,
+    Json(req): Json<ExecuteRequest>,
+) -> Result<Json<ExecuteResponse>, (StatusCode, String)> {
+    let skill_path = state.skills_dir.join(format!("{}.yaml", req.skill));
+    if !skill_path.exists() {
+        return Err((StatusCode::NOT_FOUND, "skill not found".into()));
+    }
+
+    let spec = AisSpec::from_file(&skill_path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid skill: {e}")))?;
+
+    let adapter = state.adapters.get(&spec.chain_id).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unsupported chain_id: {}", spec.chain_id),
+        )
+    })?;
+
+    let outputs = clawlet_evm::executor::execute_spec(
+        &spec,
+        req.params,
+        adapter,
+        state.signer.as_ref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("execute error: {e}")))?;
+
+    let tx_hashes = outputs
+        .iter()
+        .map(|o| format!("0x{}", hex::encode(o.tx_hash)))
+        .collect();
+
+    Ok(Json(ExecuteResponse {
+        status: "success".to_string(),
+        tx_hashes,
+        error: None,
+    }))
 }
 
 /// Convert a U256 wei value to a decimal string with the given number of decimals.

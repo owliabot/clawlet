@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use clawlet_core::config::Config;
 use clawlet_rpc::server::RpcServer;
+use clawlet_signer::keystore::Keystore;
+use clawlet_signer::signer::LocalSigner;
 
 /// Resolve the config path (default: ~/.clawlet/config.yaml).
 fn resolve_config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -27,27 +29,32 @@ pub async fn run(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error:
 
     // Prompt for keystore password (used for future signing operations)
     eprint!("Enter keystore password: ");
-    let _password = rpassword::read_password()?;
+    let password = rpassword::read_password()?;
 
     // Verify that keystore directory exists and has at least one key
-    if config.keystore_path.exists() {
-        let keys = clawlet_signer::Keystore::list(&config.keystore_path)?;
+    let signer = if config.keystore_path.exists() {
+        let keys = Keystore::list(&config.keystore_path)?;
         if keys.is_empty() {
             return Err("no keystore files found — run `clawlet init` first".into());
         }
         tracing::info!("found {} keystore file(s)", keys.len());
+        let (_addr, key_path) = &keys[0];
+        let signing_key = Keystore::unlock(key_path, &password)?;
+        Some(LocalSigner::new(signing_key))
     } else {
-        return Err(format!(
+        None
+    };
+    let signer = signer.ok_or_else(|| {
+        format!(
             "keystore directory does not exist: {} — run `clawlet init` first",
             config.keystore_path.display()
         )
-        .into());
-    }
+    })?;
 
     println!("Clawlet RPC server running on {}", config.rpc_bind);
 
     // Start the RPC server (blocks until shutdown)
-    RpcServer::start(&config).await?;
+    RpcServer::start(&config, signer).await?;
 
     Ok(())
 }

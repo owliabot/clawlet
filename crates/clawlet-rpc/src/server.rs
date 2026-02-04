@@ -3,12 +3,14 @@
 //! Binds to the configured address and serves the Clawlet API.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clawlet_core::audit::AuditLogger;
 use clawlet_core::config::Config;
 use clawlet_core::policy::PolicyEngine;
 use clawlet_evm::EvmAdapter;
+use clawlet_signer::signer::LocalSigner;
 use tokio::net::TcpListener;
 
 use crate::routes::build_router;
@@ -24,6 +26,10 @@ pub struct AppState {
     pub adapters: Arc<HashMap<u64, EvmAdapter>>,
     /// Authentication token required for API access.
     pub auth_token: String,
+    /// Signer for transaction execution.
+    pub signer: Arc<LocalSigner>,
+    /// Skills directory containing AIS specs.
+    pub skills_dir: PathBuf,
 }
 
 /// RPC server that holds shared state and serves the API.
@@ -37,7 +43,10 @@ impl RpcServer {
     /// 2. Create an audit logger at the configured path
     /// 3. Build EVM adapters for each configured chain
     /// 4. Bind to `config.rpc_bind` and serve HTTP requests
-    pub async fn start(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(
+        config: &Config,
+        signer: LocalSigner,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Load policy
         let policy = PolicyEngine::from_file(&config.policy_path)?;
 
@@ -56,12 +65,17 @@ impl RpcServer {
 
         // Resolve auth token: env var takes precedence
         let auth_token = std::env::var("CLAWLET_AUTH_TOKEN").unwrap_or_else(|_| String::new());
+        let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("skills"));
 
         let state = AppState {
             policy: Arc::new(policy),
             audit: Arc::new(Mutex::new(audit)),
             adapters: Arc::new(adapters),
             auth_token,
+            signer: Arc::new(signer),
+            skills_dir,
         };
 
         let app = build_router(state);

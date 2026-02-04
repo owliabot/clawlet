@@ -337,6 +337,20 @@ pub async fn handle_execute(
         return Err(HandlerError::NotFound("skill not found".into()));
     }
 
+    // Prevent symlink escape: canonicalize and verify path is still inside skills_dir
+    let canonical_path = skill_path
+        .canonicalize()
+        .map_err(|e| HandlerError::Internal(format!("failed to resolve skill path: {e}")))?;
+    let canonical_skills_dir = state
+        .skills_dir
+        .canonicalize()
+        .map_err(|e| HandlerError::Internal(format!("failed to resolve skills dir: {e}")))?;
+    if !canonical_path.starts_with(&canonical_skills_dir) {
+        return Err(HandlerError::BadRequest(
+            "skill path escapes skills directory".into(),
+        ));
+    }
+
     let spec = AisSpec::from_file(&skill_path)
         .map_err(|e| HandlerError::BadRequest(format!("invalid skill: {e}")))?;
 

@@ -8,3 +8,12 @@ description = "RPC API server for Clawlet"
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }
 clawlet-evm = { path = "../clawlet-evm" }
+clawlet-signer = { path = "../clawlet-signer" }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+thiserror = "2"
+tracing = "0.1"

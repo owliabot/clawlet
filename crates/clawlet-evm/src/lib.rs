@@ -6,10 +6,14 @@
 //!
 //! - [`abi`] — ERC-20 ABI definitions using alloy's `sol!` macro
 //! - [`adapter`] — JSON-RPC adapter for querying chain state
+//! - [`executor`] — AIS execution engine for DeFi actions
+//! - [`token`] — ERC-20 allowance and approval helpers
 //! - [`tx`] — Transaction building and broadcasting
 
 pub mod abi;
 pub mod adapter;
+pub mod executor;
+pub mod token;
 pub mod tx;
 
 // Re-export key types for convenience.

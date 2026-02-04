@@ -1,8 +1,9 @@
 //! # clawlet-rpc
 //!
-//! HTTP RPC server exposing wallet operations via a REST API.
+//! IPC RPC server exposing wallet operations via iceoryx2 request-response.
 
-pub mod auth;
+pub mod client;
+pub mod dispatch;
 pub mod handlers;
-pub mod routes;
 pub mod server;
+pub mod types;

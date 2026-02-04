@@ -1,6 +1,6 @@
 //! `clawlet serve` — start the RPC server.
 //!
-//! Loads config, unlocks keystore, starts the axum-based HTTP server,
+//! Loads config, unlocks keystore, starts the iceoryx2 IPC server,
 //! and handles graceful shutdown on Ctrl+C.
 
 use std::path::PathBuf;

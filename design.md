@@ -54,7 +54,7 @@
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | M0 | 项目初始化 + 品牌 | ✅ 完成 |
-| M1 | Wallet Engine MVP（只读 + 转账） | ⏳ 待开始 |
+| M1 | Wallet Engine MVP（只读 + 转账） | ✅ 完成 |
 | M2 | DeFi 操作（Swap + 借贷） | ⏳ 待开始 |
 | M3 | AIS Registry 合约 | ⏳ 待开始 |
 | M4 | 多链支持 | ⏳ 待开始 |
@@ -89,16 +89,16 @@
 - [x] M1-8: clawlet-rpc — Routes: GET /balance, POST /transfer
 - [x] M1-9: clawlet-cli — `clawlet init` (生成 keystore + policy)
 - [x] M1-10: clawlet-cli — `clawlet serve` (启动 RPC server)
-- [ ] M1-11: 集成测试（Anvil local fork）
-- [ ] M1-12: OS 用户隔离部署文档
+- [x] M1-11: 集成测试（Anvil local fork）
+- [x] M1-12: OS 用户隔离部署文档
 
 ### 验收标准
-- [ ] `clawlet init` 生成加密 keystore + 默认 policy
-- [ ] `clawlet serve` 启动 RPC server 在 127.0.0.1:9100
-- [ ] GET /balance 返回 ETH + ERC-20 余额
-- [ ] POST /transfer 在 policy 范围内执行转账
-- [ ] POST /transfer 超出 policy 限额时拒绝
-- [ ] 所有操作写入 audit log
+- [x] `clawlet init` 生成加密 keystore + 默认 policy
+- [x] `clawlet serve` 启动 RPC server 在 127.0.0.1:9100
+- [x] GET /balance 返回 ETH + ERC-20 余额
+- [x] POST /transfer 在 policy 范围内执行转账
+- [x] POST /transfer 超出 policy 限额时拒绝
+- [x] 所有操作写入 audit log
 
 ---
 

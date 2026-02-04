@@ -10,8 +10,20 @@
 
 #[cfg(test)]
 mod tests {
+    use alloy::dyn_abi::{DynSolType, DynSolValue, JsonAbiExt};
+    use alloy::json_abi::Function;
+    use alloy::network::TransactionBuilder;
+    use alloy::primitives::{Address, Bytes, B256, U256};
+    use alloy::providers::Provider;
+    use alloy::rpc::types::TransactionRequest;
+    use clawlet_core::ais::AisSpec;
     use clawlet_core::audit::{AuditEvent, AuditLogger};
     use clawlet_core::policy::{Policy, PolicyDecision, PolicyEngine};
+    use clawlet_evm::adapter::EvmAdapter;
+    use clawlet_evm::executor;
+    use clawlet_evm::tx;
+    use clawlet_signer::signer::LocalSigner;
+    use clawlet_signer::signer::Signer;
     use serde_json::json;
     use testcontainers::{
         core::{IntoContainerPort, WaitFor},
@@ -39,6 +51,135 @@ mod tests {
         let host_port = container.get_host_port_ipv4(8545).expect("failed to get mapped port");
         let url = format!("http://127.0.0.1:{}", host_port);
         (container, url)
+    }
+
+    fn skills_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("skills")
+    }
+
+    fn load_skill(name: &str) -> AisSpec {
+        let path = skills_dir().join(format!("{name}.yaml"));
+        AisSpec::from_file(&path).expect("failed to load AIS spec")
+    }
+
+    fn env_anvil() -> Option<(String, [u8; 32])> {
+        let url = std::env::var("ANVIL_URL").ok()?;
+        let key_hex = std::env::var("ANVIL_PRIVATE_KEY").ok()?;
+        let bytes = hex::decode(key_hex.trim_start_matches("0x")).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        Some((url, key))
+    }
+
+    async fn wait_for_receipt(adapter: &EvmAdapter, tx_hash: B256) -> Option<()> {
+        for _ in 0..10 {
+            let receipt = adapter.provider().get_transaction_receipt(tx_hash).await.ok()?;
+            if receipt.is_some() {
+                return Some(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        None
+    }
+
+    async fn deposit_weth(
+        adapter: &EvmAdapter,
+        signer: &LocalSigner,
+        amount: U256,
+    ) -> B256 {
+        let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            .parse()
+            .unwrap();
+        let func = Function::parse("deposit()").unwrap();
+        let data = func.abi_encode_input(&[]).unwrap();
+
+        let mut tx_req = TransactionRequest::default()
+            .to(weth)
+            .value(amount)
+            .input(Bytes::from(data).into());
+        let chain_id = adapter.get_chain_id().await.unwrap_or(1);
+        tx_req.set_chain_id(chain_id);
+
+        let tx_hash = tx::send_transaction(adapter, signer, tx_req).await.unwrap();
+        let _ = wait_for_receipt(adapter, tx_hash).await;
+        tx_hash
+    }
+
+    async fn execute_uniswap_swap(
+        adapter: &EvmAdapter,
+        signer: &LocalSigner,
+        amount_in: U256,
+        min_amount_out: U256,
+    ) {
+        let spec = load_skill("uniswap_v3_swap");
+        let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut params = std::collections::HashMap::new();
+        params.insert("token_in".to_string(), weth.to_string());
+        params.insert("token_out".to_string(), usdc.to_string());
+        params.insert("amount_in".to_string(), amount_in.to_string());
+        params.insert("min_amount_out".to_string(), min_amount_out.to_string());
+        params.insert("recipient".to_string(), owner.to_string());
+        params.insert("deadline".to_string(), (now + 600).to_string());
+
+        let _ = executor::execute_spec(&spec, params, adapter, signer)
+            .await
+            .unwrap();
+    }
+
+    async fn aave_a_token_address(
+        adapter: &EvmAdapter,
+        pool: Address,
+        asset: Address,
+    ) -> Address {
+        let func = Function::parse("getReserveData(address)").unwrap();
+        let data = func
+            .abi_encode_input(&[DynSolValue::Address(asset)])
+            .unwrap();
+        let result: Bytes = adapter
+            .provider()
+            .call(TransactionRequest::default().to(pool).input(data.into()))
+            .await
+            .unwrap();
+
+        let types = DynSolType::Tuple(vec![
+            DynSolType::Uint(256),
+            DynSolType::Uint(128),
+            DynSolType::Uint(128),
+            DynSolType::Uint(128),
+            DynSolType::Uint(128),
+            DynSolType::Uint(128),
+            DynSolType::Uint(40),
+            DynSolType::Address,
+            DynSolType::Address,
+            DynSolType::Address,
+            DynSolType::Address,
+            DynSolType::Uint(8),
+        ]);
+        let decoded = types.abi_decode(&result).unwrap();
+        match decoded {
+            DynSolValue::Tuple(values) => match values.get(7) {
+                Some(DynSolValue::Address(addr)) => *addr,
+                _ => Address::ZERO,
+            },
+            _ => Address::ZERO,
+        }
     }
 
     // -----------------------------------------------------------------
@@ -291,5 +432,115 @@ allowed_chains: []
         for event in &events {
             assert!(event.get("timestamp").is_some());
         }
+    }
+
+    // -----------------------------------------------------------------
+    // test_uniswap_v3_swap_ais — mainnet fork via ANVIL_URL
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[ignore]
+    fn test_uniswap_v3_swap_ais() {
+        let Some((anvil_url, private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+            let signer = LocalSigner::from_bytes(&private_key).unwrap();
+            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+
+            let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+                .parse()
+                .unwrap();
+            let amount_in = U256::from(1_000_000_000_000_000u64); // 0.001 WETH
+
+            let usdc_before = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+            let _ = deposit_weth(&adapter, &signer, amount_in).await;
+            execute_uniswap_swap(&adapter, &signer, amount_in, U256::from(1u64)).await;
+            let usdc_after = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+
+            assert!(
+                usdc_after > usdc_before,
+                "USDC balance should increase after swap"
+            );
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // test_aave_v3_supply_withdraw_ais — mainnet fork via ANVIL_URL
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[ignore]
+    fn test_aave_v3_supply_withdraw_ais() {
+        let Some((anvil_url, private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+            let signer = LocalSigner::from_bytes(&private_key).unwrap();
+            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+
+            let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+                .parse()
+                .unwrap();
+            let pool: Address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+                .parse()
+                .unwrap();
+
+            let usdc_before = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+            let amount = U256::from(1_000_000u64); // 1 USDC
+
+            if usdc_before < amount {
+                let weth_amount = U256::from(2_000_000_000_000_000u64); // 0.002 WETH
+                let _ = deposit_weth(&adapter, &signer, weth_amount).await;
+                execute_uniswap_swap(&adapter, &signer, weth_amount, U256::from(1u64)).await;
+            }
+
+            let usdc_mid = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+            assert!(usdc_mid >= amount, "expected USDC balance for supply");
+
+            let a_token = aave_a_token_address(&adapter, pool, usdc).await;
+            let a_before = adapter.get_erc20_balance(a_token, owner).await.unwrap();
+
+            let supply = load_skill("aave_v3_supply");
+            let mut supply_params = std::collections::HashMap::new();
+            supply_params.insert("asset".to_string(), usdc.to_string());
+            supply_params.insert("amount".to_string(), amount.to_string());
+            supply_params.insert("on_behalf".to_string(), owner.to_string());
+            supply_params.insert("referral_code".to_string(), "0".to_string());
+            supply_params.insert("pool_address".to_string(), pool.to_string());
+
+            let _ = executor::execute_spec(&supply, supply_params, &adapter, &signer)
+                .await
+                .unwrap();
+
+            let a_after = adapter.get_erc20_balance(a_token, owner).await.unwrap();
+            let usdc_after_supply = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+            assert!(a_after > a_before, "aToken balance should increase");
+            assert!(usdc_after_supply < usdc_mid, "USDC balance should decrease");
+
+            let withdraw = load_skill("aave_v3_withdraw");
+            let mut withdraw_params = std::collections::HashMap::new();
+            withdraw_params.insert("asset".to_string(), usdc.to_string());
+            withdraw_params.insert("amount".to_string(), amount.to_string());
+            withdraw_params.insert("recipient".to_string(), owner.to_string());
+            withdraw_params.insert("pool_address".to_string(), pool.to_string());
+
+            let _ = executor::execute_spec(&withdraw, withdraw_params, &adapter, &signer)
+                .await
+                .unwrap();
+
+            let a_final = adapter.get_erc20_balance(a_token, owner).await.unwrap();
+            let usdc_final = adapter.get_erc20_balance(usdc, owner).await.unwrap();
+            assert!(a_final < a_after, "aToken balance should decrease");
+            assert!(usdc_final >= usdc_after_supply, "USDC balance should recover");
+        });
     }
 }

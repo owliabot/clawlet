@@ -1,0 +1,30 @@
+spec_version: "0.1"
+name: "aave_v3_supply"
+protocol: "Aave V3"
+chain_id: 1
+description: "Supply assets to Aave V3 Pool"
+actions:
+  - id: "supply"
+    type: evm_call
+    contract: "{{pool_address}}"
+    function: "supply(address,uint256,address,uint16)"
+    args:
+      - "{{asset}}"
+      - "{{amount}}"
+      - "{{on_behalf}}"
+      - "{{referral_code}}"
+    description: "Supply asset to Aave V3"
+    requires_approval: true
+    approval:
+      token: "{{asset}}"
+      spender: "{{pool_address}}"
+      amount: "{{amount}}"
+params:
+  asset: { type: address, description: "Asset address to supply" }
+  amount: { type: uint256, description: "Amount to supply" }
+  on_behalf: { type: address, description: "Recipient address" }
+  referral_code: { type: uint16, default: "0", description: "Referral code" }
+  pool_address:
+    type: address
+    default: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+    description: "Aave V3 Pool"

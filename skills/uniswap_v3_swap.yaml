@@ -1,0 +1,39 @@
+spec_version: "0.1"
+name: "uniswap_v3_swap"
+protocol: "Uniswap V3"
+chain_id: 1
+description: "Swap tokens via Uniswap V3 SwapRouter"
+actions:
+  - id: "swap"
+    type: evm_call
+    contract: "{{router_address}}"
+    function: "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))"
+    args:
+      - type: tuple
+        fields:
+          - "{{token_in}}"
+          - "{{token_out}}"
+          - "{{fee_tier}}"
+          - "{{recipient}}"
+          - "{{deadline}}"
+          - "{{amount_in}}"
+          - "{{min_amount_out}}"
+          - "0"
+    description: "Execute swap"
+    requires_approval: true
+    approval:
+      token: "{{token_in}}"
+      spender: "{{router_address}}"
+      amount: "{{amount_in}}"
+params:
+  token_in: { type: address, description: "Input token address" }
+  token_out: { type: address, description: "Output token address" }
+  amount_in: { type: uint256, description: "Amount of input token" }
+  min_amount_out: { type: uint256, description: "Minimum output amount (slippage protection)" }
+  fee_tier: { type: uint24, default: "3000", description: "Pool fee tier" }
+  router_address:
+    type: address
+    default: "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+    description: "Uniswap V3 SwapRouter"
+  recipient: { type: address, description: "Recipient of output tokens" }
+  deadline: { type: uint256, description: "Transaction deadline timestamp" }

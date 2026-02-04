@@ -1,0 +1,23 @@
+spec_version: "0.1"
+name: "aave_v3_withdraw"
+protocol: "Aave V3"
+chain_id: 1
+description: "Withdraw assets from Aave V3 Pool"
+actions:
+  - id: "withdraw"
+    type: evm_call
+    contract: "{{pool_address}}"
+    function: "withdraw(address,uint256,address)"
+    args:
+      - "{{asset}}"
+      - "{{amount}}"
+      - "{{recipient}}"
+    description: "Withdraw asset from Aave V3"
+params:
+  asset: { type: address, description: "Asset address to withdraw" }
+  amount: { type: uint256, description: "Amount to withdraw" }
+  recipient: { type: address, description: "Recipient address" }
+  pool_address:
+    type: address
+    default: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+    description: "Aave V3 Pool"

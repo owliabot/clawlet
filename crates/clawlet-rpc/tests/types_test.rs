@@ -105,3 +105,38 @@ fn rpc_request_repr_c_size() {
     // status(4) + payload_len(4) + payload(65536) = 65544
     assert_eq!(resp_size, 65544, "RpcResponse size should be 65544 bytes");
 }
+
+#[test]
+fn rpc_request_malformed_payload_len_no_panic() {
+    // Simulate a malicious request with payload_len > buffer size
+    let mut req = RpcRequest::default();
+    req.payload_len = (PAYLOAD_BUF_SIZE + 10000) as u32; // Way over buffer
+
+    // Should NOT panic, should clamp to buffer size
+    let bytes = req.payload_bytes();
+    assert_eq!(bytes.len(), PAYLOAD_BUF_SIZE);
+}
+
+#[test]
+fn rpc_response_malformed_payload_len_no_panic() {
+    // Simulate a malicious response with payload_len > buffer size
+    let mut resp = RpcResponse::default();
+    resp.payload_len = u32::MAX; // Extremely malicious value
+
+    // Should NOT panic, should clamp to buffer size
+    let bytes = resp.payload_bytes();
+    assert_eq!(bytes.len(), PAYLOAD_BUF_SIZE);
+}
+
+#[test]
+fn rpc_request_payload_len_at_boundary() {
+    let mut req = RpcRequest::default();
+
+    // Exactly at buffer size
+    req.payload_len = PAYLOAD_BUF_SIZE as u32;
+    assert_eq!(req.payload_bytes().len(), PAYLOAD_BUF_SIZE);
+
+    // One over
+    req.payload_len = (PAYLOAD_BUF_SIZE + 1) as u32;
+    assert_eq!(req.payload_bytes().len(), PAYLOAD_BUF_SIZE);
+}

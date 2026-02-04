@@ -194,3 +194,81 @@ fn dispatch_execute_skill_not_found() {
 
     assert_eq!(resp.status, RpcStatus::NotFound as u32);
 }
+
+#[test]
+fn dispatch_execute_path_traversal_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Attempt path traversal with ../
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "../../../etc/passwd",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    // Should be rejected as BadRequest, not NotFound (which would mean it tried to access the path)
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+    let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid skill name"));
+}
+
+#[test]
+fn dispatch_execute_path_separator_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Attempt with forward slash
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "foo/bar",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+}
+
+#[test]
+fn dispatch_execute_empty_skill_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+}
+
+#[test]
+fn dispatch_execute_valid_skill_name_format() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Valid format but skill doesn't exist - should get NotFound, not BadRequest
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "valid_skill-name123",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    // NotFound means the name validation passed but file doesn't exist
+    assert_eq!(resp.status, RpcStatus::NotFound as u32);
+}

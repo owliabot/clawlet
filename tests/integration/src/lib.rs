@@ -77,12 +77,23 @@ allowed_chains: []
     // test_balance_query — needs Anvil at http://127.0.0.1:8545
     // -----------------------------------------------------------------
 
+    fn anvil_url() -> String {
+        std::env::var("CLAWLET_ANVIL_URL").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string())
+    }
+
+    fn anvil_chain_id() -> u64 {
+        std::env::var("CLAWLET_ANVIL_CHAIN_ID")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(31337)
+    }
+
     #[test]
     #[ignore]
     fn test_balance_query() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let adapter = clawlet_evm::adapter::EvmAdapter::new("http://127.0.0.1:8545")
+            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url())
                 .expect("should connect to Anvil");
 
             // Anvil default account 0
@@ -98,7 +109,7 @@ allowed_chains: []
             );
 
             let chain_id = adapter.get_chain_id().await.unwrap();
-            assert_eq!(chain_id, 31337, "Anvil default chain ID");
+            assert_eq!(chain_id, anvil_chain_id(), "Anvil chain ID");
         });
     }
 
@@ -139,7 +150,7 @@ allowed_chains: []
             let signing_key = clawlet_signer::keystore::Keystore::unlock(&ks_path, "test").unwrap();
             let signer = clawlet_signer::signer::LocalSigner::new(signing_key);
 
-            let adapter = clawlet_evm::adapter::EvmAdapter::new("http://127.0.0.1:8545").unwrap();
+            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url()).unwrap();
 
             let recipient: alloy::primitives::Address =
                 "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"

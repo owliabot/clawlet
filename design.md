@@ -83,8 +83,8 @@
 - [x] M1-2: clawlet-core — Audit logger (append-only JSONL)
 - [x] M1-3: clawlet-signer — Keystore 创建/解锁/签名
 - [x] M1-4: clawlet-signer — BIP-44 HD 派生（EVM 路径）
-- [ ] M1-5: clawlet-evm — 余额查询（ETH + ERC-20）
-- [ ] M1-6: clawlet-evm — 转账构建 + 签名 + 广播
+- [x] M1-5: clawlet-evm — 余额查询（ETH + ERC-20）
+- [x] M1-6: clawlet-evm — 转账构建 + 签名 + 广播
 - [ ] M1-7: clawlet-rpc — HTTP server (axum) + auth middleware
 - [ ] M1-8: clawlet-rpc — Routes: GET /balance, POST /transfer
 - [ ] M1-9: clawlet-cli — `clawlet init` (生成 keystore + policy)

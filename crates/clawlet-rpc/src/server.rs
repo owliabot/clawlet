@@ -20,7 +20,7 @@ use clawlet_signer::signer::LocalSigner;
 use crate::dispatch;
 use crate::types::{RpcRequest, RpcResponse};
 
-/// Service name used for the iceoryx2 request-response channel.
+/// Default service name used for the iceoryx2 request-response channel.
 pub const SERVICE_NAME: &str = "clawlet/rpc";
 
 /// Cycle time for the server polling loop.

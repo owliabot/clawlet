@@ -1,11 +1,11 @@
 //! Integration tests for Clawlet.
 //!
-//! Tests that require a running Anvil instance are marked `#[ignore]`.
-//! Run them locally with:
+//! Anvil-dependent tests use **testcontainers** to spin up a Docker-based
+//! Anvil node automatically — no manual `anvil &` needed.
 //!
 //! ```bash
-//! anvil &
-//! cargo test -p clawlet-integration-tests -- --ignored
+//! # Run everything (Docker must be available):
+//! cargo test -p clawlet-integration-tests -- --include-ignored
 //! ```
 
 #[cfg(test)]
@@ -13,6 +13,33 @@ mod tests {
     use clawlet_core::audit::{AuditEvent, AuditLogger};
     use clawlet_core::policy::{Policy, PolicyDecision, PolicyEngine};
     use serde_json::json;
+    use testcontainers::{
+        core::{IntoContainerPort, WaitFor},
+        runners::SyncRunner,
+        Container, GenericImage, ImageExt,
+    };
+
+    /// Spins up a Docker Anvil container and returns `(container, rpc_url)`.
+    /// The container is dropped (and removed) when it goes out of scope.
+    fn start_anvil() -> (Container<GenericImage>, String) {
+        let image = GenericImage::new("ghcr.io/foundry-rs/foundry", "latest")
+            .with_exposed_port(8545.tcp())
+            .with_wait_for(WaitFor::message_on_stdout("Listening on"))
+            .with_entrypoint("anvil")
+            .with_cmd(vec![
+                "--host".to_string(),
+                "0.0.0.0".to_string(),
+                "--port".to_string(),
+                "8545".to_string(),
+                "--chain-id".to_string(),
+                "31337".to_string(),
+            ]);
+
+        let container = image.start().expect("Docker must be available to run Anvil tests");
+        let host_port = container.get_host_port_ipv4(8545).expect("failed to get mapped port");
+        let url = format!("http://127.0.0.1:{}", host_port);
+        (container, url)
+    }
 
     // -----------------------------------------------------------------
     // test_full_init_flow — exercises keystore + config + policy creation
@@ -74,26 +101,17 @@ allowed_chains: []
     }
 
     // -----------------------------------------------------------------
-    // test_balance_query — needs Anvil at http://127.0.0.1:8545
+    // test_balance_query — Anvil via testcontainers
     // -----------------------------------------------------------------
-
-    fn anvil_url() -> String {
-        std::env::var("CLAWLET_ANVIL_URL").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string())
-    }
-
-    fn anvil_chain_id() -> u64 {
-        std::env::var("CLAWLET_ANVIL_CHAIN_ID")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(31337)
-    }
 
     #[test]
     #[ignore]
     fn test_balance_query() {
+        let (_anvil, anvil_url) = start_anvil();
+
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url())
+            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url)
                 .expect("should connect to Anvil");
 
             // Anvil default account 0
@@ -109,17 +127,19 @@ allowed_chains: []
             );
 
             let chain_id = adapter.get_chain_id().await.unwrap();
-            assert_eq!(chain_id, anvil_chain_id(), "Anvil chain ID");
+            assert_eq!(chain_id, 31337, "Anvil default chain ID");
         });
     }
 
     // -----------------------------------------------------------------
-    // test_transfer_with_policy — full flow on Anvil
+    // test_transfer_with_policy — full flow on Anvil via testcontainers
     // -----------------------------------------------------------------
 
     #[test]
     #[ignore]
     fn test_transfer_with_policy() {
+        let (_anvil, anvil_url) = start_anvil();
+
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // 1. Permissive policy
@@ -137,7 +157,8 @@ allowed_chains: []
 
             // 2. Import Anvil's default key
             let tmp = tempfile::tempdir().unwrap();
-            let anvil_key_hex = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+            let anvil_key_hex =
+                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
             let private_key = hex::decode(anvil_key_hex).unwrap();
             let (_address, ks_path) = clawlet_signer::keystore::Keystore::create_from_key(
                 tmp.path(),
@@ -147,10 +168,11 @@ allowed_chains: []
             .unwrap();
 
             // 3. Sign and send
-            let signing_key = clawlet_signer::keystore::Keystore::unlock(&ks_path, "test").unwrap();
+            let signing_key =
+                clawlet_signer::keystore::Keystore::unlock(&ks_path, "test").unwrap();
             let signer = clawlet_signer::signer::LocalSigner::new(signing_key);
 
-            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url()).unwrap();
+            let adapter = clawlet_evm::adapter::EvmAdapter::new(&anvil_url).unwrap();
 
             let recipient: alloy::primitives::Address =
                 "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"

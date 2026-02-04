@@ -107,8 +107,12 @@ impl RpcRequest {
     }
 
     /// Extract the payload slice.
+    ///
+    /// Clamps `payload_len` to buffer size to prevent out-of-bounds access
+    /// from malformed/malicious requests.
     pub fn payload_bytes(&self) -> &[u8] {
-        &self.payload[..self.payload_len as usize]
+        let len = (self.payload_len as usize).min(PAYLOAD_BUF_SIZE);
+        &self.payload[..len]
     }
 
     /// Get the parsed [`RpcMethod`].
@@ -173,8 +177,12 @@ impl RpcResponse {
     }
 
     /// Extract the payload slice.
+    ///
+    /// Clamps `payload_len` to buffer size to prevent out-of-bounds access
+    /// from malformed/malicious responses.
     pub fn payload_bytes(&self) -> &[u8] {
-        &self.payload[..self.payload_len as usize]
+        let len = (self.payload_len as usize).min(PAYLOAD_BUF_SIZE);
+        &self.payload[..len]
     }
 
     /// Check if the response is successful.

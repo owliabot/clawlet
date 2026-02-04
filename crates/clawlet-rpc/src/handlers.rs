@@ -309,14 +309,46 @@ pub fn handle_skills(state: &AppState) -> Result<SkillsResponse, HandlerError> {
     Ok(SkillsResponse { skills })
 }
 
+/// Validate skill name to prevent path traversal attacks.
+///
+/// Only allows alphanumeric characters, underscores, and hyphens.
+fn is_valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Execute a skill by name.
 pub async fn handle_execute(
     state: &AppState,
     req: ExecuteRequest,
 ) -> Result<ExecuteResponse, HandlerError> {
+    // Validate skill name to prevent path traversal (e.g., "../secrets")
+    if !is_valid_skill_name(&req.skill) {
+        return Err(HandlerError::BadRequest(
+            "invalid skill name: must be alphanumeric with underscores/hyphens only".into(),
+        ));
+    }
+
     let skill_path = state.skills_dir.join(format!("{}.yaml", req.skill));
     if !skill_path.exists() {
         return Err(HandlerError::NotFound("skill not found".into()));
+    }
+
+    // Prevent symlink escape: canonicalize and verify path is still inside skills_dir
+    let canonical_path = skill_path
+        .canonicalize()
+        .map_err(|e| HandlerError::Internal(format!("failed to resolve skill path: {e}")))?;
+    let canonical_skills_dir = state
+        .skills_dir
+        .canonicalize()
+        .map_err(|e| HandlerError::Internal(format!("failed to resolve skills dir: {e}")))?;
+    if !canonical_path.starts_with(&canonical_skills_dir) {
+        return Err(HandlerError::BadRequest(
+            "skill path escapes skills directory".into(),
+        ));
     }
 
     let spec = AisSpec::from_file(&skill_path)

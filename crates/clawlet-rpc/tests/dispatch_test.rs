@@ -194,3 +194,146 @@ fn dispatch_execute_skill_not_found() {
 
     assert_eq!(resp.status, RpcStatus::NotFound as u32);
 }
+
+#[test]
+fn dispatch_execute_path_traversal_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Attempt path traversal with ../
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "../../../etc/passwd",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    // Should be rejected as BadRequest, not NotFound (which would mean it tried to access the path)
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+    let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid skill name"));
+}
+
+#[test]
+fn dispatch_execute_path_separator_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Attempt with forward slash
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "foo/bar",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+}
+
+#[test]
+fn dispatch_execute_empty_skill_rejected() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+}
+
+#[test]
+fn dispatch_execute_valid_skill_name_format() {
+    let (state, _tmp) = test_state("tok");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Valid format but skill doesn't exist - should get NotFound, not BadRequest
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "valid_skill-name123",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    // NotFound means the name validation passed but file doesn't exist
+    assert_eq!(resp.status, RpcStatus::NotFound as u32);
+}
+
+#[cfg(unix)]
+#[test]
+fn dispatch_execute_symlink_escape_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let skills_dir = tmp.path().join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create a file outside skills dir
+    let outside_file = tmp.path().join("secret.yaml");
+    std::fs::write(
+        &outside_file,
+        "name: secret\nprotocol: hack\nchain_id: 1\nactions: []",
+    )
+    .unwrap();
+
+    // Create a symlink inside skills dir pointing outside
+    let symlink_path = skills_dir.join("escape.yaml");
+    symlink(&outside_file, &symlink_path).unwrap();
+
+    // Build state with this skills_dir
+    let audit_path = tmp.path().join("audit.jsonl");
+    let policy = clawlet_core::policy::Policy {
+        daily_transfer_limit_usd: 10_000.0,
+        per_tx_limit_usd: 5_000.0,
+        allowed_tokens: vec![],
+        allowed_chains: vec![],
+        require_approval_above_usd: None,
+    };
+    let key_bytes =
+        hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap();
+    let signer =
+        clawlet_signer::signer::LocalSigner::from_bytes(&key_bytes.try_into().expect("32 bytes"))
+            .unwrap();
+
+    let state = clawlet_rpc::server::AppState {
+        policy: Arc::new(clawlet_core::policy::PolicyEngine::new(policy)),
+        audit: Arc::new(Mutex::new(
+            clawlet_core::audit::AuditLogger::new(&audit_path).unwrap(),
+        )),
+        adapters: Arc::new(HashMap::new()),
+        auth_token: "tok".to_string(),
+        signer: Arc::new(signer),
+        skills_dir,
+    };
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Try to execute the symlinked skill
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "skill": "escape",
+        "params": {}
+    }))
+    .unwrap();
+
+    let req = RpcRequest::new(RpcMethod::Execute, "tok", &payload);
+    let resp = dispatch(&state, &req, rt.handle());
+
+    // Should be rejected because canonical path escapes skills_dir
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
+    let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
+    assert!(body["error"].as_str().unwrap().contains("escapes"));
+}

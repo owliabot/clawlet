@@ -374,7 +374,7 @@ allowed_chains: []
 
     /// Test 4: Deploy mock ERC-20 and transfer tokens
     ///
-    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 10^33 tokens to deployer,
+    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens (10^24) to deployer,
     /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
     #[ignore]
@@ -396,17 +396,16 @@ allowed_chains: []
             let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
 
             // Deploy a minimal ERC-20 contract (SimpleToken)
-            // This bytecode is compiled from a minimal Solidity contract that:
-            // - Mints 10^33 tokens to msg.sender in constructor (0x314dc6448d9338c15b0a00000000)
-            // - Implements balanceOf(address) and transfer(address,uint256)
-            //
-            // Solidity source (for reference):
-            // ```
+            // Compiled with solc 0.8.33 via `forge build`
+            // Source:
+            // ```solidity
+            // // SPDX-License-Identifier: MIT
+            // pragma solidity ^0.8.17;
             // contract SimpleToken {
             //     mapping(address => uint256) public balanceOf;
-            //     constructor() { balanceOf[msg.sender] = 10**33; }
+            //     constructor() { balanceOf[msg.sender] = 1000000 * 10**18; }
             //     function transfer(address to, uint256 amount) public returns (bool) {
-            //         require(balanceOf[msg.sender] >= amount);
+            //         require(balanceOf[msg.sender] >= amount, "Insufficient balance");
             //         balanceOf[msg.sender] -= amount;
             //         balanceOf[to] += amount;
             //         return true;
@@ -414,29 +413,15 @@ allowed_chains: []
             // }
             // ```
             let deploy_bytecode = hex::decode(
-                "608060405234801561001057600080fd5b506d314dc6448d9338c15b0a0000000060008033\
-                 73ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffff\
-                 ffffffff16815260200190815260200160002081905550610221806100746000396000f3fe6080\
-                 60405234801561001057600080fd5b50600436106100365760003560e01c806370a0823114610\
-                 03b578063a9059cbb14610069575b600080fd5b61005360048036038101906100499190610178\
-                 565b610099565b60405161006091906101be565b60405180910390f35b610083600480360381\
-                 019061007e91906101d9565b6100b1565b6040516100909190610234565b60405180910390f3\
-                 5b60006020528060005260406000206000915090505481565b60008060003373ffffffffffff\
-                 ffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681\
-                 52602001908152602001600020548211156100fd57600080fd5b816000803373ffffffffffff\
-                 ffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681\
-                 526020019081526020016000206000828254039250508190555081600080857300000000000000\
-                 0000000000000000000000000073ffffffffffffffffffffffffffffffffffffffff1673ffffff\
-                 ffffffffffffffffffffffffffffffffff1681526020019081526020016000206000828254019\
-                 250508190555060019050929150505600a264697066735822122000000000000000000000000\
-                 0000000000000000000000000000000000000000064736f6c63430008110033",
+                "6080604052348015600e575f5ffd5b5069d3c21bcecceda10000005f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f2081905550610470806100675f395ff3fe608060405234801561000f575f5ffd5b5060043610610034575f3560e01c806370a0823114610038578063a9059cbb14610068575b5f5ffd5b610052600480360381019061004d9190610238565b610098565b60405161005f919061027b565b60405180910390f35b610082600480360381019061007d91906102be565b6100ac565b60405161008f9190610316565b60405180910390f35b5f602052805f5260405f205f915090505481565b5f815f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f2054101561012c576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040161012390610389565b60405180910390fd5b815f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f205f82825461017791906103d4565b92505081905550815f5f8573ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f205f8282546101c99190610407565b925050819055506001905092915050565b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f610207826101de565b9050919050565b610217816101fd565b8114610221575f5ffd5b50565b5f813590506102328161020e565b92915050565b5f6020828403121561024d5761024c6101da565b5b5f61025a84828501610224565b91505092915050565b5f819050919050565b61027581610263565b82525050565b5f60208201905061028e5f83018461026c565b92915050565b61029d81610263565b81146102a7575f5ffd5b50565b5f813590506102b881610294565b92915050565b5f5f604083850312156102d4576102d36101da565b5b5f6102e185828601610224565b92505060206102f2858286016102aa565b9150509250929050565b5f8115159050919050565b610310816102fc565b82525050565b5f6020820190506103295f830184610307565b92915050565b5f82825260208201905092915050565b7f496e73756666696369656e742062616c616e63650000000000000000000000005f82015250565b5f61037360148361032f565b915061037e8261033f565b602082019050919050565b5f6020820190508181035f8301526103a081610367565b9050919050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f6103de82610263565b91506103e983610263565b9250828203905081811115610401576104006103a7565b5b92915050565b5f61041182610263565b915061041c83610263565b9250828201905080821115610434576104336103a7565b5b9291505056fea26469706673582212202533f4a607217075eacb2a0cbb0075e99ce5ae5ff0402d62ad03ffb756cd3f5564736f6c63430008210033",
             )
             .expect("invalid hex bytecode");
 
-            // Deploy the contract
+            // Deploy the contract (gas used ~321k, set limit higher)
             let deploy_tx = TransactionRequest::default()
                 .input(Bytes::from(deploy_bytecode).into())
-                .with_chain_id(31337);
+                .with_chain_id(31337)
+                .gas_limit(500_000);
 
             let deploy_hash = tx::send_transaction(&adapter, &signer, deploy_tx)
                 .await
@@ -468,8 +453,8 @@ allowed_chains: []
                 .await
                 .expect("failed to get recipient balance");
 
-            // Owner should have 10^33 tokens
-            let expected_initial = U256::from(10u64).pow(U256::from(33));
+            // Owner should have 1M tokens (1,000,000 * 10^18)
+            let expected_initial = U256::from(1_000_000u64) * U256::from(10u64).pow(U256::from(18));
             assert_eq!(
                 owner_balance_before, expected_initial,
                 "Owner should have 1M tokens after deployment"

@@ -117,9 +117,12 @@ pub async fn send_transaction(
     let chain_id = tx.chain_id.unwrap_or(1);
     let nonce = tx.nonce.unwrap_or(0);
     let gas_limit = tx.gas.unwrap_or(21000);
-    let to_addr = match tx.to {
-        Some(TxKind::Call(addr)) => addr,
-        _ => Address::ZERO,
+    // For contract creation, to should be None (empty in RLP)
+    // For regular calls, to should be Some(address)
+    let to_addr: Option<Address> = match tx.to {
+        Some(TxKind::Call(addr)) => Some(addr),
+        Some(TxKind::Create) => None, // Contract creation
+        None => None,                  // Also contract creation
     };
     let value = tx.value.unwrap_or(U256::ZERO);
     let input = tx.input.input().cloned().unwrap_or_default();
@@ -133,7 +136,7 @@ pub async fn send_transaction(
 
     // RLP-encode the unsigned transaction for signing (EIP-155)
     let unsigned_rlp = rlp_encode_unsigned_tx(
-        nonce, gas_price, gas_limit, &to_addr, &value, &input, chain_id,
+        nonce, gas_price, gas_limit, to_addr.as_ref(), &value, &input, chain_id,
     );
 
     // Hash the unsigned transaction
@@ -149,7 +152,7 @@ pub async fn send_transaction(
 
     // RLP-encode the signed transaction
     let signed_rlp = rlp_encode_signed_tx(
-        nonce, gas_price, gas_limit, &to_addr, &value, &input, v, &sig.r, &sig.s,
+        nonce, gas_price, gas_limit, to_addr.as_ref(), &value, &input, v, &sig.r, &sig.s,
     );
 
     // Send raw transaction
@@ -243,6 +246,15 @@ fn rlp_encode_address(addr: &Address) -> Vec<u8> {
     out
 }
 
+/// RLP-encode an optional address.
+/// For contract creation, `to` is None and encodes as empty bytes (0x80).
+fn rlp_encode_optional_address(addr: Option<&Address>) -> Vec<u8> {
+    match addr {
+        Some(a) => rlp_encode_address(a),
+        None => vec![0x80], // Empty bytes for contract creation
+    }
+}
+
 fn rlp_encode_list(items: &[Vec<u8>]) -> Vec<u8> {
     let payload: Vec<u8> = items.iter().flat_map(|i| i.iter().copied()).collect();
     if payload.len() < 56 {
@@ -263,11 +275,12 @@ fn rlp_encode_list(items: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// RLP-encode an unsigned legacy transaction (EIP-155) for signing.
+/// For contract creation, `to` should be None.
 fn rlp_encode_unsigned_tx(
     nonce: u64,
     gas_price: u128,
     gas_limit: u64,
-    to: &Address,
+    to: Option<&Address>,
     value: &U256,
     data: &Bytes,
     chain_id: u64,
@@ -276,7 +289,7 @@ fn rlp_encode_unsigned_tx(
         rlp_encode_uint(nonce),
         rlp_encode_u128(gas_price),
         rlp_encode_uint(gas_limit),
-        rlp_encode_address(to),
+        rlp_encode_optional_address(to),
         rlp_encode_u256(value),
         rlp_encode_bytes(data),
         rlp_encode_uint(chain_id),
@@ -287,12 +300,13 @@ fn rlp_encode_unsigned_tx(
 }
 
 /// RLP-encode a signed legacy transaction.
+/// For contract creation, `to` should be None.
 #[allow(clippy::too_many_arguments)]
 fn rlp_encode_signed_tx(
     nonce: u64,
     gas_price: u128,
     gas_limit: u64,
-    to: &Address,
+    to: Option<&Address>,
     value: &U256,
     data: &Bytes,
     v: u64,
@@ -307,7 +321,7 @@ fn rlp_encode_signed_tx(
         rlp_encode_uint(nonce),
         rlp_encode_u128(gas_price),
         rlp_encode_uint(gas_limit),
-        rlp_encode_address(to),
+        rlp_encode_optional_address(to),
         rlp_encode_u256(value),
         rlp_encode_bytes(data),
         rlp_encode_uint(v),
@@ -399,7 +413,7 @@ mod tests {
             0,
             20_000_000_000,
             21000,
-            &Address::ZERO,
+            Some(&Address::ZERO),
             &U256::from(1u64),
             &Bytes::new(),
             1,
@@ -416,13 +430,29 @@ mod tests {
             0,
             20_000_000_000,
             21000,
-            &Address::ZERO,
+            Some(&Address::ZERO),
             &U256::from(1u64),
             &Bytes::new(),
             37, // chain_id=1: v = 27 + 1*2 + 35 = 37 (or 38)
             &r,
             &s,
         );
+        assert!(encoded[0] >= 0xc0);
+    }
+
+    #[test]
+    fn rlp_unsigned_tx_contract_creation() {
+        // Contract creation: to = None
+        let encoded = rlp_encode_unsigned_tx(
+            0,
+            20_000_000_000,
+            100000,
+            None, // Contract creation
+            &U256::ZERO,
+            &Bytes::from(vec![0x60, 0x80]), // Minimal bytecode
+            1,
+        );
+        // Should be valid RLP list
         assert!(encoded[0] >= 0xc0);
     }
 }

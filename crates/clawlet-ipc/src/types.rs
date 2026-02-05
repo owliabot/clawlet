@@ -10,7 +10,7 @@ pub const PAYLOAD_BUF_SIZE: usize = 65536;
 /// Maximum size of the auth token field.
 pub const AUTH_TOKEN_SIZE: usize = 256;
 
-/// RPC method discriminant — maps to the five endpoints.
+/// RPC method discriminant — maps to the endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RpcMethod {
@@ -19,6 +19,14 @@ pub enum RpcMethod {
     Transfer = 2,
     Skills = 3,
     Execute = 4,
+    /// Grant a new session token (Admin only).
+    AuthGrant = 5,
+    /// List all active sessions (Admin only).
+    AuthList = 6,
+    /// Revoke a session by agent ID (Admin only).
+    AuthRevoke = 7,
+    /// Revoke all sessions (Admin only).
+    AuthRevokeAll = 8,
 }
 
 impl RpcMethod {
@@ -30,7 +38,25 @@ impl RpcMethod {
             2 => Some(Self::Transfer),
             3 => Some(Self::Skills),
             4 => Some(Self::Execute),
+            5 => Some(Self::AuthGrant),
+            6 => Some(Self::AuthList),
+            7 => Some(Self::AuthRevoke),
+            8 => Some(Self::AuthRevokeAll),
             _ => None,
+        }
+    }
+
+    /// Get the required scope for this method.
+    pub fn required_scope(&self) -> Option<clawlet_core::auth::TokenScope> {
+        use clawlet_core::auth::TokenScope;
+        match self {
+            RpcMethod::Health => None, // No auth required
+            RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
+            RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
+            RpcMethod::AuthGrant
+            | RpcMethod::AuthList
+            | RpcMethod::AuthRevoke
+            | RpcMethod::AuthRevokeAll => Some(TokenScope::Admin),
         }
     }
 }

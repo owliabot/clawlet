@@ -122,7 +122,7 @@ pub async fn send_transaction(
     let to_addr: Option<Address> = match tx.to {
         Some(TxKind::Call(addr)) => Some(addr),
         Some(TxKind::Create) => None, // Contract creation
-        None => None,                  // Also contract creation
+        None => None,                 // Also contract creation
     };
     let value = tx.value.unwrap_or(U256::ZERO);
     let input = tx.input.input().cloned().unwrap_or_default();
@@ -136,7 +136,13 @@ pub async fn send_transaction(
 
     // RLP-encode the unsigned transaction for signing (EIP-155)
     let unsigned_rlp = rlp_encode_unsigned_tx(
-        nonce, gas_price, gas_limit, to_addr.as_ref(), &value, &input, chain_id,
+        nonce,
+        gas_price,
+        gas_limit,
+        to_addr.as_ref(),
+        &value,
+        &input,
+        chain_id,
     );
 
     // Hash the unsigned transaction
@@ -152,7 +158,15 @@ pub async fn send_transaction(
 
     // RLP-encode the signed transaction
     let signed_rlp = rlp_encode_signed_tx(
-        nonce, gas_price, gas_limit, to_addr.as_ref(), &value, &input, v, &sig.r, &sig.s,
+        nonce,
+        gas_price,
+        gas_limit,
+        to_addr.as_ref(),
+        &value,
+        &input,
+        v,
+        &sig.r,
+        &sig.s,
     );
 
     // Send raw transaction

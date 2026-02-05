@@ -373,6 +373,9 @@ allowed_chains: []
     }
 
     /// Test 4: Deploy mock ERC-20 and transfer tokens
+    ///
+    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens to deployer,
+    /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
     #[ignore]
     fn test_erc20_transfer_on_anvil() {
@@ -389,28 +392,125 @@ allowed_chains: []
             let signer = LocalSigner::new(signing_key);
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
-            // Deploy a minimal ERC-20 contract (MockToken)
-            // This bytecode creates a token that mints 1M tokens to deployer
-            // For simplicity, we'll use a precompiled bytecode
-            // In a real scenario, you'd compile a Solidity contract
+            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
 
-            // Minimal ERC-20 bytecode (constructor mints tokens to msg.sender)
-            // This is a simplified example - in production use a real ERC-20
-            let _mock_erc20_bytecode = hex::decode(
-                "608060405234801561001057600080fd5b506040516103e83d038061001261002091610033565b6040518082815260200191505060405180910390f35b600061005161004c610054565b610057565b90565b6000339050919050565b806000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555050"
+            // Deploy a minimal ERC-20 contract (SimpleToken)
+            // This bytecode is compiled from a minimal Solidity contract that:
+            // - Mints 1,000,000 * 10^18 tokens to msg.sender in constructor
+            // - Implements balanceOf(address) and transfer(address,uint256)
+            //
+            // Solidity source (for reference):
+            // ```
+            // contract SimpleToken {
+            //     mapping(address => uint256) public balanceOf;
+            //     constructor() { balanceOf[msg.sender] = 1000000 * 10**18; }
+            //     function transfer(address to, uint256 amount) public returns (bool) {
+            //         require(balanceOf[msg.sender] >= amount);
+            //         balanceOf[msg.sender] -= amount;
+            //         balanceOf[to] += amount;
+            //         return true;
+            //     }
+            // }
+            // ```
+            let deploy_bytecode = hex::decode(
+                "608060405234801561001057600080fd5b506d314dc6448d9338c15b0a0000000060008033\
+                 73ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffff\
+                 ffffffff16815260200190815260200160002081905550610221806100746000396000f3fe6080\
+                 60405234801561001057600080fd5b50600436106100365760003560e01c806370a0823114610\
+                 03b578063a9059cbb14610069575b600080fd5b61005360048036038101906100499190610178\
+                 565b610099565b60405161006091906101be565b60405180910390f35b610083600480360381\
+                 019061007e91906101d9565b6100b1565b6040516100909190610234565b60405180910390f3\
+                 5b60006020528060005260406000206000915090505481565b60008060003373ffffffffffff\
+                 ffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681\
+                 52602001908152602001600020548211156100fd57600080fd5b816000803373ffffffffffff\
+                 ffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681\
+                 526020019081526020016000206000828254039250508190555081600080857300000000000000\
+                 0000000000000000000000000073ffffffffffffffffffffffffffffffffffffffff1673ffffff\
+                 ffffffffffffffffffffffffffffffffff1681526020019081526020016000206000828254019\
+                 250508190555060019050929150505600a264697066735822122000000000000000000000000\
+                 00000000000000000000000000000000000000000064736f6c63430008110033",
+            )
+            .expect("invalid hex bytecode");
+
+            // Deploy the contract
+            let deploy_tx = TransactionRequest::default()
+                .input(Bytes::from(deploy_bytecode).into())
+                .with_chain_id(31337);
+
+            let deploy_hash = tx::send_transaction(&adapter, &signer, deploy_tx)
+                .await
+                .expect("contract deployment should succeed");
+
+            wait_for_receipt(&adapter, deploy_hash)
+                .await
+                .expect("deployment receipt not found");
+
+            // Get the deployed contract address from the receipt
+            let receipt = adapter
+                .provider()
+                .get_transaction_receipt(deploy_hash)
+                .await
+                .expect("failed to get receipt")
+                .expect("receipt should exist");
+
+            let token_address = receipt
+                .contract_address
+                .expect("contract address should be in receipt");
+
+            // Check initial balances
+            let owner_balance_before = adapter
+                .get_erc20_balance(token_address, owner)
+                .await
+                .expect("failed to get owner balance");
+            let recipient_balance_before = adapter
+                .get_erc20_balance(token_address, recipient)
+                .await
+                .expect("failed to get recipient balance");
+
+            // Owner should have 1M tokens (1_000_000 * 10^18)
+            let expected_initial = U256::from(1_000_000u64) * U256::from(10u64).pow(U256::from(18));
+            assert_eq!(
+                owner_balance_before, expected_initial,
+                "Owner should have 1M tokens after deployment"
+            );
+            assert_eq!(
+                recipient_balance_before,
+                U256::ZERO,
+                "Recipient should have 0 tokens initially"
             );
 
-            // For this test, we'll verify the ERC-20 functionality exists in the adapter
-            // by checking a known token's balance (which won't exist on fresh Anvil)
-            let mock_token: Address = "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap();
-            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            // Transfer 100 tokens to recipient
+            let transfer_amount = U256::from(100u64) * U256::from(10u64).pow(U256::from(18));
+            let transfer_tx =
+                tx::build_erc20_transfer(token_address, recipient, transfer_amount, 31337);
+            let transfer_hash = tx::send_transaction(&adapter, &signer, transfer_tx)
+                .await
+                .expect("ERC-20 transfer should succeed");
 
-            // This should return 0 for a non-existent token
-            let balance = adapter.get_erc20_balance(mock_token, owner).await;
-            // On Anvil without a deployed token, this will return 0 or error
-            assert!(balance.is_ok() || balance.is_err());
+            wait_for_receipt(&adapter, transfer_hash)
+                .await
+                .expect("transfer receipt not found");
+
+            // Verify balances changed correctly
+            let owner_balance_after = adapter
+                .get_erc20_balance(token_address, owner)
+                .await
+                .expect("failed to get owner balance after transfer");
+            let recipient_balance_after = adapter
+                .get_erc20_balance(token_address, recipient)
+                .await
+                .expect("failed to get recipient balance after transfer");
+
+            assert_eq!(
+                owner_balance_after,
+                owner_balance_before - transfer_amount,
+                "Owner balance should decrease by transfer amount"
+            );
+            assert_eq!(
+                recipient_balance_after, transfer_amount,
+                "Recipient should have exactly the transferred amount"
+            );
         });
     }
 
@@ -935,7 +1035,11 @@ audit_log_path: "{}"
     }
 
     /// Test 18: CLI help output contains expected commands
+    ///
+    /// This test spawns `cargo run` which may not work in all CI environments.
+    /// Run with `--include-ignored` to execute this test.
     #[test]
+    #[ignore]
     fn test_cli_help_output() {
         // Build the project first to ensure binary exists
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -945,34 +1049,26 @@ audit_log_path: "{}"
         let output = Command::new("cargo")
             .args(["run", "-p", "clawlet-cli", "--", "--help"])
             .current_dir(workspace_root)
-            .output();
+            .output()
+            .expect("failed to execute cargo run - cannot verify CLI help output");
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{stdout}{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
 
-                // Check for expected subcommands
-                assert!(
-                    combined.contains("init") || combined.contains("Init"),
-                    "Help should mention init command"
-                );
-                assert!(
-                    combined.contains("serve") || combined.contains("Serve"),
-                    "Help should mention serve command"
-                );
-                assert!(
-                    combined.contains("clawlet") || combined.contains("Clawlet"),
-                    "Help should mention clawlet"
-                );
-            }
-            Err(_) => {
-                // If cargo run fails, just verify the CLI module has the expected structure
-                // This happens in CI without full build
-                assert!(true, "CLI structure verified via code inspection");
-            }
-        }
+        // Check for expected subcommands
+        assert!(
+            combined.contains("init") || combined.contains("Init"),
+            "Help should mention init command. Output was: {combined}"
+        );
+        assert!(
+            combined.contains("serve") || combined.contains("Serve"),
+            "Help should mention serve command. Output was: {combined}"
+        );
+        assert!(
+            combined.contains("clawlet") || combined.contains("Clawlet"),
+            "Help should mention clawlet. Output was: {combined}"
+        );
     }
 
     // =========================================================================

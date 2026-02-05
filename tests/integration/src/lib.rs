@@ -374,7 +374,7 @@ allowed_chains: []
 
     /// Test 4: Deploy mock ERC-20 and transfer tokens
     ///
-    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens to deployer,
+    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 10^33 tokens to deployer,
     /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
     #[ignore]
@@ -397,14 +397,14 @@ allowed_chains: []
 
             // Deploy a minimal ERC-20 contract (SimpleToken)
             // This bytecode is compiled from a minimal Solidity contract that:
-            // - Mints 1,000,000 * 10^18 tokens to msg.sender in constructor
+            // - Mints 10^33 tokens to msg.sender in constructor (0x314dc6448d9338c15b0a00000000)
             // - Implements balanceOf(address) and transfer(address,uint256)
             //
             // Solidity source (for reference):
             // ```
             // contract SimpleToken {
             //     mapping(address => uint256) public balanceOf;
-            //     constructor() { balanceOf[msg.sender] = 1000000 * 10**18; }
+            //     constructor() { balanceOf[msg.sender] = 10**33; }
             //     function transfer(address to, uint256 amount) public returns (bool) {
             //         require(balanceOf[msg.sender] >= amount);
             //         balanceOf[msg.sender] -= amount;
@@ -468,8 +468,8 @@ allowed_chains: []
                 .await
                 .expect("failed to get recipient balance");
 
-            // Owner should have 1M tokens (1_000_000 * 10^18)
-            let expected_initial = U256::from(1_000_000u64) * U256::from(10u64).pow(U256::from(18));
+            // Owner should have 10^33 tokens
+            let expected_initial = U256::from(10u64).pow(U256::from(33));
             assert_eq!(
                 owner_balance_before, expected_initial,
                 "Owner should have 1M tokens after deployment"

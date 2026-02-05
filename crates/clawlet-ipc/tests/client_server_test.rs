@@ -6,12 +6,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use iceoryx2::prelude::*;
 
 use clawlet_core::audit::AuditLogger;
+use clawlet_core::auth::{SessionStore, TokenScope};
+use clawlet_core::config::AuthConfig;
 use clawlet_core::policy::{Policy, PolicyEngine};
 use clawlet_ipc::dispatch;
 use clawlet_ipc::server::AppState;
@@ -26,7 +28,8 @@ fn unique_service_name() -> String {
 }
 
 /// Build a minimal AppState for testing.
-fn test_state(auth_token: &str, skills_dir: PathBuf) -> AppState {
+/// Returns (AppState, Option<token>) - token is present if auth is enabled.
+fn test_state(with_auth: bool, skills_dir: PathBuf) -> (AppState, Option<String>) {
     let tmp = tempfile::tempdir().unwrap();
     let audit_path = tmp.path().join("audit.jsonl");
 
@@ -44,14 +47,36 @@ fn test_state(auth_token: &str, skills_dir: PathBuf) -> AppState {
         clawlet_signer::signer::LocalSigner::from_bytes(&key_bytes.try_into().expect("32 bytes"))
             .unwrap();
 
-    AppState {
+    let mut session_store = SessionStore::new();
+    let (auth_config, token) = if with_auth {
+        let password_hash = clawlet_core::auth::hash_password("test_password").unwrap();
+        let config = AuthConfig {
+            password_hash: Some(password_hash),
+            default_session_ttl_hours: 24,
+            max_failed_attempts: 5,
+            lockout_minutes: 15,
+        };
+        let token = session_store.grant(
+            "test-agent",
+            TokenScope::Admin,
+            Duration::from_secs(3600),
+            0,
+        );
+        (config, Some(token))
+    } else {
+        (AuthConfig::default(), None)
+    };
+
+    let state = AppState {
         policy: Arc::new(PolicyEngine::new(policy)),
         audit: Arc::new(Mutex::new(AuditLogger::new(&audit_path).unwrap())),
         adapters: Arc::new(HashMap::new()),
-        auth_token: auth_token.to_string(),
+        session_store: Arc::new(RwLock::new(session_store)),
+        auth_config,
         signer: Arc::new(signer),
         skills_dir,
-    }
+    };
+    (state, token)
 }
 
 /// Start an iceoryx2 server with the given service name in a background thread.
@@ -142,7 +167,7 @@ fn call_raw(
 fn client_server_health() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("", tmp.path().to_path_buf());
+    let (state, _) = test_state(false, tmp.path().to_path_buf());
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -156,7 +181,7 @@ fn client_server_health() {
 fn client_server_health_with_auth() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("secret-token", tmp.path().to_path_buf());
+    let (state, _token) = test_state(true, tmp.path().to_path_buf());
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -169,7 +194,8 @@ fn client_server_health_with_auth() {
 fn client_server_transfer_success() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("tok123", tmp.path().to_path_buf());
+    let (state, token) = test_state(true, tmp.path().to_path_buf());
+    let token = token.unwrap();
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -181,7 +207,7 @@ fn client_server_transfer_success() {
     }))
     .unwrap();
 
-    let resp = call_raw(&svc, RpcMethod::Transfer, "tok123", &payload).expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Transfer, &token, &payload).expect("call failed");
     assert!(resp.is_ok());
     let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
@@ -193,7 +219,8 @@ fn client_server_transfer_success() {
 fn client_server_transfer_denied_by_policy() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("tok", tmp.path().to_path_buf());
+    let (state, token) = test_state(true, tmp.path().to_path_buf());
+    let token = token.unwrap();
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -206,7 +233,7 @@ fn client_server_transfer_denied_by_policy() {
     }))
     .unwrap();
 
-    let resp = call_raw(&svc, RpcMethod::Transfer, "tok", &payload).expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Transfer, &token, &payload).expect("call failed");
     assert!(resp.is_ok());
     let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
@@ -218,7 +245,7 @@ fn client_server_transfer_denied_by_policy() {
 fn client_server_unauthorized() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("correct-token", tmp.path().to_path_buf());
+    let (state, _token) = test_state(true, tmp.path().to_path_buf());
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -230,6 +257,7 @@ fn client_server_unauthorized() {
     }))
     .unwrap();
 
+    // Use a wrong token (not the one returned from test_state)
     let resp = call_raw(&svc, RpcMethod::Transfer, "wrong-token", &payload).expect("call failed");
     assert_eq!(resp.status, RpcStatus::Unauthorized as u32);
     assert!(!resp.is_ok());
@@ -242,11 +270,12 @@ fn client_server_skills_empty() {
     let skills_dir = tmp.path().join("skills");
     std::fs::create_dir_all(&skills_dir).unwrap();
 
-    let state = test_state("t", skills_dir);
+    let (state, token) = test_state(true, skills_dir);
+    let token = token.unwrap();
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
-    let resp = call_raw(&svc, RpcMethod::Skills, "t", b"{}").expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Skills, &token, b"{}").expect("call failed");
     assert!(resp.is_ok());
     let body: clawlet_ipc::handlers::SkillsResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
@@ -260,7 +289,8 @@ fn client_server_execute_not_found() {
     let skills_dir = tmp.path().join("skills");
     std::fs::create_dir_all(&skills_dir).unwrap();
 
-    let state = test_state("t", skills_dir);
+    let (state, token) = test_state(true, skills_dir);
+    let token = token.unwrap();
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -270,7 +300,7 @@ fn client_server_execute_not_found() {
     }))
     .unwrap();
 
-    let resp = call_raw(&svc, RpcMethod::Execute, "t", &payload).expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Execute, &token, &payload).expect("call failed");
     assert_eq!(resp.status, RpcStatus::NotFound as u32);
 }
 
@@ -278,7 +308,8 @@ fn client_server_execute_not_found() {
 fn client_server_balance_no_adapter() {
     let svc = unique_service_name();
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state("t", tmp.path().to_path_buf());
+    let (state, token) = test_state(true, tmp.path().to_path_buf());
+    let token = token.unwrap();
     let _server = start_server(&svc, state);
     std::thread::sleep(Duration::from_millis(200));
 
@@ -288,11 +319,32 @@ fn client_server_balance_no_adapter() {
     }))
     .unwrap();
 
-    let resp = call_raw(&svc, RpcMethod::Balance, "t", &payload).expect("call failed");
+    let resp = call_raw(&svc, RpcMethod::Balance, &token, &payload).expect("call failed");
     assert_eq!(resp.status, RpcStatus::BadRequest as u32);
     let body: serde_json::Value = serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert!(body["error"]
         .as_str()
         .unwrap()
         .contains("unsupported chain_id"));
+}
+
+#[test]
+fn client_server_no_auth_configured() {
+    // When no auth is configured, all requests should pass auth check
+    let svc = unique_service_name();
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, _) = test_state(false, tmp.path().to_path_buf()); // No auth
+    let _server = start_server(&svc, state);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "chain_id": 1
+    }))
+    .unwrap();
+
+    // Should pass auth (but fail on missing adapter)
+    let resp = call_raw(&svc, RpcMethod::Balance, "", &payload).expect("call failed");
+    // BadRequest for missing adapter, not Unauthorized
+    assert_eq!(resp.status, RpcStatus::BadRequest as u32);
 }

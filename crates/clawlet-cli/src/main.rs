@@ -5,6 +5,7 @@
 //! Subcommands:
 //! - `clawlet init`  — Generate keystore and default policy
 //! - `clawlet serve` — Start the RPC server
+//! - `clawlet auth`  — Manage session tokens for AI agents
 
 use std::path::PathBuf;
 
@@ -39,6 +40,16 @@ enum Commands {
         #[arg(long, short)]
         config: Option<PathBuf>,
     },
+
+    /// Manage session tokens for AI agents.
+    Auth {
+        /// Path to config.yaml (default: ~/.clawlet/config.yaml).
+        #[arg(long, short)]
+        config: Option<PathBuf>,
+
+        #[command(subcommand)]
+        command: commands::auth::AuthCommand,
+    },
 }
 
 #[tokio::main]
@@ -53,6 +64,7 @@ async fn main() {
             data_dir,
         } => commands::init::run(from_mnemonic, data_dir),
         Commands::Serve { config } => commands::serve::run(config).await,
+        Commands::Auth { config, command } => commands::auth::run(command, config),
     };
 
     if let Err(e) = result {

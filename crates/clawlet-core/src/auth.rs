@@ -1,0 +1,591 @@
+//! Authentication and session management for Clawlet.
+//!
+//! Implements password-based session authorization where humans grant
+//! time-limited session tokens to AI agents. Agents never see the password.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chrono::{DateTime, Utc};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Token prefix for Clawlet session tokens.
+pub const TOKEN_PREFIX: &str = "clwt_";
+
+/// Token length in random bytes (before base64 encoding).
+const TOKEN_BYTES: usize = 32;
+
+/// Token scope determines what operations a session can perform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenScope {
+    /// Read-only access: balance queries, skills listing.
+    Read,
+    /// Trade access: includes Read + transfer, execute (within policy).
+    Trade,
+    /// Admin access: includes Trade + auth management.
+    Admin,
+}
+
+impl std::fmt::Display for TokenScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenScope::Read => write!(f, "read"),
+            TokenScope::Trade => write!(f, "trade"),
+            TokenScope::Admin => write!(f, "admin"),
+        }
+    }
+}
+
+impl std::str::FromStr for TokenScope {
+    type Err = AuthError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "read" => Ok(TokenScope::Read),
+            "trade" => Ok(TokenScope::Trade),
+            "admin" => Ok(TokenScope::Admin),
+            _ => Err(AuthError::InvalidScope(s.to_string())),
+        }
+    }
+}
+
+impl TokenScope {
+    /// Check if this scope includes the required scope level.
+    pub fn includes(&self, required: TokenScope) -> bool {
+        *self >= required
+    }
+}
+
+/// A session granted to an AI agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    /// Agent identifier (e.g., "openclaw-main").
+    pub id: String,
+    /// Argon2id hash of the session token.
+    #[serde(with = "token_hash_serde")]
+    pub token_hash: [u8; 32],
+    /// Permission scope for this session.
+    pub scope: TokenScope,
+    /// When the session was created.
+    pub created_at: DateTime<Utc>,
+    /// When the session expires.
+    pub expires_at: DateTime<Utc>,
+    /// Unix UID of the human who authorized this session.
+    pub created_by_uid: u32,
+    /// When the session was last used.
+    pub last_used_at: DateTime<Utc>,
+    /// Number of requests made with this session.
+    pub request_count: u64,
+}
+
+/// Custom serialization for token hash bytes.
+mod token_hash_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(hash: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&URL_SAFE_NO_PAD.encode(hash))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&s)
+            .map_err(serde::de::Error::custom)?;
+        bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("invalid token hash length: expected 32 bytes"))
+    }
+}
+
+/// In-memory session store with optional persistence.
+#[derive(Debug, Default)]
+pub struct SessionStore {
+    /// Active sessions keyed by agent ID.
+    sessions: HashMap<String, Session>,
+    /// Failed login attempts tracking for rate limiting.
+    failed_attempts: HashMap<String, FailedAttempts>,
+}
+
+/// Tracks failed authentication attempts for rate limiting.
+#[derive(Debug, Clone)]
+struct FailedAttempts {
+    count: u32,
+    #[allow(dead_code)]
+    first_attempt: Instant,
+    last_attempt: Instant,
+}
+
+/// Errors that can occur during authentication.
+#[derive(Debug, Error)]
+pub enum AuthError {
+    #[error("invalid token")]
+    InvalidToken,
+    #[error("token expired")]
+    TokenExpired,
+    #[error("insufficient scope: required {required}, actual {actual}")]
+    InsufficientScope {
+        required: TokenScope,
+        actual: TokenScope,
+    },
+    #[error("incorrect password")]
+    PasswordIncorrect,
+    #[error("too many failed attempts, try again later")]
+    TooManyAttempts,
+    #[error("invalid scope: {0}")]
+    InvalidScope(String),
+    #[error("session not found: {0}")]
+    SessionNotFound(String),
+    #[error("hashing error: {0}")]
+    HashingError(String),
+}
+
+impl SessionStore {
+    /// Create a new empty session store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Grant a new session to an agent.
+    ///
+    /// Returns the plaintext token that should be given to the agent.
+    /// The agent must present this token for all authenticated requests.
+    pub fn grant(
+        &mut self,
+        id: &str,
+        scope: TokenScope,
+        expires_in: Duration,
+        created_by_uid: u32,
+    ) -> String {
+        // Generate random token bytes
+        let mut token_bytes = [0u8; TOKEN_BYTES];
+        OsRng.fill_bytes(&mut token_bytes);
+
+        // Create the full token with prefix
+        let token = format!("{}{}", TOKEN_PREFIX, URL_SAFE_NO_PAD.encode(token_bytes));
+
+        // Hash the token for storage (we use SHA-256 for token verification
+        // since we're comparing against a stored hash, not protecting a password)
+        let token_hash = hash_token(&token);
+
+        let now = Utc::now();
+        let session = Session {
+            id: id.to_string(),
+            token_hash,
+            scope,
+            created_at: now,
+            expires_at: now + chrono::Duration::from_std(expires_in).unwrap_or_default(),
+            created_by_uid,
+            last_used_at: now,
+            request_count: 0,
+        };
+
+        // Replace any existing session for this agent
+        self.sessions.insert(id.to_string(), session);
+
+        token
+    }
+
+    /// Verify a token and return a mutable reference to the session.
+    ///
+    /// Updates `last_used_at` and `request_count` on successful verification.
+    pub fn verify(&mut self, token: &str) -> Result<&Session, AuthError> {
+        // Validate token format
+        if !token.starts_with(TOKEN_PREFIX) {
+            return Err(AuthError::InvalidToken);
+        }
+
+        let token_hash = hash_token(token);
+
+        // Find matching session
+        let session = self
+            .sessions
+            .values_mut()
+            .find(|s| constant_time_eq(&s.token_hash, &token_hash))
+            .ok_or(AuthError::InvalidToken)?;
+
+        // Check expiration
+        if Utc::now() > session.expires_at {
+            return Err(AuthError::TokenExpired);
+        }
+
+        // Update usage stats
+        session.last_used_at = Utc::now();
+        session.request_count += 1;
+
+        // Return immutable reference
+        let id = session.id.clone();
+        Ok(self.sessions.get(&id).unwrap())
+    }
+
+    /// Verify a token and check that it has the required scope.
+    pub fn verify_with_scope(
+        &mut self,
+        token: &str,
+        required_scope: TokenScope,
+    ) -> Result<&Session, AuthError> {
+        let session = self.verify(token)?;
+        if !session.scope.includes(required_scope) {
+            return Err(AuthError::InsufficientScope {
+                required: required_scope,
+                actual: session.scope,
+            });
+        }
+        Ok(session)
+    }
+
+    /// Revoke a session by agent ID.
+    ///
+    /// Returns true if a session was revoked, false if no session existed.
+    pub fn revoke(&mut self, id: &str) -> bool {
+        self.sessions.remove(id).is_some()
+    }
+
+    /// Revoke all sessions.
+    ///
+    /// Returns the number of sessions revoked.
+    pub fn revoke_all(&mut self) -> usize {
+        let count = self.sessions.len();
+        self.sessions.clear();
+        count
+    }
+
+    /// List all active sessions.
+    pub fn list(&self) -> Vec<&Session> {
+        self.sessions.values().collect()
+    }
+
+    /// Remove expired sessions.
+    pub fn cleanup_expired(&mut self) {
+        let now = Utc::now();
+        self.sessions.retain(|_, session| session.expires_at > now);
+
+        // Also cleanup old failed attempt records (older than 1 hour)
+        let one_hour_ago = Instant::now() - Duration::from_secs(3600);
+        self.failed_attempts
+            .retain(|_, attempts| attempts.last_attempt > one_hour_ago);
+    }
+
+    /// Record a failed authentication attempt for rate limiting.
+    pub fn record_failed_attempt(&mut self, identifier: &str) {
+        let now = Instant::now();
+        let entry = self
+            .failed_attempts
+            .entry(identifier.to_string())
+            .or_insert_with(|| FailedAttempts {
+                count: 0,
+                first_attempt: now,
+                last_attempt: now,
+            });
+
+        entry.count += 1;
+        entry.last_attempt = now;
+    }
+
+    /// Check if an identifier is currently locked out due to too many failed attempts.
+    pub fn is_locked_out(&self, identifier: &str, max_attempts: u32, lockout_minutes: u32) -> bool {
+        if let Some(attempts) = self.failed_attempts.get(identifier) {
+            if attempts.count >= max_attempts {
+                let lockout_duration = Duration::from_secs(lockout_minutes as u64 * 60);
+                if attempts.last_attempt.elapsed() < lockout_duration {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Clear failed attempts for an identifier (call after successful auth).
+    pub fn clear_failed_attempts(&mut self, identifier: &str) {
+        self.failed_attempts.remove(identifier);
+    }
+
+    /// Get a session by agent ID (read-only).
+    pub fn get(&self, id: &str) -> Option<&Session> {
+        self.sessions.get(id)
+    }
+}
+
+/// Hash a password using Argon2id.
+///
+/// Returns the PHC-formatted hash string suitable for storage.
+pub fn hash_password(password: &str) -> Result<String, AuthError> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| AuthError::HashingError(e.to_string()))
+}
+
+/// Verify a password against an Argon2id hash.
+pub fn verify_password(password: &str, hash: &str) -> bool {
+    let parsed_hash = match PasswordHash::new(hash) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
+/// Hash a token using SHA-256 for fast comparison.
+///
+/// We use SHA-256 here instead of Argon2 because:
+/// 1. Tokens are high-entropy random values, not human passwords
+/// 2. We need fast verification for every API request
+/// 3. The token is never transmitted to storage (only the hash is stored)
+fn hash_token(token: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hasher.finalize().into()
+}
+
+/// Constant-time comparison for token hashes to prevent timing attacks.
+fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_password_hash_verify() {
+        let password = "test_password_123!";
+        let hash = hash_password(password).unwrap();
+
+        // Hash should be PHC format
+        assert!(hash.starts_with("$argon2"));
+
+        // Should verify correctly
+        assert!(verify_password(password, &hash));
+
+        // Wrong password should fail
+        assert!(!verify_password("wrong_password", &hash));
+    }
+
+    #[test]
+    fn test_session_grant_and_verify() {
+        let mut store = SessionStore::new();
+
+        let token = store.grant(
+            "test-agent",
+            TokenScope::Trade,
+            Duration::from_secs(3600),
+            1000,
+        );
+
+        // Token should have correct prefix
+        assert!(token.starts_with(TOKEN_PREFIX));
+        assert!(token.len() > TOKEN_PREFIX.len() + 40); // prefix + base64
+
+        // Should verify successfully
+        let session = store.verify(&token).unwrap();
+        assert_eq!(session.id, "test-agent");
+        assert_eq!(session.scope, TokenScope::Trade);
+        assert_eq!(session.created_by_uid, 1000);
+        assert_eq!(session.request_count, 1);
+
+        // Invalid token should fail
+        assert!(matches!(
+            store.verify("invalid_token"),
+            Err(AuthError::InvalidToken)
+        ));
+    }
+
+    #[test]
+    fn test_session_expiry() {
+        let mut store = SessionStore::new();
+
+        // Grant a session that expires immediately
+        let token = store.grant(
+            "expired-agent",
+            TokenScope::Read,
+            Duration::from_secs(0),
+            1000,
+        );
+
+        // Wait a tiny bit to ensure expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Should fail with expired error
+        assert!(matches!(store.verify(&token), Err(AuthError::TokenExpired)));
+    }
+
+    #[test]
+    fn test_session_revoke() {
+        let mut store = SessionStore::new();
+
+        let token = store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+
+        // Verify it works
+        assert!(store.verify(&token).is_ok());
+
+        // Revoke it
+        assert!(store.revoke("agent-1"));
+
+        // Should no longer work
+        assert!(matches!(store.verify(&token), Err(AuthError::InvalidToken)));
+
+        // Revoking again should return false
+        assert!(!store.revoke("agent-1"));
+    }
+
+    #[test]
+    fn test_scope_check() {
+        let mut store = SessionStore::new();
+
+        // Grant a read-only session
+        let token = store.grant(
+            "read-agent",
+            TokenScope::Read,
+            Duration::from_secs(3600),
+            1000,
+        );
+
+        // Should work for Read scope
+        assert!(store.verify_with_scope(&token, TokenScope::Read).is_ok());
+
+        // Should fail for Trade scope
+        assert!(matches!(
+            store.verify_with_scope(&token, TokenScope::Trade),
+            Err(AuthError::InsufficientScope { .. })
+        ));
+
+        // Grant an admin session
+        let admin_token = store.grant(
+            "admin-agent",
+            TokenScope::Admin,
+            Duration::from_secs(3600),
+            1000,
+        );
+
+        // Admin should have access to all scopes
+        assert!(store
+            .verify_with_scope(&admin_token, TokenScope::Read)
+            .is_ok());
+        assert!(store
+            .verify_with_scope(&admin_token, TokenScope::Trade)
+            .is_ok());
+        assert!(store
+            .verify_with_scope(&admin_token, TokenScope::Admin)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_failed_attempts_lockout() {
+        let mut store = SessionStore::new();
+
+        let identifier = "test-client";
+        let max_attempts = 5;
+        let lockout_minutes = 15;
+
+        // Should not be locked out initially
+        assert!(!store.is_locked_out(identifier, max_attempts, lockout_minutes));
+
+        // Record failures up to the limit
+        for _ in 0..max_attempts {
+            store.record_failed_attempt(identifier);
+        }
+
+        // Should now be locked out
+        assert!(store.is_locked_out(identifier, max_attempts, lockout_minutes));
+
+        // Clear failed attempts
+        store.clear_failed_attempts(identifier);
+
+        // Should no longer be locked out
+        assert!(!store.is_locked_out(identifier, max_attempts, lockout_minutes));
+    }
+
+    #[test]
+    fn test_token_scope_ordering() {
+        assert!(TokenScope::Admin > TokenScope::Trade);
+        assert!(TokenScope::Trade > TokenScope::Read);
+        assert!(TokenScope::Admin.includes(TokenScope::Read));
+        assert!(TokenScope::Trade.includes(TokenScope::Read));
+        assert!(!TokenScope::Read.includes(TokenScope::Trade));
+    }
+
+    #[test]
+    fn test_revoke_all() {
+        let mut store = SessionStore::new();
+
+        store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+        store.grant(
+            "agent-2",
+            TokenScope::Trade,
+            Duration::from_secs(3600),
+            1000,
+        );
+        store.grant(
+            "agent-3",
+            TokenScope::Admin,
+            Duration::from_secs(3600),
+            1000,
+        );
+
+        assert_eq!(store.list().len(), 3);
+        assert_eq!(store.revoke_all(), 3);
+        assert_eq!(store.list().len(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired() {
+        let mut store = SessionStore::new();
+
+        // Grant one that expires immediately and one that doesn't
+        store.grant("expired", TokenScope::Read, Duration::from_secs(0), 1000);
+        store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        store.cleanup_expired();
+
+        assert_eq!(store.list().len(), 1);
+        assert!(store.get("active").is_some());
+        assert!(store.get("expired").is_none());
+    }
+
+    #[test]
+    fn test_token_format() {
+        let mut store = SessionStore::new();
+        let token = store.grant("test", TokenScope::Read, Duration::from_secs(3600), 1000);
+
+        // Should match expected format: clwt_ + base64url
+        assert!(token.starts_with("clwt_"));
+        let suffix = &token[5..];
+        // Base64url should only contain alphanumeric, -, _
+        assert!(suffix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn test_scope_from_str() {
+        assert_eq!("read".parse::<TokenScope>().unwrap(), TokenScope::Read);
+        assert_eq!("trade".parse::<TokenScope>().unwrap(), TokenScope::Trade);
+        assert_eq!("admin".parse::<TokenScope>().unwrap(), TokenScope::Admin);
+        assert_eq!("ADMIN".parse::<TokenScope>().unwrap(), TokenScope::Admin);
+        assert!("invalid".parse::<TokenScope>().is_err());
+    }
+}

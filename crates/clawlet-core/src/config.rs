@@ -2,9 +2,49 @@
 //!
 //! Loads and validates the main `config.yaml` file.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Argon2id hash of the admin password, set during init.
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    /// Default session TTL in hours (default: 24).
+    #[serde(default = "default_session_ttl_hours")]
+    pub default_session_ttl_hours: u64,
+    /// Maximum failed authentication attempts before lockout (default: 5).
+    #[serde(default = "default_max_failed_attempts")]
+    pub max_failed_attempts: u32,
+    /// Lockout duration in minutes after max failed attempts (default: 15).
+    #[serde(default = "default_lockout_minutes")]
+    pub lockout_minutes: u32,
+}
+
+fn default_session_ttl_hours() -> u64 {
+    24
+}
+
+fn default_max_failed_attempts() -> u32 {
+    5
+}
+
+fn default_lockout_minutes() -> u32 {
+    15
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            password_hash: None,
+            default_session_ttl_hours: default_session_ttl_hours(),
+            max_failed_attempts: default_max_failed_attempts(),
+            lockout_minutes: default_lockout_minutes(),
+        }
+    }
+}
 
 /// Top-level Clawlet configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +61,9 @@ pub struct Config {
     /// Mapping of chain ID → RPC URL.
     #[serde(default)]
     pub chain_rpc_urls: HashMap<u64, String>,
+    /// Authentication configuration.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 fn default_rpc_bind() -> String {

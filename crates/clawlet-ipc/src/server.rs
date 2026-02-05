@@ -5,14 +5,15 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use iceoryx2::prelude::*;
 use tracing::{error, info};
 
 use clawlet_core::audit::AuditLogger;
-use clawlet_core::config::Config;
+use clawlet_core::auth::SessionStore;
+use clawlet_core::config::{AuthConfig, Config};
 use clawlet_core::policy::PolicyEngine;
 use clawlet_evm::EvmAdapter;
 use clawlet_signer::signer::LocalSigner;
@@ -35,8 +36,10 @@ pub struct AppState {
     pub audit: Arc<Mutex<AuditLogger>>,
     /// EVM adapters keyed by chain ID.
     pub adapters: Arc<HashMap<u64, EvmAdapter>>,
-    /// Authentication token required for API access.
-    pub auth_token: String,
+    /// Session store for authentication (replaces simple auth_token).
+    pub session_store: Arc<RwLock<SessionStore>>,
+    /// Authentication configuration.
+    pub auth_config: AuthConfig,
     /// Signer for transaction execution.
     pub signer: Arc<LocalSigner>,
     /// Skills directory containing AIS specs.
@@ -74,8 +77,9 @@ impl RpcServer {
             adapters.insert(*chain_id, adapter);
         }
 
-        // Resolve auth token: env var takes precedence
-        let auth_token = std::env::var("CLAWLET_AUTH_TOKEN").unwrap_or_else(|_| String::new());
+        // Initialize session store
+        let session_store = SessionStore::new();
+
         let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("skills"));
@@ -84,7 +88,8 @@ impl RpcServer {
             policy: Arc::new(policy),
             audit: Arc::new(Mutex::new(audit)),
             adapters: Arc::new(adapters),
-            auth_token,
+            session_store: Arc::new(RwLock::new(session_store)),
+            auth_config: config.auth.clone(),
             signer: Arc::new(signer),
             skills_dir,
         };

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use clawlet_core::auth;
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 
@@ -26,10 +27,31 @@ require_approval_above_usd: 200.0
 "#;
 
 /// Build the default config.yaml content, pointing at the given data directory.
-fn default_config(data_dir: &std::path::Path) -> String {
+fn default_config(data_dir: &std::path::Path, auth_password_hash: Option<&str>) -> String {
     let policy_path = data_dir.join("policy.yaml");
     let keystore_path = data_dir.join("keystore");
     let audit_log_path = data_dir.join("audit.jsonl");
+
+    let auth_section = if let Some(hash) = auth_password_hash {
+        format!(
+            r#"
+# Authentication configuration
+auth:
+  password_hash: "{}"
+  default_session_ttl_hours: 24
+  max_failed_attempts: 5
+  lockout_minutes: 15
+"#,
+            hash
+        )
+    } else {
+        r#"
+# Authentication configuration (no password set - all requests allowed)
+# Run `clawlet init` with auth password to enable authentication
+auth: {}
+"#
+        .to_string()
+    };
 
     format!(
         r#"# Clawlet configuration
@@ -42,10 +64,11 @@ audit_log_path: "{}"
 
 # Map chain IDs to RPC endpoints
 chain_rpc_urls: {{}}
-"#,
+{}"#,
         policy_path.display(),
         keystore_path.display(),
         audit_log_path.display(),
+        auth_section,
     )
 }
 
@@ -70,7 +93,8 @@ pub fn run(
     let keystore_dir = data_dir.join("keystore");
     std::fs::create_dir_all(&keystore_dir)?;
 
-    // Prompt for password
+    // Prompt for keystore password
+    eprintln!("== Keystore Setup ==");
     eprint!("Enter password for keystore encryption: ");
     let password = rpassword::read_password()?;
     eprint!("Confirm password: ");
@@ -79,8 +103,37 @@ pub fn run(
         return Err("passwords do not match".into());
     }
 
+    // Prompt for auth password (optional but recommended)
+    eprintln!();
+    eprintln!("== Authentication Setup ==");
+    eprintln!("Set a password for granting session tokens to AI agents.");
+    eprintln!("(Press Enter to skip - NOT RECOMMENDED for production)");
+    eprintln!();
+    eprint!("Enter auth password: ");
+    let auth_password = rpassword::read_password()?;
+
+    let auth_password_hash = if auth_password.is_empty() {
+        eprintln!();
+        eprintln!(
+            "⚠️  No auth password set. All API requests will be allowed without authentication."
+        );
+        eprintln!("   You can set a password later by editing config.yaml.");
+        None
+    } else {
+        eprint!("Confirm auth password: ");
+        let auth_confirm = rpassword::read_password()?;
+        if auth_password != auth_confirm {
+            return Err("auth passwords do not match".into());
+        }
+
+        // Hash the auth password
+        let hash = auth::hash_password(&auth_password)?;
+        Some(hash)
+    };
+
     let address = if from_mnemonic {
         // Prompt for existing mnemonic
+        eprintln!();
         eprintln!("Enter your BIP-39 mnemonic phrase:");
         let mut mnemonic = String::new();
         std::io::stdin().read_line(&mut mnemonic)?;
@@ -125,7 +178,10 @@ pub fn run(
     // Write default config.yaml
     let config_path = data_dir.join("config.yaml");
     if !config_path.exists() {
-        std::fs::write(&config_path, default_config(&data_dir))?;
+        std::fs::write(
+            &config_path,
+            default_config(&data_dir, auth_password_hash.as_deref()),
+        )?;
     }
 
     eprintln!();
@@ -133,6 +189,12 @@ pub fn run(
         "Initialized clawlet at {} — address: {address}",
         data_dir.display()
     );
+
+    if auth_password_hash.is_some() {
+        eprintln!();
+        eprintln!("🔐 Authentication enabled. To grant a session token to an AI agent:");
+        eprintln!("   clawlet auth grant --agent <name> --scope <read|trade|admin>");
+    }
 
     Ok(())
 }

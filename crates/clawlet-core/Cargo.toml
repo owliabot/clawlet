@@ -11,6 +11,12 @@ serde_yaml = "0.9"
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
+# Auth dependencies
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+subtle = "2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -12,7 +12,7 @@ use crate::handlers::{
     TransferRequest, TransferResponse,
 };
 use crate::server::SERVICE_NAME;
-use crate::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+use crate::types::{RpcMethod, RpcRequest, RpcResponse};
 
 /// Default timeout for waiting on a response.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,9 +43,23 @@ pub struct RpcClient {
     timeout: Duration,
 }
 
+impl Default for RpcClient {
+    fn default() -> Self {
+        Self {
+            auth_token: String::new(),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+}
+
 impl RpcClient {
+    /// Create a new client with no auth token.
+    pub fn new() -> Result<Self, ClientError> {
+        Ok(Self::default())
+    }
+
     /// Create a new client with the given auth token.
-    pub fn new(auth_token: impl Into<String>) -> Self {
+    pub fn with_token(auth_token: impl Into<String>) -> Self {
         Self {
             auth_token: auth_token.into(),
             timeout: DEFAULT_TIMEOUT,
@@ -60,44 +74,68 @@ impl RpcClient {
 
     /// Perform a health check.
     pub fn health(&self) -> Result<serde_json::Value, ClientError> {
-        let resp = self.call(RpcMethod::Health, &())?;
+        let resp = self.call_typed(RpcMethod::Health, &())?;
         let value: serde_json::Value = serde_json::from_slice(resp.payload_bytes())?;
         Ok(value)
     }
 
     /// Query ETH balance.
     pub fn balance(&self, query: BalanceQuery) -> Result<BalanceResponse, ClientError> {
-        let resp = self.call(RpcMethod::Balance, &query)?;
+        let resp = self.call_typed(RpcMethod::Balance, &query)?;
         let result: BalanceResponse = serde_json::from_slice(resp.payload_bytes())?;
         Ok(result)
     }
 
     /// Execute a transfer.
     pub fn transfer(&self, req: TransferRequest) -> Result<TransferResponse, ClientError> {
-        let resp = self.call(RpcMethod::Transfer, &req)?;
+        let resp = self.call_typed(RpcMethod::Transfer, &req)?;
         let result: TransferResponse = serde_json::from_slice(resp.payload_bytes())?;
         Ok(result)
     }
 
     /// List available skills.
     pub fn skills(&self) -> Result<SkillsResponse, ClientError> {
-        let resp = self.call(RpcMethod::Skills, &())?;
+        let resp = self.call_typed(RpcMethod::Skills, &())?;
         let result: SkillsResponse = serde_json::from_slice(resp.payload_bytes())?;
         Ok(result)
     }
 
     /// Execute a skill.
     pub fn execute(&self, req: ExecuteRequest) -> Result<ExecuteResponse, ClientError> {
-        let resp = self.call(RpcMethod::Execute, &req)?;
+        let resp = self.call_typed(RpcMethod::Execute, &req)?;
         let result: ExecuteResponse = serde_json::from_slice(resp.payload_bytes())?;
         Ok(result)
     }
 
-    /// Low-level: serialize, send, wait for response, check status.
-    fn call<T: serde::Serialize>(
+    /// Low-level call with raw token and payload bytes.
+    ///
+    /// This is useful for auth operations where the token comes from the request
+    /// payload rather than being set on the client.
+    pub fn call(
+        &self,
+        method: RpcMethod,
+        token: &str,
+        payload: &[u8],
+    ) -> Result<RpcResponse, ClientError> {
+        self.send_request(method, token, payload)
+    }
+
+    /// Internal typed call using the client's auth token.
+    fn call_typed<T: serde::Serialize>(
         &self,
         method: RpcMethod,
         payload: &T,
+    ) -> Result<RpcResponse, ClientError> {
+        let json_bytes = serde_json::to_vec(payload)?;
+        self.send_request(method, &self.auth_token, &json_bytes)
+    }
+
+    /// Low-level: send request, wait for response, check status.
+    fn send_request(
+        &self,
+        method: RpcMethod,
+        token: &str,
+        payload: &[u8],
     ) -> Result<RpcResponse, ClientError> {
         let node = NodeBuilder::new()
             .create::<ipc::Service>()
@@ -118,11 +156,8 @@ impl RpcClient {
             .create()
             .map_err(|e| ClientError::Ipc(format!("failed to create client: {e:?}")))?;
 
-        // Serialize the payload to JSON
-        let json_bytes = serde_json::to_vec(payload)?;
-
         // Build the envelope
-        let envelope = RpcRequest::new(method, &self.auth_token, &json_bytes);
+        let envelope = RpcRequest::new(method, token, payload);
 
         // Send using copy API for simplicity
         let pending = client
@@ -142,18 +177,6 @@ impl RpcClient {
                     payload_len: response.payload_len,
                     payload: response.payload,
                 };
-
-                // Check status
-                if result.status == RpcStatus::Unauthorized as u32 {
-                    return Err(ClientError::Unauthorized);
-                }
-                if !result.is_ok() {
-                    let msg = String::from_utf8_lossy(result.payload_bytes()).to_string();
-                    return Err(ClientError::Server {
-                        status: result.status,
-                        message: msg,
-                    });
-                }
 
                 return Ok(result);
             }

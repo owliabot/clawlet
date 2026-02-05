@@ -46,17 +46,22 @@ impl RpcMethod {
         }
     }
 
-    /// Get the required scope for this method.
+    /// Get the required scope for this method (token-based auth).
+    ///
+    /// Returns `None` for methods that don't require token auth:
+    /// - `Health`: public endpoint
+    /// - `Auth*`: use password-based auth instead (handled in their handlers)
     pub fn required_scope(&self) -> Option<clawlet_core::auth::TokenScope> {
         use clawlet_core::auth::TokenScope;
         match self {
-            RpcMethod::Health => None, // No auth required
+            RpcMethod::Health => None, // Public endpoint
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
             RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
+            // Auth methods use password verification, not token auth
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
-            | RpcMethod::AuthRevokeAll => Some(TokenScope::Admin),
+            | RpcMethod::AuthRevokeAll => None,
         }
     }
 }

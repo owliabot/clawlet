@@ -1,7 +1,7 @@
 //! `clawlet serve` — start the RPC server.
 //!
-//! Loads config, unlocks keystore, starts the iceoryx2 IPC server,
-//! optionally starts the Unix socket server for non-Rust clients,
+//! Loads config, unlocks keystore, starts the iceoryx2 IPC server by default,
+//! or starts the Unix socket server for non-Rust clients instead,
 //! and handles graceful shutdown on Ctrl+C.
 
 use std::collections::HashMap;
@@ -63,9 +63,9 @@ pub async fn run(
 
     println!("Clawlet RPC server running on {}", config.rpc_bind);
 
-    // If socket path is provided, start both servers concurrently
+    // If socket path is provided, start the Unix socket server instead of iceoryx2.
     if let Some(socket_path) = socket_path {
-        // Build shared AppState for both servers
+        // Build AppState for the socket server.
         let state = Arc::new(build_app_state(&config, LocalSigner::new(signing_key))?);
 
         let socket_config = SocketServerConfig {
@@ -77,8 +77,8 @@ pub async fn run(
 
         println!("Unix socket server listening on {}", socket_path.display());
 
-        // For now, just start the socket server (iceoryx2 uses its own AppState internally)
-        // In the future, we could refactor RpcServer to accept an Arc<AppState>
+        // For now, just start the socket server (iceoryx2 uses its own AppState internally).
+        // In the future, we could refactor RpcServer to accept an Arc<AppState>.
         socket_server
             .start()
             .await

@@ -41,9 +41,9 @@ enum Commands {
         config: Option<PathBuf>,
 
         /// Path to Unix domain socket for JSON-RPC interface.
-        /// If provided, starts a socket server in addition to iceoryx2.
+        /// If provided, starts a socket server instead of iceoryx2 for non-Rust clients.
         /// Default when enabled: /run/clawlet/clawlet.sock
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "/run/clawlet/clawlet.sock")]
         socket: Option<PathBuf>,
     },
 

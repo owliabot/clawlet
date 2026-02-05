@@ -225,7 +225,6 @@ mod tests {
 
     /// Test 1: Initialize keystore, start serve (simulated), health check, shutdown
     #[test]
-    #[ignore]
     fn test_init_and_serve_roundtrip() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -292,7 +291,6 @@ allowed_chains: []
 
     /// Test 2: Query ETH balance of Anvil default account (should have 10000 ETH)
     #[test]
-    #[ignore]
     fn test_eth_balance_query_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -321,7 +319,6 @@ allowed_chains: []
 
     /// Test 3: Transfer ETH between two Anvil accounts
     #[test]
-    #[ignore]
     fn test_eth_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -373,8 +370,10 @@ allowed_chains: []
     }
 
     /// Test 4: Deploy mock ERC-20 and transfer tokens
+    ///
+    /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens (10^24) to deployer,
+    /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
-    #[ignore]
     fn test_erc20_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -389,34 +388,115 @@ allowed_chains: []
             let signer = LocalSigner::new(signing_key);
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
-            // Deploy a minimal ERC-20 contract (MockToken)
-            // This bytecode creates a token that mints 1M tokens to deployer
-            // For simplicity, we'll use a precompiled bytecode
-            // In a real scenario, you'd compile a Solidity contract
+            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
 
-            // Minimal ERC-20 bytecode (constructor mints tokens to msg.sender)
-            // This is a simplified example - in production use a real ERC-20
-            let _mock_erc20_bytecode = hex::decode(
-                "608060405234801561001057600080fd5b506040516103e83d038061001261002091610033565b6040518082815260200191505060405180910390f35b600061005161004c610054565b610057565b90565b6000339050919050565b806000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555050"
+            // Deploy a minimal ERC-20 contract (SimpleToken)
+            // Compiled with solc 0.8.33 via `forge build`
+            // Source:
+            // ```solidity
+            // // SPDX-License-Identifier: MIT
+            // pragma solidity ^0.8.17;
+            // contract SimpleToken {
+            //     mapping(address => uint256) public balanceOf;
+            //     constructor() { balanceOf[msg.sender] = 1000000 * 10**18; }
+            //     function transfer(address to, uint256 amount) public returns (bool) {
+            //         require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+            //         balanceOf[msg.sender] -= amount;
+            //         balanceOf[to] += amount;
+            //         return true;
+            //     }
+            // }
+            // ```
+            let deploy_bytecode = hex::decode(
+                "6080604052348015600e575f5ffd5b5069d3c21bcecceda10000005f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f2081905550610470806100675f395ff3fe608060405234801561000f575f5ffd5b5060043610610034575f3560e01c806370a0823114610038578063a9059cbb14610068575b5f5ffd5b610052600480360381019061004d9190610238565b610098565b60405161005f919061027b565b60405180910390f35b610082600480360381019061007d91906102be565b6100ac565b60405161008f9190610316565b60405180910390f35b5f602052805f5260405f205f915090505481565b5f815f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f2054101561012c576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040161012390610389565b60405180910390fd5b815f5f3373ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f205f82825461017791906103d4565b92505081905550815f5f8573ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff1681526020019081526020015f205f8282546101c99190610407565b925050819055506001905092915050565b5f5ffd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f610207826101de565b9050919050565b610217816101fd565b8114610221575f5ffd5b50565b5f813590506102328161020e565b92915050565b5f6020828403121561024d5761024c6101da565b5b5f61025a84828501610224565b91505092915050565b5f819050919050565b61027581610263565b82525050565b5f60208201905061028e5f83018461026c565b92915050565b61029d81610263565b81146102a7575f5ffd5b50565b5f813590506102b881610294565b92915050565b5f5f604083850312156102d4576102d36101da565b5b5f6102e185828601610224565b92505060206102f2858286016102aa565b9150509250929050565b5f8115159050919050565b610310816102fc565b82525050565b5f6020820190506103295f830184610307565b92915050565b5f82825260208201905092915050565b7f496e73756666696369656e742062616c616e63650000000000000000000000005f82015250565b5f61037360148361032f565b915061037e8261033f565b602082019050919050565b5f6020820190508181035f8301526103a081610367565b9050919050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f6103de82610263565b91506103e983610263565b9250828203905081811115610401576104006103a7565b5b92915050565b5f61041182610263565b915061041c83610263565b9250828201905080821115610434576104336103a7565b5b9291505056fea26469706673582212202533f4a607217075eacb2a0cbb0075e99ce5ae5ff0402d62ad03ffb756cd3f5564736f6c63430008210033",
+            )
+            .expect("invalid hex bytecode");
+
+            // Deploy the contract (gas used ~321k, set limit higher)
+            let deploy_tx = TransactionRequest::default()
+                .input(Bytes::from(deploy_bytecode).into())
+                .with_chain_id(31337)
+                .gas_limit(500_000);
+
+            let deploy_hash = tx::send_transaction(&adapter, &signer, deploy_tx)
+                .await
+                .expect("contract deployment should succeed");
+
+            wait_for_receipt(&adapter, deploy_hash)
+                .await
+                .expect("deployment receipt not found");
+
+            // Get the deployed contract address from the receipt
+            let receipt = adapter
+                .provider()
+                .get_transaction_receipt(deploy_hash)
+                .await
+                .expect("failed to get receipt")
+                .expect("receipt should exist");
+
+            let token_address = receipt
+                .contract_address
+                .expect("contract address should be in receipt");
+
+            // Check initial balances
+            let owner_balance_before = adapter
+                .get_erc20_balance(token_address, owner)
+                .await
+                .expect("failed to get owner balance");
+            let recipient_balance_before = adapter
+                .get_erc20_balance(token_address, recipient)
+                .await
+                .expect("failed to get recipient balance");
+
+            // Owner should have 1M tokens (1,000,000 * 10^18)
+            let expected_initial = U256::from(1_000_000u64) * U256::from(10u64).pow(U256::from(18));
+            assert_eq!(
+                owner_balance_before, expected_initial,
+                "Owner should have 1M tokens after deployment"
+            );
+            assert_eq!(
+                recipient_balance_before,
+                U256::ZERO,
+                "Recipient should have 0 tokens initially"
             );
 
-            // For this test, we'll verify the ERC-20 functionality exists in the adapter
-            // by checking a known token's balance (which won't exist on fresh Anvil)
-            let mock_token: Address = "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap();
-            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            // Transfer 100 tokens to recipient
+            let transfer_amount = U256::from(100u64) * U256::from(10u64).pow(U256::from(18));
+            let transfer_tx =
+                tx::build_erc20_transfer(token_address, recipient, transfer_amount, 31337);
+            let transfer_hash = tx::send_transaction(&adapter, &signer, transfer_tx)
+                .await
+                .expect("ERC-20 transfer should succeed");
 
-            // This should return 0 for a non-existent token
-            let balance = adapter.get_erc20_balance(mock_token, owner).await;
-            // On Anvil without a deployed token, this will return 0 or error
-            assert!(balance.is_ok() || balance.is_err());
+            wait_for_receipt(&adapter, transfer_hash)
+                .await
+                .expect("transfer receipt not found");
+
+            // Verify balances changed correctly
+            let owner_balance_after = adapter
+                .get_erc20_balance(token_address, owner)
+                .await
+                .expect("failed to get owner balance after transfer");
+            let recipient_balance_after = adapter
+                .get_erc20_balance(token_address, recipient)
+                .await
+                .expect("failed to get recipient balance after transfer");
+
+            assert_eq!(
+                owner_balance_after,
+                owner_balance_before - transfer_amount,
+                "Owner balance should decrease by transfer amount"
+            );
+            assert_eq!(
+                recipient_balance_after, transfer_amount,
+                "Recipient should have exactly the transferred amount"
+            );
         });
     }
 
     /// Test 5: Policy denies transfer, verify no transaction sent
     #[test]
-    #[ignore]
     fn test_transfer_blocked_by_policy() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -935,6 +1015,9 @@ audit_log_path: "{}"
     }
 
     /// Test 18: CLI help output contains expected commands
+    ///
+    /// This test spawns `cargo run` which may not work in all CI environments.
+    /// Run with `--include-ignored` to execute this test.
     #[test]
     fn test_cli_help_output() {
         // Build the project first to ensure binary exists
@@ -945,34 +1028,26 @@ audit_log_path: "{}"
         let output = Command::new("cargo")
             .args(["run", "-p", "clawlet-cli", "--", "--help"])
             .current_dir(workspace_root)
-            .output();
+            .output()
+            .expect("failed to execute cargo run - cannot verify CLI help output");
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{stdout}{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
 
-                // Check for expected subcommands
-                assert!(
-                    combined.contains("init") || combined.contains("Init"),
-                    "Help should mention init command"
-                );
-                assert!(
-                    combined.contains("serve") || combined.contains("Serve"),
-                    "Help should mention serve command"
-                );
-                assert!(
-                    combined.contains("clawlet") || combined.contains("Clawlet"),
-                    "Help should mention clawlet"
-                );
-            }
-            Err(_) => {
-                // If cargo run fails, just verify the CLI module has the expected structure
-                // This happens in CI without full build
-                assert!(true, "CLI structure verified via code inspection");
-            }
-        }
+        // Check for expected subcommands
+        assert!(
+            combined.contains("init") || combined.contains("Init"),
+            "Help should mention init command. Output was: {combined}"
+        );
+        assert!(
+            combined.contains("serve") || combined.contains("Serve"),
+            "Help should mention serve command. Output was: {combined}"
+        );
+        assert!(
+            combined.contains("clawlet") || combined.contains("Clawlet"),
+            "Help should mention clawlet. Output was: {combined}"
+        );
     }
 
     // =========================================================================
@@ -1084,7 +1159,6 @@ allowed_chains: []
 
     /// test_balance_query — Anvil via testcontainers
     #[test]
-    #[ignore]
     fn test_balance_query() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1110,7 +1184,6 @@ allowed_chains: []
 
     /// test_transfer_with_policy — full flow on Anvil via testcontainers
     #[test]
-    #[ignore]
     fn test_transfer_with_policy() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1253,7 +1326,6 @@ allowed_chains: []
 
     /// test_uniswap_v3_swap_ais — mainnet fork via ANVIL_URL
     #[test]
-    #[ignore]
     fn test_uniswap_v3_swap_ais() {
         let Some((anvil_url, private_key)) = env_anvil() else {
             eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
@@ -1285,7 +1357,6 @@ allowed_chains: []
 
     /// test_aave_v3_supply_withdraw_ais — mainnet fork via ANVIL_URL
     #[test]
-    #[ignore]
     fn test_aave_v3_supply_withdraw_ais() {
         let Some((anvil_url, private_key)) = env_anvil() else {
             eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");

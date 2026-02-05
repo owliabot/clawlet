@@ -21,7 +21,7 @@ clawlet/
 │   ├── clawlet-core/       # Core types, policy engine, audit logging
 │   ├── clawlet-signer/     # Key management and signing
 │   ├── clawlet-evm/        # EVM chain adapter
-│   ├── clawlet-rpc/        # HTTP RPC API server
+│   ├── clawlet-ipc/        # HTTP RPC API server
 │   └── clawlet-cli/        # CLI entry point (clawlet binary)
 ├── config/
 │   └── policy.example.yaml # Example policy configuration
@@ -45,7 +45,7 @@ clawlet serve    # Start RPC server on 127.0.0.1:9100
 Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via authenticated HTTP on localhost. Private keys are managed by the human operator — the agent never has direct access to key material.
 
 ```
-Agent ──HTTP──▶ clawlet-rpc ──▶ clawlet-core (policy check)
+Agent ──HTTP──▶ clawlet-ipc ──▶ clawlet-core (policy check)
                      │                  │
                      ▼                  ▼
                clawlet-evm        audit log

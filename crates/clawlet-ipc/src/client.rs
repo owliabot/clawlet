@@ -1,4 +1,4 @@
-//! Client-side helper for connecting to the clawlet-rpc iceoryx2 service.
+//! Client-side helper for connecting to the clawlet-ipc iceoryx2 service.
 //!
 //! Provides a typed API that serializes requests into the IPC envelope format
 //! and deserializes responses.
@@ -35,7 +35,7 @@ pub enum ClientError {
     Server { status: u32, message: String },
 }
 
-/// Client for the clawlet-rpc iceoryx2 service.
+/// Client for the clawlet-ipc iceoryx2 service.
 pub struct RpcClient {
     /// Auth token to include in every request.
     auth_token: String,

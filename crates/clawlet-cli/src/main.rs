@@ -39,6 +39,12 @@ enum Commands {
         /// Path to config.yaml (default: ~/.clawlet/config.yaml).
         #[arg(long, short)]
         config: Option<PathBuf>,
+
+        /// Path to Unix domain socket for JSON-RPC interface.
+        /// If provided, starts a socket server instead of iceoryx2 for non-Rust clients.
+        /// Default when enabled: /run/clawlet/clawlet.sock
+        #[arg(long, num_args = 0..=1, default_missing_value = "/run/clawlet/clawlet.sock")]
+        socket: Option<PathBuf>,
     },
 
     /// Manage session tokens for AI agents.
@@ -63,7 +69,7 @@ async fn main() {
             from_mnemonic,
             data_dir,
         } => commands::init::run(from_mnemonic, data_dir),
-        Commands::Serve { config } => commands::serve::run(config).await,
+        Commands::Serve { config, socket } => commands::serve::run(config, socket).await,
         Commands::Auth { config, command } => commands::auth::run(command, config),
     };
 

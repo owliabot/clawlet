@@ -1,6 +1,6 @@
 //! Unit tests for IPC message types.
 
-use clawlet_rpc::types::{
+use clawlet_ipc::types::{
     RpcMethod, RpcRequest, RpcResponse, RpcStatus, AUTH_TOKEN_SIZE, PAYLOAD_BUF_SIZE,
 };
 

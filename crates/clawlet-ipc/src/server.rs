@@ -93,7 +93,7 @@ impl RpcServer {
         // driven from inside the blocking iceoryx2 loop.
         let rt = tokio::runtime::Handle::current();
 
-        info!("starting clawlet-rpc iceoryx2 service: {}", SERVICE_NAME);
+        info!("starting clawlet-ipc iceoryx2 service: {}", SERVICE_NAME);
 
         // Run the iceoryx2 loop on a blocking thread so we don't starve the
         // tokio executor.
@@ -135,7 +135,7 @@ fn run_service_loop(
         .create()
         .map_err(|e| format!("failed to create iceoryx2 server: {e:?}"))?;
 
-    info!("clawlet-rpc iceoryx2 server ready, waiting for requests");
+    info!("clawlet-ipc iceoryx2 server ready, waiting for requests");
 
     while node.wait(CYCLE_TIME).is_ok() {
         while let Some(active_request) = server
@@ -159,6 +159,6 @@ fn run_service_loop(
         }
     }
 
-    info!("clawlet-rpc iceoryx2 server shutting down");
+    info!("clawlet-ipc iceoryx2 server shutting down");
     Ok(())
 }

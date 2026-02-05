@@ -1,4 +1,4 @@
-//! # clawlet-rpc
+//! # clawlet-ipc
 //!
 //! IPC RPC server exposing wallet operations via iceoryx2 request-response.
 

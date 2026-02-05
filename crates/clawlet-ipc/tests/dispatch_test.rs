@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use clawlet_core::audit::AuditLogger;
 use clawlet_core::policy::{Policy, PolicyEngine};
-use clawlet_rpc::dispatch::dispatch;
-use clawlet_rpc::server::AppState;
-use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcStatus};
+use clawlet_ipc::dispatch::dispatch;
+use clawlet_ipc::server::AppState;
+use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcStatus};
 
 /// Build a minimal AppState for testing (no real EVM adapters or signer).
 /// Returns (AppState, _tmp_guard) — keep the guard alive so tempdir isn't deleted.
@@ -111,7 +111,7 @@ fn dispatch_transfer_policy_allowed() {
     let resp = dispatch(&state, &req, rt.handle());
 
     assert!(resp.is_ok());
-    let body: clawlet_rpc::handlers::TransferResponse =
+    let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert_eq!(body.status, "success");
     assert!(body.tx_hash.is_some());
@@ -135,7 +135,7 @@ fn dispatch_transfer_policy_denied() {
     let resp = dispatch(&state, &req, rt.handle());
 
     assert!(resp.is_ok()); // HTTP-wise ok, but status field says "denied"
-    let body: clawlet_rpc::handlers::TransferResponse =
+    let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert_eq!(body.status, "denied");
     assert!(body.reason.is_some());
@@ -150,7 +150,7 @@ fn dispatch_skills_empty_dir() {
     let resp = dispatch(&state, &req, rt.handle());
 
     assert!(resp.is_ok());
-    let body: clawlet_rpc::handlers::SkillsResponse =
+    let body: clawlet_ipc::handlers::SkillsResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert!(body.skills.is_empty());
 }
@@ -309,7 +309,7 @@ fn dispatch_execute_symlink_escape_rejected() {
         clawlet_signer::signer::LocalSigner::from_bytes(&key_bytes.try_into().expect("32 bytes"))
             .unwrap();
 
-    let state = clawlet_rpc::server::AppState {
+    let state = clawlet_ipc::server::AppState {
         policy: Arc::new(clawlet_core::policy::PolicyEngine::new(policy)),
         audit: Arc::new(Mutex::new(
             clawlet_core::audit::AuditLogger::new(&audit_path).unwrap(),

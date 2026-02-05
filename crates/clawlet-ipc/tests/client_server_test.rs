@@ -13,9 +13,9 @@ use iceoryx2::prelude::*;
 
 use clawlet_core::audit::AuditLogger;
 use clawlet_core::policy::{Policy, PolicyEngine};
-use clawlet_rpc::dispatch;
-use clawlet_rpc::server::AppState;
-use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+use clawlet_ipc::dispatch;
+use clawlet_ipc::server::AppState;
+use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -183,7 +183,7 @@ fn client_server_transfer_success() {
 
     let resp = call_raw(&svc, RpcMethod::Transfer, "tok123", &payload).expect("call failed");
     assert!(resp.is_ok());
-    let body: clawlet_rpc::handlers::TransferResponse =
+    let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert_eq!(body.status, "success");
     assert!(body.tx_hash.is_some());
@@ -208,7 +208,7 @@ fn client_server_transfer_denied_by_policy() {
 
     let resp = call_raw(&svc, RpcMethod::Transfer, "tok", &payload).expect("call failed");
     assert!(resp.is_ok());
-    let body: clawlet_rpc::handlers::TransferResponse =
+    let body: clawlet_ipc::handlers::TransferResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert_eq!(body.status, "denied");
     assert!(body.reason.is_some());
@@ -248,7 +248,7 @@ fn client_server_skills_empty() {
 
     let resp = call_raw(&svc, RpcMethod::Skills, "t", b"{}").expect("call failed");
     assert!(resp.is_ok());
-    let body: clawlet_rpc::handlers::SkillsResponse =
+    let body: clawlet_ipc::handlers::SkillsResponse =
         serde_json::from_slice(resp.payload_bytes()).unwrap();
     assert!(body.skills.is_empty());
 }

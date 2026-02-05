@@ -70,7 +70,7 @@ pub fn unlock(_path: &str, password: &str) -> Result<Zeroizing<Vec<u8>>, Keystor
 
 ### 🔴 C-2: Authentication System Is a Stub
 **Severity**: Critical  
-**File**: `clawlet-rpc/src/auth.rs`
+**File**: `clawlet-ipc/src/auth.rs`
 
 **Issue**:
 The entire auth module is a `todo!()` placeholder. When implemented, the RPC server will have no access control.
@@ -668,7 +668,7 @@ The 5-crate architecture is **well-designed**:
 - `clawlet-core`: Pure business logic, no external dependencies
 - `clawlet-signer`: Crypto isolated from policy
 - `clawlet-evm`: Chain-specific code contained
-- `clawlet-rpc`: API surface isolated
+- `clawlet-ipc`: API surface isolated
 - `clawlet-cli`: Thin wrapper
 
 **Benefit**: Easy to test, swap implementations (e.g., add Solana support), and audit.
@@ -895,7 +895,7 @@ tempfile = "3"           # Better test temp dirs (dev-dependency)
        │
        v
 ┌─────────────┐
-│ clawlet-rpc │  ← Stub (M1-7, M1-8)
+│ clawlet-ipc │  ← Stub (M1-7, M1-8)
 └──────┬──────┘    - auth.rs: todo!()
        │           - handlers.rs: todo!()
        │           - routes.rs: todo!()

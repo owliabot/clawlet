@@ -796,7 +796,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 13: RPC health endpoint (simulated via types)
     #[test]
     fn test_rpc_health_endpoint() {
-        use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
 
         // Simulate a health request
         let req = RpcRequest::new(RpcMethod::Health, "", &[]);
@@ -816,7 +816,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 14: RPC auth required - request without token gets 401
     #[test]
     fn test_rpc_auth_required() {
-        use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
 
         // Request with empty token
         let req = RpcRequest::new(RpcMethod::Balance, "", b"{}");
@@ -834,7 +834,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 15: RPC auth valid - request with token gets 200
     #[test]
     fn test_rpc_auth_valid() {
-        use clawlet_rpc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
 
         // Request with valid token
         let token = "test-secret-token-12345";

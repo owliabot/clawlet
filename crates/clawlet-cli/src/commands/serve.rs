@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clawlet_core::config::Config;
-use clawlet_rpc::server::RpcServer;
+use clawlet_ipc::server::RpcServer;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 

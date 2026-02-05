@@ -225,7 +225,6 @@ mod tests {
 
     /// Test 1: Initialize keystore, start serve (simulated), health check, shutdown
     #[test]
-    #[ignore]
     fn test_init_and_serve_roundtrip() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -292,7 +291,6 @@ allowed_chains: []
 
     /// Test 2: Query ETH balance of Anvil default account (should have 10000 ETH)
     #[test]
-    #[ignore]
     fn test_eth_balance_query_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -321,7 +319,6 @@ allowed_chains: []
 
     /// Test 3: Transfer ETH between two Anvil accounts
     #[test]
-    #[ignore]
     fn test_eth_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -377,7 +374,6 @@ allowed_chains: []
     /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens (10^24) to deployer,
     /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
-    #[ignore]
     fn test_erc20_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -501,7 +497,6 @@ allowed_chains: []
 
     /// Test 5: Policy denies transfer, verify no transaction sent
     #[test]
-    #[ignore]
     fn test_transfer_blocked_by_policy() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1024,7 +1019,6 @@ audit_log_path: "{}"
     /// This test spawns `cargo run` which may not work in all CI environments.
     /// Run with `--include-ignored` to execute this test.
     #[test]
-    #[ignore]
     fn test_cli_help_output() {
         // Build the project first to ensure binary exists
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1165,7 +1159,6 @@ allowed_chains: []
 
     /// test_balance_query — Anvil via testcontainers
     #[test]
-    #[ignore]
     fn test_balance_query() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1191,7 +1184,6 @@ allowed_chains: []
 
     /// test_transfer_with_policy — full flow on Anvil via testcontainers
     #[test]
-    #[ignore]
     fn test_transfer_with_policy() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1334,7 +1326,6 @@ allowed_chains: []
 
     /// test_uniswap_v3_swap_ais — mainnet fork via ANVIL_URL
     #[test]
-    #[ignore]
     fn test_uniswap_v3_swap_ais() {
         let Some((anvil_url, private_key)) = env_anvil() else {
             eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
@@ -1366,7 +1357,6 @@ allowed_chains: []
 
     /// test_aave_v3_supply_withdraw_ais — mainnet fork via ANVIL_URL
     #[test]
-    #[ignore]
     fn test_aave_v3_supply_withdraw_ais() {
         let Some((anvil_url, private_key)) = env_anvil() else {
             eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");

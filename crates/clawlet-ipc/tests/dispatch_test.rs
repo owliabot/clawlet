@@ -562,7 +562,8 @@ fn dispatch_auth_grant_then_use_token() {
     let grant_resp = dispatch(&state, &grant_req, rt.handle());
     assert!(grant_resp.is_ok());
 
-    let grant_body: serde_json::Value = serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
+    let grant_body: serde_json::Value =
+        serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
     let token = grant_body["token"].as_str().unwrap();
 
     // Step 2: Use the token to call a protected endpoint
@@ -622,7 +623,8 @@ fn dispatch_auth_revoke_success() {
     let grant_resp = dispatch(&state, &grant_req, rt.handle());
     assert!(grant_resp.is_ok());
 
-    let grant_body: serde_json::Value = serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
+    let grant_body: serde_json::Value =
+        serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
     let token = grant_body["token"].as_str().unwrap().to_string();
 
     // Revoke the session
@@ -731,7 +733,8 @@ fn dispatch_auth_grant_bootstrap_from_zero() {
         "CRITICAL: Must be able to grant first token without existing token!"
     );
 
-    let grant_body: serde_json::Value = serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
+    let grant_body: serde_json::Value =
+        serde_json::from_slice(grant_resp.payload_bytes()).unwrap();
     let token = grant_body["token"].as_str().unwrap();
 
     // Use the bootstrapped token

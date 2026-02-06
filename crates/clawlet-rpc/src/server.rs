@@ -487,14 +487,8 @@ impl RpcServer {
 
     /// Start the HTTP server and return the actual bound address and server handle.
     pub async fn start(&self) -> Result<(SocketAddr, ServerHandle), ServerError> {
-        let bind_addr = if self.config.addr.port() == 0 {
-            "127.0.0.1:0".parse().unwrap()
-        } else {
-            self.config.addr
-        };
-
         let server = Server::builder()
-            .build(bind_addr)
+            .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
         let bound_addr = server.local_addr()?;

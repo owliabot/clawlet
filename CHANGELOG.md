@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-06
+
+### Fixed
+- CI: use macos-14 runner for Apple Silicon builds (#10)
+
+### Documentation
+- Add install script to README and usage guide (#11)
+- Update README - IPC architecture, remove HTTP references
+- Fix usage guide - IPC mode only, no HTTP
+- Add comprehensive usage guide (中文)
+- Add changelog generation to release script
+
 ## [0.1.0] - 2026-02-06
 
 ### Added
@@ -44,4 +56,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deployment documentation with systemd service configuration
 - OS user isolation guide
 
+[0.1.1]: https://github.com/ArcadeLabsInc/clawlet/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ArcadeLabsInc/clawlet/releases/tag/v0.1.0

@@ -34,6 +34,18 @@ clawlet/
 
 ## Installation
 
+### Quick Install (Recommended)
+
+```bash
+# One-liner install (downloads pre-built binary)
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
+
+# Or with options
+./scripts/install.sh --prefix ~/.local    # Custom install location
+./scripts/install.sh --from-source        # Build from source
+./scripts/install.sh --version v0.1.0     # Specific version
+```
+
 ### From Source
 
 ```bash
@@ -42,6 +54,12 @@ git clone https://github.com/owliabot/clawlet.git
 cd clawlet
 cargo build --release
 sudo cp target/release/clawlet /usr/local/bin/
+```
+
+### Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
 ```
 
 ### Platform Support

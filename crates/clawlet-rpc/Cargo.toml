@@ -9,16 +9,13 @@ description = "HTTP JSON-RPC server for Clawlet"
 clawlet-core = { path = "../clawlet-core" }
 clawlet-evm = { path = "../clawlet-evm" }
 clawlet-signer = { path = "../clawlet-signer" }
-axum = "0.8"
-hyper = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonrpsee = { version = "0.24", features = ["server", "client", "macros"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
 thiserror = "2"
 tracing = "0.1"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

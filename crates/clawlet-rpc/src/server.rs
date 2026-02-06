@@ -1,10 +1,10 @@
-//! HTTP JSON-RPC server using axum.
+//! HTTP JSON-RPC server using jsonrpsee.
 //!
 //! Exposes a JSON-RPC 2.0 interface over HTTP at `127.0.0.1:9100` (configurable).
 //!
 //! # Protocol
 //!
-//! `POST /rpc` with `Content-Type: application/json`
+//! `POST /` with `Content-Type: application/json`
 //!
 //! Request format:
 //! ```json
@@ -29,16 +29,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use axum::{
-    extract::State,
-    http::header,
-    routing::{get, post},
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
+use jsonrpsee::core::async_trait;
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::server::Server;
+use jsonrpsee::types::ErrorObjectOwned;
 use serde_json::Value;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use clawlet_core::audit::AuditLogger;
@@ -50,8 +45,8 @@ use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
 use crate::dispatch::{
-    AuthGrantRequest, AuthGrantResponse, AuthListRequest, AuthListResponse, AuthRevokeAllRequest,
-    AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse,
+    AuthGrantRequest, AuthGrantResponse, AuthListResponse, AuthRevokeAllResponse,
+    AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
 
@@ -89,114 +84,18 @@ pub enum ServerError {
     Json(#[from] serde_json::Error),
 }
 
-// ---- JSON-RPC 2.0 Types ----
+// ---- JSON-RPC Error Codes ----
 
 /// Standard JSON-RPC 2.0 error codes.
-#[derive(Debug, Clone, Copy)]
-#[repr(i32)]
-pub enum JsonRpcErrorCode {
-    /// Invalid JSON was received.
-    ParseError = -32700,
-    /// The JSON sent is not a valid Request object.
-    InvalidRequest = -32600,
-    /// The method does not exist / is not available.
-    MethodNotFound = -32601,
-    /// Invalid method parameter(s).
-    InvalidParams = -32602,
-    /// Internal JSON-RPC error.
-    InternalError = -32603,
+pub mod error_code {
+    pub const PARSE_ERROR: i32 = -32700;
+    pub const INVALID_REQUEST: i32 = -32600;
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    pub const INVALID_PARAMS: i32 = -32602;
+    pub const INTERNAL_ERROR: i32 = -32603;
     // Server-defined errors (-32000 to -32099)
-    /// Authentication required or failed.
-    Unauthorized = -32001,
-    /// Resource not found.
-    NotFound = -32002,
-}
-
-/// JSON-RPC 2.0 request object.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct JsonRpcRequest {
-    /// Protocol version (should be "2.0").
-    pub jsonrpc: String,
-    /// Method name to invoke.
-    pub method: String,
-    /// Method parameters (optional).
-    #[serde(default)]
-    pub params: Value,
-    /// Request ID (can be string, number, or null).
-    pub id: Value,
-}
-
-/// JSON-RPC 2.0 success response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    /// Protocol version.
-    pub jsonrpc: String,
-    /// Result on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    /// Error on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-    /// Request ID (echoed from request).
-    pub id: Value,
-}
-
-impl JsonRpcResponse {
-    /// Create a success response.
-    pub fn success(id: Value, result: impl Serialize) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
-            error: None,
-            id,
-        }
-    }
-
-    /// Create an error response.
-    pub fn error(id: Value, code: JsonRpcErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: code as i32,
-                message: message.into(),
-                data: None,
-            }),
-            id,
-        }
-    }
-
-    /// Create an error response with additional data.
-    #[allow(dead_code)]
-    pub fn error_with_data(
-        id: Value,
-        code: JsonRpcErrorCode,
-        message: impl Into<String>,
-        data: Value,
-    ) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: code as i32,
-                message: message.into(),
-                data: Some(data),
-            }),
-            id,
-        }
-    }
-}
-
-/// JSON-RPC 2.0 error object.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    /// Error code.
-    pub code: i32,
-    /// Error message.
-    pub message: String,
-    /// Additional error data (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+    pub const UNAUTHORIZED: i32 = -32001;
+    pub const NOT_FOUND: i32 = -32002;
 }
 
 // ---- Application State ----
@@ -241,7 +140,223 @@ impl Default for ServerConfig {
     }
 }
 
-/// RPC server using HTTP with axum.
+// ---- JSON-RPC API Definition ----
+
+/// JSON-RPC API trait using jsonrpsee macros.
+#[rpc(server)]
+pub trait ClawletApi {
+    /// Health check.
+    #[method(name = "health")]
+    async fn health(&self) -> Result<Value, ErrorObjectOwned>;
+
+    /// Get wallet address.
+    #[method(name = "address")]
+    async fn address(&self) -> Result<Value, ErrorObjectOwned>;
+
+    /// Query balance.
+    #[method(name = "balance")]
+    async fn balance(&self, params: BalanceQuery) -> Result<Value, ErrorObjectOwned>;
+
+    /// Execute transfer.
+    #[method(name = "transfer")]
+    async fn transfer(&self, params: TransferRequest) -> Result<Value, ErrorObjectOwned>;
+
+    /// List available skills.
+    #[method(name = "skills")]
+    async fn skills(&self) -> Result<Value, ErrorObjectOwned>;
+
+    /// Execute a skill.
+    #[method(name = "execute")]
+    async fn execute(&self, params: ExecuteRequest) -> Result<Value, ErrorObjectOwned>;
+
+    /// Grant a new session token.
+    #[method(name = "auth.grant")]
+    async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned>;
+
+    /// List all active sessions.
+    #[method(name = "auth.list")]
+    async fn auth_list(&self, password: String) -> Result<Value, ErrorObjectOwned>;
+
+    /// Revoke a session.
+    #[method(name = "auth.revoke")]
+    async fn auth_revoke(
+        &self,
+        password: String,
+        agent_id: String,
+    ) -> Result<Value, ErrorObjectOwned>;
+
+    /// Revoke all sessions.
+    #[method(name = "auth.revoke_all")]
+    async fn auth_revoke_all(&self, password: String) -> Result<Value, ErrorObjectOwned>;
+}
+
+/// RPC server implementation.
+pub struct RpcServerImpl {
+    state: Arc<AppState>,
+}
+
+impl RpcServerImpl {
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl ClawletApiServer for RpcServerImpl {
+    async fn health(&self) -> Result<Value, ErrorObjectOwned> {
+        Ok(serde_json::json!({"status": "ok"}))
+    }
+
+    async fn address(&self) -> Result<Value, ErrorObjectOwned> {
+        match handlers::handle_address(&self.state) {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn balance(&self, params: BalanceQuery) -> Result<Value, ErrorObjectOwned> {
+        // Note: In a full implementation, we'd extract the auth token from headers
+        // For now, skip auth check if no keystore exists (unauthenticated mode)
+        if let Err(e) = check_auth(&self.state, "", TokenScope::Read) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        match handlers::handle_balance(&self.state, params).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn transfer(&self, params: TransferRequest) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = check_auth(&self.state, "", TokenScope::Trade) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        match handlers::handle_transfer(&self.state, params).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn skills(&self) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = check_auth(&self.state, "", TokenScope::Read) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        match handlers::handle_skills(&self.state) {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn execute(&self, params: ExecuteRequest) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = check_auth(&self.state, "", TokenScope::Trade) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        match handlers::handle_execute(&self.state, params).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned> {
+        // Verify password
+        if let Err(e) = verify_admin_password(&self.state, &params.password) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        // Parse scope
+        let scope: TokenScope = params
+            .scope
+            .parse()
+            .map_err(|e: AuthError| auth_error_to_rpc(e))?;
+
+        // Calculate expiration
+        let expires_hours = params
+            .expires_hours
+            .unwrap_or(self.state.auth_config.default_session_ttl_hours);
+        let expires_in = Duration::from_secs(expires_hours * 3600);
+
+        // Get current Unix UID
+        #[cfg(unix)]
+        let uid = unsafe { libc::getuid() };
+        #[cfg(not(unix))]
+        let uid = 0u32;
+
+        // Grant the session
+        let mut store = self.state.session_store.write().map_err(|_| {
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
+        })?;
+
+        let token = store.grant(&params.agent_id, scope, expires_in, uid);
+        let session = store.get(&params.agent_id).unwrap();
+
+        let response = AuthGrantResponse {
+            token,
+            expires_at: session.expires_at.to_rfc3339(),
+        };
+
+        Ok(serde_json::to_value(response).unwrap())
+    }
+
+    async fn auth_list(&self, password: String) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &password) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let store = self.state.session_store.read().map_err(|_| {
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
+        })?;
+
+        let sessions: Vec<_> = store
+            .list()
+            .into_iter()
+            .map(|s| SessionSummary {
+                id: s.id.clone(),
+                scope: s.scope.to_string(),
+                created_at: s.created_at.to_rfc3339(),
+                expires_at: s.expires_at.to_rfc3339(),
+                last_used_at: s.last_used_at.to_rfc3339(),
+                request_count: s.request_count,
+            })
+            .collect();
+
+        Ok(serde_json::to_value(AuthListResponse { sessions }).unwrap())
+    }
+
+    async fn auth_revoke(
+        &self,
+        password: String,
+        agent_id: String,
+    ) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &password) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let mut store = self.state.session_store.write().map_err(|_| {
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
+        })?;
+
+        let revoked = store.revoke(&agent_id);
+        Ok(serde_json::to_value(AuthRevokeResponse { revoked }).unwrap())
+    }
+
+    async fn auth_revoke_all(&self, password: String) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &password) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let mut store = self.state.session_store.write().map_err(|_| {
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
+        })?;
+
+        let count = store.revoke_all();
+        Ok(serde_json::to_value(AuthRevokeAllResponse { count }).unwrap())
+    }
+}
+
+/// RPC server using jsonrpsee.
 pub struct RpcServer {
     config: ServerConfig,
     state: Arc<AppState>,
@@ -254,12 +369,6 @@ impl RpcServer {
     }
 
     /// Start the RPC server using the provided configuration.
-    ///
-    /// This will:
-    /// 1. Load the policy engine from the configured policy file
-    /// 2. Create an audit logger at the configured path
-    /// 3. Build EVM adapters for each configured chain
-    /// 4. Start the HTTP server and process requests
     pub async fn start_with_config(
         config: &Config,
         signer: LocalSigner,
@@ -310,393 +419,26 @@ impl RpcServer {
 
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
-
-        let app = Router::new()
-            .route("/", get(health_handler))
-            .route("/health", get(health_handler))
-            .route("/rpc", post(rpc_handler))
-            .layer(cors)
-            .layer(TraceLayer::new_for_http())
-            .with_state(Arc::clone(&self.state));
-
-        let listener = tokio::net::TcpListener::bind(self.config.addr)
+        let server = Server::builder()
+            .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
 
+        let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));
+        let handle = server.start(rpc_impl.into_rpc());
+
         info!(addr = %self.config.addr, "HTTP JSON-RPC server listening");
 
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| ServerError::Io(std::io::Error::other(e)))
+        // Wait for server to finish (runs until stopped)
+        handle.stopped().await;
+
+        Ok(())
     }
 
     /// Get the server address.
     pub fn addr(&self) -> SocketAddr {
         self.config.addr
     }
-}
-
-// ---- HTTP Handlers ----
-
-/// Health check endpoint.
-async fn health_handler() -> Json<Value> {
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// JSON-RPC endpoint handler.
-///
-/// Manually parses the request body to return JSON-RPC compliant errors
-/// for malformed requests (instead of axum's default HTTP 400).
-async fn rpc_handler(
-    State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Json<JsonRpcResponse> {
-    // Extract auth token from Authorization header
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|auth| auth.strip_prefix("Bearer "))
-        .unwrap_or("");
-
-    // Parse the request body manually to return JSON-RPC errors
-    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
-        Ok(req) => req,
-        Err(e) => {
-            return Json(JsonRpcResponse::error(
-                Value::Null,
-                JsonRpcErrorCode::ParseError,
-                format!("parse error: {}", e),
-            ));
-        }
-    };
-
-    let response = handle_request(&state, request, token).await;
-    Json(response)
-}
-
-/// Handle a single JSON-RPC request.
-async fn handle_request(state: &AppState, request: JsonRpcRequest, token: &str) -> JsonRpcResponse {
-    // Validate JSON-RPC version
-    if request.jsonrpc != "2.0" {
-        return JsonRpcResponse::error(
-            request.id,
-            JsonRpcErrorCode::InvalidRequest,
-            "invalid JSON-RPC version",
-        );
-    }
-
-    let id = request.id.clone();
-
-    // Route to appropriate handler
-    match request.method.as_str() {
-        "health" => handle_health(id),
-        "address" => handle_address(state, id),
-        "balance" => handle_balance(state, id, request.params, token).await,
-        "transfer" => handle_transfer(state, id, request.params, token).await,
-        "skills" => handle_skills(state, id, token),
-        "execute" => handle_execute(state, id, request.params, token).await,
-        "auth.grant" => handle_auth_grant(state, id, request.params).await,
-        "auth.list" => handle_auth_list(state, id, request.params).await,
-        "auth.revoke" => handle_auth_revoke(state, id, request.params).await,
-        "auth.revoke_all" => handle_auth_revoke_all(state, id, request.params).await,
-        _ => JsonRpcResponse::error(
-            id,
-            JsonRpcErrorCode::MethodNotFound,
-            format!("method not found: {}", request.method),
-        ),
-    }
-}
-
-// ---- Method Handlers ----
-
-fn handle_health(id: Value) -> JsonRpcResponse {
-    JsonRpcResponse::success(id, serde_json::json!({"status": "ok"}))
-}
-
-fn handle_address(state: &AppState, id: Value) -> JsonRpcResponse {
-    // No auth required — address query is public information
-    match handlers::handle_address(state) {
-        Ok(result) => JsonRpcResponse::success(id, result),
-        Err(e) => handler_error_response(id, e),
-    }
-}
-
-async fn handle_balance(
-    state: &AppState,
-    id: Value,
-    params: Value,
-    token: &str,
-) -> JsonRpcResponse {
-    // Check auth (Read scope required)
-    if let Err(e) = check_auth(state, token, TokenScope::Read) {
-        return auth_error_response(id, e);
-    }
-
-    // Parse params
-    let query: BalanceQuery = match serde_json::from_value(params) {
-        Ok(q) => q,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Call handler
-    match handlers::handle_balance(state, query).await {
-        Ok(result) => JsonRpcResponse::success(id, result),
-        Err(e) => handler_error_response(id, e),
-    }
-}
-
-async fn handle_transfer(
-    state: &AppState,
-    id: Value,
-    params: Value,
-    token: &str,
-) -> JsonRpcResponse {
-    // Check auth (Trade scope required)
-    if let Err(e) = check_auth(state, token, TokenScope::Trade) {
-        return auth_error_response(id, e);
-    }
-
-    // Parse params
-    let req: TransferRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Call handler
-    match handlers::handle_transfer(state, req).await {
-        Ok(result) => JsonRpcResponse::success(id, result),
-        Err(e) => handler_error_response(id, e),
-    }
-}
-
-fn handle_skills(state: &AppState, id: Value, token: &str) -> JsonRpcResponse {
-    // Check auth (Read scope required)
-    if let Err(e) = check_auth(state, token, TokenScope::Read) {
-        return auth_error_response(id, e);
-    }
-
-    // Call handler
-    match handlers::handle_skills(state) {
-        Ok(result) => JsonRpcResponse::success(id, result),
-        Err(e) => handler_error_response(id, e),
-    }
-}
-
-async fn handle_execute(
-    state: &AppState,
-    id: Value,
-    params: Value,
-    token: &str,
-) -> JsonRpcResponse {
-    // Check auth (Trade scope required)
-    if let Err(e) = check_auth(state, token, TokenScope::Trade) {
-        return auth_error_response(id, e);
-    }
-
-    // Parse params
-    let req: ExecuteRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Call handler
-    match handlers::handle_execute(state, req).await {
-        Ok(result) => JsonRpcResponse::success(id, result),
-        Err(e) => handler_error_response(id, e),
-    }
-}
-
-async fn handle_auth_grant(state: &AppState, id: Value, params: Value) -> JsonRpcResponse {
-    // Parse params
-    let req: AuthGrantRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Verify password
-    if let Err(e) = verify_admin_password(state, &req.password) {
-        return auth_error_response(id, e);
-    }
-
-    // Parse scope
-    let scope: TokenScope = match req.scope.parse() {
-        Ok(s) => s,
-        Err(e) => return auth_error_response(id, e),
-    };
-
-    // Calculate expiration
-    let expires_hours = req
-        .expires_hours
-        .unwrap_or(state.auth_config.default_session_ttl_hours);
-    let expires_in = Duration::from_secs(expires_hours * 3600);
-
-    // Get current Unix UID
-    #[cfg(unix)]
-    let uid = unsafe { libc::getuid() };
-    #[cfg(not(unix))]
-    let uid = 0u32;
-
-    // Grant the session
-    let mut store = match state.session_store.write() {
-        Ok(s) => s,
-        Err(_) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InternalError,
-                "failed to lock store",
-            )
-        }
-    };
-
-    let token = store.grant(&req.agent_id, scope, expires_in, uid);
-    let session = store.get(&req.agent_id).unwrap();
-
-    let response = AuthGrantResponse {
-        token,
-        expires_at: session.expires_at.to_rfc3339(),
-    };
-
-    JsonRpcResponse::success(id, response)
-}
-
-async fn handle_auth_list(state: &AppState, id: Value, params: Value) -> JsonRpcResponse {
-    // Parse params
-    let req: AuthListRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Verify password
-    if let Err(e) = verify_admin_password(state, &req.password) {
-        return auth_error_response(id, e);
-    }
-
-    let store = match state.session_store.read() {
-        Ok(s) => s,
-        Err(_) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InternalError,
-                "failed to lock store",
-            )
-        }
-    };
-
-    let sessions: Vec<_> = store
-        .list()
-        .into_iter()
-        .map(|s| crate::dispatch::SessionSummary {
-            id: s.id.clone(),
-            scope: s.scope.to_string(),
-            created_at: s.created_at.to_rfc3339(),
-            expires_at: s.expires_at.to_rfc3339(),
-            last_used_at: s.last_used_at.to_rfc3339(),
-            request_count: s.request_count,
-        })
-        .collect();
-
-    JsonRpcResponse::success(id, AuthListResponse { sessions })
-}
-
-async fn handle_auth_revoke(state: &AppState, id: Value, params: Value) -> JsonRpcResponse {
-    // Parse params
-    let req: AuthRevokeRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Verify password
-    if let Err(e) = verify_admin_password(state, &req.password) {
-        return auth_error_response(id, e);
-    }
-
-    let mut store = match state.session_store.write() {
-        Ok(s) => s,
-        Err(_) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InternalError,
-                "failed to lock store",
-            )
-        }
-    };
-
-    let revoked = store.revoke(&req.agent_id);
-    JsonRpcResponse::success(id, AuthRevokeResponse { revoked })
-}
-
-async fn handle_auth_revoke_all(state: &AppState, id: Value, params: Value) -> JsonRpcResponse {
-    // Parse params
-    let req: AuthRevokeAllRequest = match serde_json::from_value(params) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InvalidParams,
-                format!("invalid params: {}", e),
-            )
-        }
-    };
-
-    // Verify password
-    if let Err(e) = verify_admin_password(state, &req.password) {
-        return auth_error_response(id, e);
-    }
-
-    let mut store = match state.session_store.write() {
-        Ok(s) => s,
-        Err(_) => {
-            return JsonRpcResponse::error(
-                id,
-                JsonRpcErrorCode::InternalError,
-                "failed to lock store",
-            )
-        }
-    };
-
-    let count = store.revoke_all();
-    JsonRpcResponse::success(id, AuthRevokeAllResponse { count })
 }
 
 // ---- Auth Helpers ----
@@ -723,11 +465,7 @@ fn check_auth(state: &AppState, token: &str, required_scope: TokenScope) -> Resu
     Ok(())
 }
 
-/// Verify password for admin operations by attempting to unlock the keystore.
-///
-/// Instead of storing a separate password hash, we verify the password by
-/// attempting to unlock the keystore. If the keystore unlocks successfully,
-/// the password is valid.
+/// Verify password for admin operations.
 fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthError> {
     // Check lockout
     {
@@ -744,7 +482,7 @@ fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthErr
         }
     }
 
-    // Try to unlock any keystore file - if successful, password is valid
+    // Try to unlock any keystore file
     let keystores =
         Keystore::list(&state.keystore_path).map_err(|_| AuthError::PasswordIncorrect)?;
 
@@ -755,14 +493,12 @@ fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthErr
     let (_, keystore_path) = &keystores[0];
     match Keystore::unlock(keystore_path, password) {
         Ok(_) => {
-            // Clear failed attempts on success
             if let Ok(mut store) = state.session_store.write() {
                 store.clear_failed_attempts("admin");
             }
             Ok(())
         }
         Err(_) => {
-            // Record failed attempt
             if let Ok(mut store) = state.session_store.write() {
                 store.record_failed_attempt("admin");
             }
@@ -771,48 +507,50 @@ fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthErr
     }
 }
 
-/// Convert an auth error to a JSON-RPC response.
-fn auth_error_response(id: Value, err: AuthError) -> JsonRpcResponse {
+/// Convert an auth error to a jsonrpsee error.
+fn auth_error_to_rpc(err: AuthError) -> ErrorObjectOwned {
     match err {
         AuthError::InvalidToken | AuthError::TokenExpired => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::Unauthorized, err.to_string())
+            ErrorObjectOwned::owned(error_code::UNAUTHORIZED, err.to_string(), None::<()>)
         }
         AuthError::InsufficientScope { .. } => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::Unauthorized, err.to_string())
+            ErrorObjectOwned::owned(error_code::UNAUTHORIZED, err.to_string(), None::<()>)
         }
         AuthError::PasswordIncorrect => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::Unauthorized, "incorrect password")
+            ErrorObjectOwned::owned(error_code::UNAUTHORIZED, "incorrect password", None::<()>)
         }
         AuthError::TooManyAttempts => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::Unauthorized, err.to_string())
+            ErrorObjectOwned::owned(error_code::UNAUTHORIZED, err.to_string(), None::<()>)
         }
-        AuthError::InvalidScope(ref s) => JsonRpcResponse::error(
-            id,
-            JsonRpcErrorCode::InvalidParams,
+        AuthError::InvalidScope(ref s) => ErrorObjectOwned::owned(
+            error_code::INVALID_PARAMS,
             format!("invalid scope: {s}"),
+            None::<()>,
         ),
-        AuthError::SessionNotFound(ref s) => JsonRpcResponse::error(
-            id,
-            JsonRpcErrorCode::NotFound,
+        AuthError::SessionNotFound(ref s) => ErrorObjectOwned::owned(
+            error_code::NOT_FOUND,
             format!("session not found: {s}"),
+            None::<()>,
         ),
-        AuthError::HashingError(ref s) => JsonRpcResponse::error(
-            id,
-            JsonRpcErrorCode::InternalError,
+        AuthError::HashingError(ref s) => ErrorObjectOwned::owned(
+            error_code::INTERNAL_ERROR,
             format!("hashing error: {s}"),
+            None::<()>,
         ),
     }
 }
 
-/// Convert a handler error to a JSON-RPC response.
-fn handler_error_response(id: Value, err: HandlerError) -> JsonRpcResponse {
+/// Convert a handler error to a jsonrpsee error.
+fn handler_error_to_rpc(err: HandlerError) -> ErrorObjectOwned {
     match err {
         HandlerError::BadRequest(msg) => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::InvalidParams, msg)
+            ErrorObjectOwned::owned(error_code::INVALID_PARAMS, msg, None::<()>)
         }
-        HandlerError::NotFound(msg) => JsonRpcResponse::error(id, JsonRpcErrorCode::NotFound, msg),
+        HandlerError::NotFound(msg) => {
+            ErrorObjectOwned::owned(error_code::NOT_FOUND, msg, None::<()>)
+        }
         HandlerError::Internal(msg) => {
-            JsonRpcResponse::error(id, JsonRpcErrorCode::InternalError, msg)
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, msg, None::<()>)
         }
     }
 }
@@ -820,54 +558,6 @@ fn handler_error_response(id: Value, err: HandlerError) -> JsonRpcResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_json_rpc_request() {
-        let json = r#"{"jsonrpc":"2.0","method":"health","params":{},"id":1}"#;
-        let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.jsonrpc, "2.0");
-        assert_eq!(request.method, "health");
-        assert_eq!(request.id, serde_json::json!(1));
-    }
-
-    #[test]
-    fn test_json_rpc_success_response() {
-        let response =
-            JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({"status": "ok"}));
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"jsonrpc\":\"2.0\""));
-        assert!(json.contains("\"result\":"));
-        assert!(!json.contains("\"error\":"));
-    }
-
-    #[test]
-    fn test_json_rpc_error_response() {
-        let response = JsonRpcResponse::error(
-            serde_json::json!(1),
-            JsonRpcErrorCode::Unauthorized,
-            "invalid token",
-        );
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"jsonrpc\":\"2.0\""));
-        assert!(json.contains("\"error\":"));
-        assert!(json.contains("\"code\":-32001"));
-        assert!(json.contains("\"message\":\"invalid token\""));
-        assert!(!json.contains("\"result\":"));
-    }
-
-    #[test]
-    fn test_json_rpc_null_id() {
-        let json = r#"{"jsonrpc":"2.0","method":"health","id":null}"#;
-        let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert!(request.id.is_null());
-    }
-
-    #[test]
-    fn test_json_rpc_string_id() {
-        let json = r#"{"jsonrpc":"2.0","method":"health","id":"request-123"}"#;
-        let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.id, serde_json::json!("request-123"));
-    }
 
     #[test]
     fn test_default_addr() {

@@ -174,13 +174,7 @@ async fn send_request<R: for<'de> Deserialize<'de>>(
     params: impl Serialize,
 ) -> Result<R, Box<dyn std::error::Error>> {
     let params = serde_json::to_value(params)?;
-    let response = client.call_raw(method, params).await?;
-
-    if let Some(error) = response.error {
-        return Err(format!("{} (code {})", error.message, error.code).into());
-    }
-
-    let result = response.result.ok_or("empty result")?;
+    let result = client.call_raw(method, params).await?;
     Ok(serde_json::from_value(result)?)
 }
 

@@ -47,6 +47,40 @@ use crate::dispatch::{
 };
 use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
 
+// ---- Server Error Type ----
+
+/// Errors that can occur when running the RPC server.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerError {
+    /// Failed to parse or load configuration.
+    #[error("config error: {0}")]
+    Config(String),
+
+    /// Failed to initialize the policy engine.
+    #[error("policy error: {0}")]
+    Policy(#[from] clawlet_core::policy::PolicyError),
+
+    /// Failed to create or write to the audit log.
+    #[error("audit error: {0}")]
+    Audit(#[from] clawlet_core::audit::AuditError),
+
+    /// Failed to create an EVM adapter.
+    #[error("evm adapter error: {0}")]
+    EvmAdapter(String),
+
+    /// Failed to bind the socket listener.
+    #[error("socket error: {0}")]
+    Socket(String),
+
+    /// I/O error during server operation.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// JSON serialization/deserialization error.
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
 // ---- JSON-RPC 2.0 Types ----
 
 /// Standard JSON-RPC 2.0 error codes.
@@ -243,7 +277,7 @@ impl RpcServer {
         config: &Config,
         signer: LocalSigner,
         socket_path: Option<PathBuf>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), ServerError> {
         // Load policy
         let policy = PolicyEngine::from_file(&config.policy_path)?;
 
@@ -256,7 +290,8 @@ impl RpcServer {
         // Build EVM adapters for each configured chain
         let mut adapters = HashMap::new();
         for (chain_id, rpc_url) in &config.chain_rpc_urls {
-            let adapter = EvmAdapter::new(rpc_url)?;
+            let adapter =
+                EvmAdapter::new(rpc_url).map_err(|e| ServerError::EvmAdapter(e.to_string()))?;
             adapters.insert(*chain_id, adapter);
         }
 
@@ -294,7 +329,7 @@ impl RpcServer {
     /// 3. Bind the listener
     /// 4. Set socket permissions
     /// 5. Accept connections in a loop
-    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run(&self) -> Result<(), ServerError> {
         let socket_path = &self.config.socket_path;
 
         // Ensure parent directory exists
@@ -311,12 +346,12 @@ impl RpcServer {
         let name = socket_path
             .clone()
             .to_fs_name::<GenericFilePath>()
-            .map_err(|e| format!("invalid socket path: {e}"))?;
+            .map_err(|e| ServerError::Socket(format!("invalid socket path: {e}")))?;
 
         let listener = ListenerOptions::new()
             .name(name)
             .create_tokio()
-            .map_err(|e| format!("failed to create listener: {e}"))?;
+            .map_err(|e| ServerError::Socket(format!("failed to create listener: {e}")))?;
 
         // Set socket permissions
         #[cfg(unix)]
@@ -361,10 +396,7 @@ impl RpcServer {
 /// Handle a single client connection.
 ///
 /// Reads newline-delimited JSON-RPC requests and writes responses.
-async fn handle_connection(
-    state: Arc<AppState>,
-    stream: Stream,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_connection(state: Arc<AppState>, stream: Stream) -> Result<(), ServerError> {
     debug!("new socket connection");
 
     // Split into read/write halves - interprocess's tokio types directly implement tokio's traits

@@ -65,9 +65,7 @@ pub async fn run(
     println!("Clawlet RPC server listening on {}", socket_display);
 
     // Start the Unix socket server
-    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), socket_path)
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error> { e })?;
+    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), socket_path).await?;
 
     Ok(())
 }

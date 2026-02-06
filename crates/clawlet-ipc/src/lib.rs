@@ -13,5 +13,5 @@ pub mod types;
 
 // Re-export commonly used types
 pub use client::{ClientError, RpcClient};
-pub use server::{AppState, JsonRpcRequest, JsonRpcResponse, RpcServer, ServerConfig};
+pub use server::{AppState, JsonRpcRequest, JsonRpcResponse, RpcServer, ServerConfig, ServerError};
 pub use types::RpcMethod;

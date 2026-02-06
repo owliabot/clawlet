@@ -1,20 +1,12 @@
 //! `clawlet serve` — start the RPC server.
 //!
-//! Loads config, unlocks keystore, starts the iceoryx2 IPC server by default,
-//! or starts the Unix socket server for non-Rust clients instead,
+//! Loads config, unlocks keystore, starts the Unix socket server for JSON-RPC,
 //! and handles graceful shutdown on Ctrl+C.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
 
-use clawlet_core::audit::AuditLogger;
-use clawlet_core::auth::SessionStore;
 use clawlet_core::config::Config;
-use clawlet_core::policy::PolicyEngine;
-use clawlet_evm::EvmAdapter;
-use clawlet_ipc::server::{AppState, RpcServer};
-use clawlet_ipc::socket::{SocketServer, SocketServerConfig};
+use clawlet_ipc::server::RpcServer;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
@@ -61,71 +53,21 @@ pub async fn run(
         )
     })?;
 
-    println!("Clawlet RPC server running on {}", config.rpc_bind);
+    let socket_display = socket_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| {
+            clawlet_ipc::server::default_socket_path()
+                .display()
+                .to_string()
+        });
 
-    // If socket path is provided, start the Unix socket server instead of iceoryx2.
-    if let Some(socket_path) = socket_path {
-        // Build AppState for the socket server.
-        let state = Arc::new(build_app_state(&config, LocalSigner::new(signing_key))?);
+    println!("Clawlet RPC server listening on {}", socket_display);
 
-        let socket_config = SocketServerConfig {
-            socket_path: socket_path.clone(),
-            permissions: 0o660,
-        };
-
-        let socket_server = SocketServer::new(socket_config, Arc::clone(&state));
-
-        println!("Unix socket server listening on {}", socket_path.display());
-
-        // For now, just start the socket server (iceoryx2 uses its own AppState internally).
-        // In the future, we could refactor RpcServer to accept an Arc<AppState>.
-        socket_server
-            .start()
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error> { e })?;
-    } else {
-        // Start only the iceoryx2 RPC server (blocks until shutdown)
-        RpcServer::start(&config, LocalSigner::new(signing_key)).await?;
-    }
+    // Start the Unix socket server
+    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), socket_path)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
     Ok(())
-}
-
-/// Build AppState from config and signer.
-fn build_app_state(
-    config: &Config,
-    signer: LocalSigner,
-) -> Result<AppState, Box<dyn std::error::Error>> {
-    // Load policy
-    let policy = PolicyEngine::from_file(&config.policy_path)?;
-
-    // Create audit logger (ensure parent dir exists)
-    if let Some(parent) = config.audit_log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let audit = AuditLogger::new(&config.audit_log_path)?;
-
-    // Build EVM adapters for each configured chain
-    let mut adapters = HashMap::new();
-    for (chain_id, rpc_url) in &config.chain_rpc_urls {
-        let adapter = EvmAdapter::new(rpc_url)?;
-        adapters.insert(*chain_id, adapter);
-    }
-
-    // Initialize session store
-    let session_store = SessionStore::new();
-
-    let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("skills"));
-
-    Ok(AppState {
-        policy: Arc::new(policy),
-        audit: Arc::new(Mutex::new(audit)),
-        adapters: Arc::new(adapters),
-        session_store: Arc::new(RwLock::new(session_store)),
-        auth_config: config.auth.clone(),
-        signer: Arc::new(signer),
-        skills_dir,
-    })
 }

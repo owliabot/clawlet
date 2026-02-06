@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use clawlet_core::auth::TokenScope;
 use clawlet_ipc::client::RpcClient;
-use clawlet_ipc::types::RpcMethod;
 use serde::{Deserialize, Serialize};
 
 /// Auth subcommands.
@@ -27,20 +26,36 @@ pub enum AuthCommand {
         /// Session duration (e.g., "24h", "7d", "1w").
         #[arg(long, default_value = "24h")]
         expires: String,
+
+        /// Path to Unix socket (default: auto-detect).
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 
     /// List all active sessions.
-    List,
+    List {
+        /// Path to Unix socket (default: auto-detect).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 
     /// Revoke a session by agent ID.
     Revoke {
         /// Agent identifier to revoke.
         #[arg(long)]
         agent: String,
+
+        /// Path to Unix socket (default: auto-detect).
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 
     /// Revoke all active sessions.
-    RevokeAll,
+    RevokeAll {
+        /// Path to Unix socket (default: auto-detect).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 /// Request body for auth grant RPC.
@@ -128,26 +143,55 @@ fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
 /// Run an auth subcommand.
 pub fn run(
     cmd: AuthCommand,
-    config_path: Option<PathBuf>,
+    _config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Build the tokio runtime for async operations
+    let rt = tokio::runtime::Runtime::new()?;
+
     match cmd {
         AuthCommand::Grant {
             agent,
             scope,
             expires,
-        } => run_grant(agent, scope, expires, config_path),
-        AuthCommand::List => run_list(config_path),
-        AuthCommand::Revoke { agent } => run_revoke(agent, config_path),
-        AuthCommand::RevokeAll => run_revoke_all(config_path),
+            socket,
+        } => rt.block_on(run_grant(agent, scope, expires, socket)),
+        AuthCommand::List { socket } => rt.block_on(run_list(socket)),
+        AuthCommand::Revoke { agent, socket } => rt.block_on(run_revoke(agent, socket)),
+        AuthCommand::RevokeAll { socket } => rt.block_on(run_revoke_all(socket)),
     }
 }
 
+/// Create an RPC client with the given socket path.
+fn create_client(socket_path: Option<PathBuf>) -> RpcClient {
+    match socket_path {
+        Some(path) => RpcClient::with_path(path),
+        None => RpcClient::new(),
+    }
+}
+
+/// Send a JSON-RPC request and get the response.
+async fn send_request<R: for<'de> Deserialize<'de>>(
+    client: &RpcClient,
+    method: &str,
+    params: impl Serialize,
+) -> Result<R, Box<dyn std::error::Error>> {
+    let params = serde_json::to_value(params)?;
+    let response = client.call_raw(method, params).await?;
+
+    if let Some(error) = response.error {
+        return Err(format!("{} (code {})", error.message, error.code).into());
+    }
+
+    let result = response.result.ok_or("empty result")?;
+    Ok(serde_json::from_value(result)?)
+}
+
 /// Grant a new session token.
-fn run_grant(
+async fn run_grant(
     agent: String,
     scope: String,
     expires: String,
-    _config_path: Option<PathBuf>,
+    socket_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate scope before prompting for password
     let _: TokenScope = scope
@@ -169,22 +213,9 @@ fn run_grant(
         expires_hours: Some(expires_hours),
     };
 
-    let payload = serde_json::to_vec(&req)?;
-
     // Create client and send request
-    let client = RpcClient::new()?;
-    let response = client.call(RpcMethod::AuthGrant, "", &payload)?;
-
-    if !response.is_ok() {
-        let error: serde_json::Value = serde_json::from_slice(response.payload_bytes())?;
-        let msg = error
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        return Err(format!("Failed to grant session: {msg}").into());
-    }
-
-    let resp: AuthGrantResponse = serde_json::from_slice(response.payload_bytes())?;
+    let client = create_client(socket_path);
+    let resp: AuthGrantResponse = send_request(&client, "auth.grant", req).await?;
 
     eprintln!();
     eprintln!("✅ Session granted to agent: {agent}");
@@ -200,29 +231,17 @@ fn run_grant(
 }
 
 /// List all active sessions.
-fn run_list(_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_list(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
     let password = rpassword::read_password()?;
 
     // Build request
     let req = AuthListRequest { password };
-    let payload = serde_json::to_vec(&req)?;
 
     // Create client and send request
-    let client = RpcClient::new()?;
-    let response = client.call(RpcMethod::AuthList, "", &payload)?;
-
-    if !response.is_ok() {
-        let error: serde_json::Value = serde_json::from_slice(response.payload_bytes())?;
-        let msg = error
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        return Err(format!("Failed to list sessions: {msg}").into());
-    }
-
-    let resp: AuthListResponse = serde_json::from_slice(response.payload_bytes())?;
+    let client = create_client(socket_path);
+    let resp: AuthListResponse = send_request(&client, "auth.list", req).await?;
 
     eprintln!();
     if resp.sessions.is_empty() {
@@ -245,9 +264,9 @@ fn run_list(_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Err
 }
 
 /// Revoke a session by agent ID.
-fn run_revoke(
+async fn run_revoke(
     agent: String,
-    _config_path: Option<PathBuf>,
+    socket_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
@@ -258,22 +277,10 @@ fn run_revoke(
         password,
         agent_id: agent.clone(),
     };
-    let payload = serde_json::to_vec(&req)?;
 
     // Create client and send request
-    let client = RpcClient::new()?;
-    let response = client.call(RpcMethod::AuthRevoke, "", &payload)?;
-
-    if !response.is_ok() {
-        let error: serde_json::Value = serde_json::from_slice(response.payload_bytes())?;
-        let msg = error
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        return Err(format!("Failed to revoke session: {msg}").into());
-    }
-
-    let resp: AuthRevokeResponse = serde_json::from_slice(response.payload_bytes())?;
+    let client = create_client(socket_path);
+    let resp: AuthRevokeResponse = send_request(&client, "auth.revoke", req).await?;
 
     eprintln!();
     if resp.revoked {
@@ -286,7 +293,7 @@ fn run_revoke(
 }
 
 /// Revoke all sessions.
-fn run_revoke_all(_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_revoke_all(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
     let password = rpassword::read_password()?;
@@ -302,22 +309,10 @@ fn run_revoke_all(_config_path: Option<PathBuf>) -> Result<(), Box<dyn std::erro
 
     // Build request
     let req = AuthRevokeAllRequest { password };
-    let payload = serde_json::to_vec(&req)?;
 
     // Create client and send request
-    let client = RpcClient::new()?;
-    let response = client.call(RpcMethod::AuthRevokeAll, "", &payload)?;
-
-    if !response.is_ok() {
-        let error: serde_json::Value = serde_json::from_slice(response.payload_bytes())?;
-        let msg = error
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        return Err(format!("Failed to revoke sessions: {msg}").into());
-    }
-
-    let resp: AuthRevokeAllResponse = serde_json::from_slice(response.payload_bytes())?;
+    let client = create_client(socket_path);
+    let resp: AuthRevokeAllResponse = send_request(&client, "auth.revoke_all", req).await?;
 
     eprintln!();
     eprintln!("✅ Revoked {} session(s)", resp.count);

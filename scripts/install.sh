@@ -299,20 +299,20 @@ create_config_dir() {
 # Clawlet Policy Configuration
 # See: https://github.com/owliabot/clawlet/blob/main/config/policy.example.yaml
 
-version: 1
+# Maximum total USD value of transfers per day
+daily_transfer_limit_usd: 100.0
 
-# Daily spending limits (in USD equivalent)
-limits:
-  daily_usd: 100.0
+# Maximum USD value per single transfer
+per_tx_limit_usd: 50.0
 
-# Allowed token addresses (leave empty to allow all)
+# Allowed token symbols or addresses (empty = all allowed)
 allowed_tokens: []
 
-# Recipient whitelist (leave empty to allow all)
-allowed_recipients: []
+# Allowed chain IDs (empty = all allowed)
+allowed_chains: []
 
-# Require human confirmation above this amount
-confirm_above_usd: 50.0
+# Transfers above this USD value require human approval
+require_approval_above_usd: 50.0
 POLICY
         success "Created default policy at $CONFIG_DIR/policy.yaml"
     else

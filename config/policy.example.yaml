@@ -1,30 +1,25 @@
 # Clawlet Policy Configuration Example
 # Copy to ~/.clawlet/policy.yaml and customize.
 
-# Daily transfer limits
-limits:
-  # Maximum total daily transfer value in USD equivalent
-  daily_transfer_usd: 1000.0
-  # Maximum single transfer value in USD equivalent
-  per_transfer_usd: 500.0
+# Maximum total USD value of transfers per day
+daily_transfer_limit_usd: 1000.0
 
-# Allowed ERC-20 tokens (by address on the target chain)
-# Empty list = only native ETH transfers allowed
-allowed_tokens:
-  - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC (Ethereum)
-  - "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # USDT (Ethereum)
-  - "0x6B175474E89094C44Da98b954EedeAC495271d0F"  # DAI (Ethereum)
+# Maximum USD value per single transfer
+per_tx_limit_usd: 500.0
 
-# Allowed recipient addresses
-# Empty list = any recipient allowed
-allowed_recipients: []
+# Allowed token symbols or addresses (empty = all allowed)
+# Examples:
+#   - "USDC"
+#   - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+allowed_tokens: []
 
-# Chain configuration
-chain:
-  rpc_url: "https://mainnet.base.org"
-  chain_id: 8453
+# Allowed chain IDs (empty = all allowed)
+# Examples:
+#   - 1       # Ethereum mainnet
+#   - 8453    # Base
+#   - 42161   # Arbitrum
+allowed_chains: []
 
-# Audit logging
-audit:
-  enabled: true
-  path: "~/.clawlet/audit.jsonl"
+# Transfers above this USD value require human approval (optional)
+# Set to null or remove to disable approval requirement
+require_approval_above_usd: 100.0

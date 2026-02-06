@@ -296,6 +296,30 @@ echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawl
 {"jsonrpc":"2.0","result":{"status":"ok"},"id":1}
 ```
 
+### address
+
+查询 clawlet 管理的钱包地址（无需认证）。
+
+```bash
+echo '{"jsonrpc":"2.0","method":"address","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
+```
+
+响应：
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "address": "0x742d35cc6634c0532925a3b844bc9e7595f5b5e2"
+  },
+  "id": 1
+}
+```
+
+字段说明：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `address` | string | 钱包地址（0x 前缀） |
+
 ### balance
 
 查询余额（需要 `read` scope）。

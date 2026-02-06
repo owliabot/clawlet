@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
+use clawlet_signer::Signer;
 
 use crate::server::AppState;
 
@@ -116,6 +117,13 @@ pub struct ExecuteResponse {
     pub error: Option<String>,
 }
 
+/// Response for address query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddressResponse {
+    /// The wallet address managed by this clawlet instance (hex, 0x-prefixed).
+    pub address: String,
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -132,6 +140,14 @@ pub enum HandlerError {
 /// Health check — always returns `{"status": "ok"}`.
 pub fn handle_health(_state: &AppState) -> serde_json::Value {
     json!({ "status": "ok" })
+}
+
+/// Returns the wallet address managed by this clawlet instance.
+pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError> {
+    // Get the address from the loaded signer instance
+    let address = state.signer.address().to_string();
+
+    Ok(AddressResponse { address })
 }
 
 /// Query ETH balance for the given address and chain.
@@ -408,6 +424,26 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
 mod tests {
     use super::*;
     use clawlet_evm::U256;
+
+    #[test]
+    fn address_response_serialization() {
+        let response = AddressResponse {
+            address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("address"));
+        assert!(json.contains("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"));
+    }
+
+    #[test]
+    fn address_response_roundtrip() {
+        let response = AddressResponse {
+            address: "0x8ba1f109551bD432803012645Ac136ddd64DBA72".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: AddressResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.address, "0x8ba1f109551bD432803012645Ac136ddd64DBA72");
+    }
 
     #[test]
     fn format_units_one_eth() {

@@ -361,22 +361,16 @@ function Main {
                 $Version = Get-LatestVersion
             }
 
-            if ($Version) {
-                Write-Info "Version: $Version"
-                $binaryPath = Download-Release -Arch $arch -Ver $Version -TempDir $tempDir
-                $installedVersion = $Version
+            if (-not $Version) {
+                throw "No releases found. Use -FromSource to build manually, or check https://github.com/$GitHubRepo/releases"
             }
 
+            Write-Info "Version: $Version"
+            $binaryPath = Download-Release -Arch $arch -Ver $Version -TempDir $tempDir
+            $installedVersion = $Version
+
             if (-not $binaryPath) {
-                Write-Warn "No pre-built binary available for Windows/$arch"
-                Write-Info "Falling back to building from source..."
-                $binaryPath = Build-FromSource -TempDir $tempDir
-                if ($Version) {
-                    $installedVersion = "$Version (built from source)"
-                }
-                else {
-                    $installedVersion = "(built from source)"
-                }
+                throw "No pre-built binary available for Windows/$arch (version: $Version). Use -FromSource to build manually."
             }
         }
 

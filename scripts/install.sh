@@ -392,17 +392,16 @@ main() {
             VERSION=$(get_latest_version) || true
         fi
 
-        if [[ -n "$VERSION" ]]; then
-            info "Version: $VERSION"
-            binary_path=$(download_release "$os" "$arch" "$VERSION" "$tmp_dir") || true
-            installed_version="$VERSION"
+        if [[ -z "$VERSION" ]]; then
+            die "No releases found. Use --from-source to build manually, or check https://github.com/${GITHUB_REPO}/releases"
         fi
 
+        info "Version: $VERSION"
+        binary_path=$(download_release "$os" "$arch" "$VERSION" "$tmp_dir") || true
+        installed_version="$VERSION"
+
         if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
-            warn "No pre-built binary available for $os/$arch"
-            info "Falling back to building from source..."
-            binary_path=$(build_from_source "$tmp_dir")
-            installed_version="${VERSION:-latest} (built from source)"
+            die "No pre-built binary available for $os/$arch (version: ${VERSION:-unknown}). Use --from-source to build manually."
         fi
     fi
 

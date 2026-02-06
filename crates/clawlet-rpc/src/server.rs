@@ -8,10 +8,8 @@
 //!
 //! Request format:
 //! ```json
-//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1}
+//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453,"token":"clwt_xxx"},"id":1}
 //! ```
-//!
-//! Authorization header: `Authorization: Bearer clwt_xxx`
 //!
 //! Success response:
 //! ```json
@@ -33,6 +31,7 @@ use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::server::Server;
 use jsonrpsee::types::ErrorObjectOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::info;
 
@@ -45,8 +44,8 @@ use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
 use crate::dispatch::{
-    AuthGrantRequest, AuthGrantResponse, AuthListResponse, AuthRevokeAllResponse,
-    AuthRevokeResponse, SessionSummary,
+    AuthGrantRequest, AuthGrantResponse, AuthListRequest, AuthListResponse, AuthRevokeAllRequest,
+    AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
 
@@ -140,6 +139,57 @@ impl Default for ServerConfig {
     }
 }
 
+// ---- Request types with auth token ----
+
+/// Balance query with optional auth token.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BalanceRequest {
+    /// The EVM address to query.
+    pub address: String,
+    /// The chain ID to query against.
+    pub chain_id: u64,
+    /// Auth token (optional if no keystore exists).
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Transfer request with optional auth token.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TransferRequestWithAuth {
+    /// Recipient address.
+    pub to: String,
+    /// Amount as a decimal string.
+    pub amount: String,
+    /// Token to transfer.
+    pub token_type: String,
+    /// Chain ID.
+    pub chain_id: u64,
+    /// Auth token (optional if no keystore exists).
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+/// Skills request with optional auth token.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SkillsRequest {
+    /// Auth token (optional if no keystore exists).
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Execute request with optional auth token.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExecuteRequestWithAuth {
+    /// Skill name.
+    pub skill: String,
+    /// Parameter values.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+    /// Auth token (optional if no keystore exists).
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 // ---- JSON-RPC API Definition ----
 
 /// JSON-RPC API trait using jsonrpsee macros.
@@ -155,19 +205,19 @@ pub trait ClawletApi {
 
     /// Query balance.
     #[method(name = "balance")]
-    async fn balance(&self, params: BalanceQuery) -> Result<Value, ErrorObjectOwned>;
+    async fn balance(&self, params: BalanceRequest) -> Result<Value, ErrorObjectOwned>;
 
     /// Execute transfer.
     #[method(name = "transfer")]
-    async fn transfer(&self, params: TransferRequest) -> Result<Value, ErrorObjectOwned>;
+    async fn transfer(&self, params: TransferRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
 
     /// List available skills.
     #[method(name = "skills")]
-    async fn skills(&self) -> Result<Value, ErrorObjectOwned>;
+    async fn skills(&self, params: SkillsRequest) -> Result<Value, ErrorObjectOwned>;
 
     /// Execute a skill.
     #[method(name = "execute")]
-    async fn execute(&self, params: ExecuteRequest) -> Result<Value, ErrorObjectOwned>;
+    async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
 
     /// Grant a new session token.
     #[method(name = "auth.grant")]
@@ -175,19 +225,18 @@ pub trait ClawletApi {
 
     /// List all active sessions.
     #[method(name = "auth.list")]
-    async fn auth_list(&self, password: String) -> Result<Value, ErrorObjectOwned>;
+    async fn auth_list(&self, params: AuthListRequest) -> Result<Value, ErrorObjectOwned>;
 
     /// Revoke a session.
     #[method(name = "auth.revoke")]
-    async fn auth_revoke(
-        &self,
-        password: String,
-        agent_id: String,
-    ) -> Result<Value, ErrorObjectOwned>;
+    async fn auth_revoke(&self, params: AuthRevokeRequest) -> Result<Value, ErrorObjectOwned>;
 
     /// Revoke all sessions.
     #[method(name = "auth.revoke_all")]
-    async fn auth_revoke_all(&self, password: String) -> Result<Value, ErrorObjectOwned>;
+    async fn auth_revoke_all(
+        &self,
+        params: AuthRevokeAllRequest,
+    ) -> Result<Value, ErrorObjectOwned>;
 }
 
 /// RPC server implementation.
@@ -214,32 +263,46 @@ impl ClawletApiServer for RpcServerImpl {
         }
     }
 
-    async fn balance(&self, params: BalanceQuery) -> Result<Value, ErrorObjectOwned> {
-        // Note: In a full implementation, we'd extract the auth token from headers
-        // For now, skip auth check if no keystore exists (unauthenticated mode)
-        if let Err(e) = check_auth(&self.state, "", TokenScope::Read) {
+    async fn balance(&self, params: BalanceRequest) -> Result<Value, ErrorObjectOwned> {
+        // Check auth with provided token
+        let token = params.token.as_deref().unwrap_or("");
+        if let Err(e) = check_auth(&self.state, token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
 
-        match handlers::handle_balance(&self.state, params).await {
+        let query = BalanceQuery {
+            address: params.address,
+            chain_id: params.chain_id,
+        };
+
+        match handlers::handle_balance(&self.state, query).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
 
-    async fn transfer(&self, params: TransferRequest) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = check_auth(&self.state, "", TokenScope::Trade) {
+    async fn transfer(&self, params: TransferRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
+        let token = params.auth_token.as_deref().unwrap_or("");
+        if let Err(e) = check_auth(&self.state, token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
-        match handlers::handle_transfer(&self.state, params).await {
+        let req = TransferRequest {
+            to: params.to,
+            amount: params.amount,
+            token: params.token_type,
+            chain_id: params.chain_id,
+        };
+
+        match handlers::handle_transfer(&self.state, req).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
 
-    async fn skills(&self) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = check_auth(&self.state, "", TokenScope::Read) {
+    async fn skills(&self, params: SkillsRequest) -> Result<Value, ErrorObjectOwned> {
+        let token = params.token.as_deref().unwrap_or("");
+        if let Err(e) = check_auth(&self.state, token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -249,12 +312,18 @@ impl ClawletApiServer for RpcServerImpl {
         }
     }
 
-    async fn execute(&self, params: ExecuteRequest) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = check_auth(&self.state, "", TokenScope::Trade) {
+    async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
+        let token = params.token.as_deref().unwrap_or("");
+        if let Err(e) = check_auth(&self.state, token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
-        match handlers::handle_execute(&self.state, params).await {
+        let req = ExecuteRequest {
+            skill: params.skill,
+            params: params.params,
+        };
+
+        match handlers::handle_execute(&self.state, req).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
@@ -300,8 +369,8 @@ impl ClawletApiServer for RpcServerImpl {
         Ok(serde_json::to_value(response).unwrap())
     }
 
-    async fn auth_list(&self, password: String) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = verify_admin_password(&self.state, &password) {
+    async fn auth_list(&self, params: AuthListRequest) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &params.password) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -325,12 +394,8 @@ impl ClawletApiServer for RpcServerImpl {
         Ok(serde_json::to_value(AuthListResponse { sessions }).unwrap())
     }
 
-    async fn auth_revoke(
-        &self,
-        password: String,
-        agent_id: String,
-    ) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = verify_admin_password(&self.state, &password) {
+    async fn auth_revoke(&self, params: AuthRevokeRequest) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &params.password) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -338,12 +403,15 @@ impl ClawletApiServer for RpcServerImpl {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
         })?;
 
-        let revoked = store.revoke(&agent_id);
+        let revoked = store.revoke(&params.agent_id);
         Ok(serde_json::to_value(AuthRevokeResponse { revoked }).unwrap())
     }
 
-    async fn auth_revoke_all(&self, password: String) -> Result<Value, ErrorObjectOwned> {
-        if let Err(e) = verify_admin_password(&self.state, &password) {
+    async fn auth_revoke_all(
+        &self,
+        params: AuthRevokeAllRequest,
+    ) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &params.password) {
             return Err(auth_error_to_rpc(e));
         }
 

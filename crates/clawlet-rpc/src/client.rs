@@ -2,17 +2,16 @@
 //!
 //! Provides a typed API using jsonrpsee client.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use jsonrpsee::rpc_params;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::handlers::{
-    BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse, SkillsResponse,
-    TransferRequest, TransferResponse,
-};
+use crate::handlers::{BalanceResponse, ExecuteResponse, SkillsResponse, TransferResponse};
 use crate::server::DEFAULT_ADDR;
 
 /// Error type for RPC client operations.
@@ -28,6 +27,55 @@ pub enum ClientError {
     Timeout,
     #[error("server returned error: {message} (code {code})")]
     Server { code: i32, message: String },
+}
+
+/// Balance query parameters.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BalanceQuery {
+    /// The EVM address to query.
+    pub address: String,
+    /// The chain ID to query against.
+    pub chain_id: u64,
+    /// Auth token (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// Transfer request parameters.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransferRequest {
+    /// Recipient address.
+    pub to: String,
+    /// Amount as a decimal string.
+    pub amount: String,
+    /// Token to transfer ("ETH" or contract address).
+    pub token_type: String,
+    /// Chain ID.
+    pub chain_id: u64,
+    /// Auth token (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+}
+
+/// Skills request parameters.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkillsRequest {
+    /// Auth token (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// Execute request parameters.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecuteRequest {
+    /// Skill name.
+    pub skill: String,
+    /// Parameter values.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+    /// Auth token (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// Client for the clawlet-rpc HTTP JSON-RPC server.
@@ -97,6 +145,15 @@ impl RpcClient {
             .map_err(|e| ClientError::Connection(e.to_string()))
     }
 
+    /// Get the auth token to include in requests.
+    fn get_token(&self) -> Option<String> {
+        if self.auth_token.is_empty() {
+            None
+        } else {
+            Some(self.auth_token.clone())
+        }
+    }
+
     /// Perform a health check.
     pub async fn health(&self) -> Result<Value, ClientError> {
         let client = self.build_client()?;
@@ -112,15 +169,37 @@ impl RpcClient {
     }
 
     /// Query ETH balance.
-    pub async fn balance(&self, query: BalanceQuery) -> Result<BalanceResponse, ClientError> {
+    pub async fn balance(
+        &self,
+        address: &str,
+        chain_id: u64,
+    ) -> Result<BalanceResponse, ClientError> {
         let client = self.build_client()?;
+        let query = BalanceQuery {
+            address: address.to_string(),
+            chain_id,
+            token: self.get_token(),
+        };
         let result: BalanceResponse = client.request("balance", rpc_params![query]).await?;
         Ok(result)
     }
 
     /// Execute a transfer.
-    pub async fn transfer(&self, req: TransferRequest) -> Result<TransferResponse, ClientError> {
+    pub async fn transfer(
+        &self,
+        to: &str,
+        amount: &str,
+        token_type: &str,
+        chain_id: u64,
+    ) -> Result<TransferResponse, ClientError> {
         let client = self.build_client()?;
+        let req = TransferRequest {
+            to: to.to_string(),
+            amount: amount.to_string(),
+            token_type: token_type.to_string(),
+            chain_id,
+            auth_token: self.get_token(),
+        };
         let result: TransferResponse = client.request("transfer", rpc_params![req]).await?;
         Ok(result)
     }
@@ -128,13 +207,25 @@ impl RpcClient {
     /// List available skills.
     pub async fn skills(&self) -> Result<SkillsResponse, ClientError> {
         let client = self.build_client()?;
-        let result: SkillsResponse = client.request("skills", rpc_params![]).await?;
+        let req = SkillsRequest {
+            token: self.get_token(),
+        };
+        let result: SkillsResponse = client.request("skills", rpc_params![req]).await?;
         Ok(result)
     }
 
     /// Execute a skill.
-    pub async fn execute(&self, req: ExecuteRequest) -> Result<ExecuteResponse, ClientError> {
+    pub async fn execute(
+        &self,
+        skill: &str,
+        params: HashMap<String, String>,
+    ) -> Result<ExecuteResponse, ClientError> {
         let client = self.build_client()?;
+        let req = ExecuteRequest {
+            skill: skill.to_string(),
+            params,
+            token: self.get_token(),
+        };
         let result: ExecuteResponse = client.request("execute", rpc_params![req]).await?;
         Ok(result)
     }

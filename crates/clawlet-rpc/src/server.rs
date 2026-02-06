@@ -4,11 +4,11 @@
 //!
 //! # Protocol
 //!
-//! `POST /` with `Content-Type: application/json`
+//! `POST /` with `Content-Type: application/json` and `Authorization: Bearer <token>` header.
 //!
 //! Request format:
 //! ```json
-//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453,"token":"clwt_xxx"},"id":1}
+//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1}
 //! ```
 //!
 //! Success response:
@@ -18,7 +18,7 @@
 //!
 //! Error response:
 //! ```json
-//! {"jsonrpc":"2.0","error":{"code":-32600,"message":"Unauthorized"},"id":1}
+//! {"jsonrpsee":"2.0","error":{"code":-32600,"message":"Unauthorized"},"id":1}
 //! ```
 
 use std::collections::HashMap;
@@ -97,6 +97,12 @@ pub mod error_code {
     pub const NOT_FOUND: i32 = -32002;
 }
 
+// ---- Auth Token Extension ----
+
+/// Token extracted from Authorization header, stored in request extensions.
+#[derive(Clone, Debug, Default)]
+pub struct AuthToken(pub Option<String>);
+
 // ---- Application State ----
 
 /// Shared application state available to all handlers.
@@ -139,21 +145,18 @@ impl Default for ServerConfig {
     }
 }
 
-// ---- Request types with auth token ----
+// ---- Request types (auth token removed - now from header) ----
 
-/// Balance query with optional auth token.
+/// Balance query parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BalanceRequest {
     /// The EVM address to query.
     pub address: String,
     /// The chain ID to query against.
     pub chain_id: u64,
-    /// Auth token (optional if no keystore exists).
-    #[serde(default)]
-    pub token: Option<String>,
 }
 
-/// Transfer request with optional auth token.
+/// Transfer request parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransferRequestWithAuth {
     /// Recipient address.
@@ -164,20 +167,13 @@ pub struct TransferRequestWithAuth {
     pub token_type: String,
     /// Chain ID.
     pub chain_id: u64,
-    /// Auth token (optional if no keystore exists).
-    #[serde(default)]
-    pub auth_token: Option<String>,
 }
 
-/// Skills request with optional auth token.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SkillsRequest {
-    /// Auth token (optional if no keystore exists).
-    #[serde(default)]
-    pub token: Option<String>,
-}
+/// Skills request parameters (empty - auth from header).
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct SkillsRequest {}
 
-/// Execute request with optional auth token.
+/// Execute request parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExecuteRequestWithAuth {
     /// Skill name.
@@ -185,9 +181,6 @@ pub struct ExecuteRequestWithAuth {
     /// Parameter values.
     #[serde(default)]
     pub params: HashMap<String, String>,
-    /// Auth token (optional if no keystore exists).
-    #[serde(default)]
-    pub token: Option<String>,
 }
 
 // ---- JSON-RPC API Definition ----
@@ -239,14 +232,26 @@ pub trait ClawletApi {
     ) -> Result<Value, ErrorObjectOwned>;
 }
 
-/// RPC server implementation.
+/// RPC server implementation with auth token context.
 pub struct RpcServerImpl {
     state: Arc<AppState>,
+    /// Auth token extracted from the current request's Authorization header.
+    /// This is set per-request by the middleware before the handler runs.
+    auth_token: Arc<RwLock<Option<String>>>,
 }
 
 impl RpcServerImpl {
-    pub fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+    pub fn new(state: Arc<AppState>, auth_token: Arc<RwLock<Option<String>>>) -> Self {
+        Self { state, auth_token }
+    }
+
+    /// Get the auth token for the current request.
+    fn get_token(&self) -> String {
+        self.auth_token
+            .read()
+            .ok()
+            .and_then(|t| t.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -264,9 +269,9 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn balance(&self, params: BalanceRequest) -> Result<Value, ErrorObjectOwned> {
-        // Check auth with provided token
-        let token = params.token.as_deref().unwrap_or("");
-        if let Err(e) = check_auth(&self.state, token, TokenScope::Read) {
+        // Check auth with token from Authorization header
+        let token = self.get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -282,8 +287,8 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn transfer(&self, params: TransferRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
-        let token = params.auth_token.as_deref().unwrap_or("");
-        if let Err(e) = check_auth(&self.state, token, TokenScope::Trade) {
+        let token = self.get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -300,9 +305,9 @@ impl ClawletApiServer for RpcServerImpl {
         }
     }
 
-    async fn skills(&self, params: SkillsRequest) -> Result<Value, ErrorObjectOwned> {
-        let token = params.token.as_deref().unwrap_or("");
-        if let Err(e) = check_auth(&self.state, token, TokenScope::Read) {
+    async fn skills(&self, _params: SkillsRequest) -> Result<Value, ErrorObjectOwned> {
+        let token = self.get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -313,8 +318,8 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
-        let token = params.token.as_deref().unwrap_or("");
-        if let Err(e) = check_auth(&self.state, token, TokenScope::Trade) {
+        let token = self.get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
@@ -487,12 +492,39 @@ impl RpcServer {
 
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
+        // Create shared auth token storage accessible from both middleware and handlers
+        let auth_token_store: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let auth_token_for_middleware = Arc::clone(&auth_token_store);
+
+        // Build RPC service with middleware that extracts Authorization header
+        let rpc_middleware =
+            tower::ServiceBuilder::new().map_request(move |mut req: http::Request<_>| {
+                // Extract Bearer token from Authorization header
+                let token = req
+                    .headers()
+                    .get(http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer "))
+                    .map(|s| s.to_string());
+
+                // Store in shared state for handlers to access
+                if let Ok(mut store) = auth_token_for_middleware.write() {
+                    *store = token.clone();
+                }
+
+                // Also store in extensions for potential future use
+                req.extensions_mut().insert(AuthToken(token));
+                req
+            });
+
         let server = Server::builder()
+            .set_http_middleware(rpc_middleware)
             .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
 
-        let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));
+        // Create the RPC implementation with the shared auth token store
+        let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state), auth_token_store);
         let handle = server.start(rpc_impl.into_rpc());
 
         info!(addr = %self.config.addr, "HTTP JSON-RPC server listening");

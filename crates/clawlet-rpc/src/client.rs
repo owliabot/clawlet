@@ -1,10 +1,13 @@
 //! HTTP client for connecting to the clawlet-rpc HTTP JSON-RPC server.
 //!
 //! Provides a typed API using jsonrpsee client.
+//!
+//! Authentication is sent via the `Authorization: Bearer <token>` HTTP header.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use jsonrpsee::rpc_params;
@@ -36,9 +39,6 @@ pub struct BalanceQuery {
     pub address: String,
     /// The chain ID to query against.
     pub chain_id: u64,
-    /// Auth token (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
 }
 
 /// Transfer request parameters.
@@ -52,18 +52,11 @@ pub struct TransferRequest {
     pub token_type: String,
     /// Chain ID.
     pub chain_id: u64,
-    /// Auth token (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_token: Option<String>,
 }
 
-/// Skills request parameters.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SkillsRequest {
-    /// Auth token (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-}
+/// Skills request parameters (empty - auth via header).
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SkillsRequest {}
 
 /// Execute request parameters.
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,16 +66,13 @@ pub struct ExecuteRequest {
     /// Parameter values.
     #[serde(default)]
     pub params: HashMap<String, String>,
-    /// Auth token (optional).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
 }
 
 /// Client for the clawlet-rpc HTTP JSON-RPC server.
 pub struct RpcClient {
     /// Base URL of the server.
     base_url: String,
-    /// Auth token to include in every request.
+    /// Auth token to include in Authorization header.
     auth_token: String,
     /// Request timeout.
     timeout: Duration,
@@ -120,7 +110,7 @@ impl RpcClient {
         }
     }
 
-    /// Set the auth token for all requests.
+    /// Set the auth token for all requests (sent via Authorization header).
     pub fn with_token(mut self, auth_token: impl Into<String>) -> Self {
         self.auth_token = auth_token.into();
         self
@@ -137,21 +127,25 @@ impl RpcClient {
         &self.base_url
     }
 
-    /// Build the HTTP client.
+    /// Build the HTTP client with Authorization header if token is set.
     fn build_client(&self) -> Result<HttpClient, ClientError> {
-        HttpClientBuilder::default()
-            .request_timeout(self.timeout)
+        let mut builder = HttpClientBuilder::default().request_timeout(self.timeout);
+
+        // Add Authorization header if token is set
+        if !self.auth_token.is_empty() {
+            let mut headers = HeaderMap::new();
+            let auth_value = format!("Bearer {}", self.auth_token);
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth_value)
+                    .map_err(|e| ClientError::Connection(e.to_string()))?,
+            );
+            builder = builder.set_headers(headers);
+        }
+
+        builder
             .build(&self.base_url)
             .map_err(|e| ClientError::Connection(e.to_string()))
-    }
-
-    /// Get the auth token to include in requests.
-    fn get_token(&self) -> Option<String> {
-        if self.auth_token.is_empty() {
-            None
-        } else {
-            Some(self.auth_token.clone())
-        }
     }
 
     /// Perform a health check.
@@ -178,7 +172,6 @@ impl RpcClient {
         let query = BalanceQuery {
             address: address.to_string(),
             chain_id,
-            token: self.get_token(),
         };
         let result: BalanceResponse = client.request("balance", rpc_params![query]).await?;
         Ok(result)
@@ -198,7 +191,6 @@ impl RpcClient {
             amount: amount.to_string(),
             token_type: token_type.to_string(),
             chain_id,
-            auth_token: self.get_token(),
         };
         let result: TransferResponse = client.request("transfer", rpc_params![req]).await?;
         Ok(result)
@@ -207,9 +199,7 @@ impl RpcClient {
     /// List available skills.
     pub async fn skills(&self) -> Result<SkillsResponse, ClientError> {
         let client = self.build_client()?;
-        let req = SkillsRequest {
-            token: self.get_token(),
-        };
+        let req = SkillsRequest::default();
         let result: SkillsResponse = client.request("skills", rpc_params![req]).await?;
         Ok(result)
     }
@@ -224,7 +214,6 @@ impl RpcClient {
         let req = ExecuteRequest {
             skill: skill.to_string(),
             params,
-            token: self.get_token(),
         };
         let result: ExecuteResponse = client.request("execute", rpc_params![req]).await?;
         Ok(result)

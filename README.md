@@ -4,47 +4,35 @@
 
 Clawlet is a Rust-based wallet engine designed for AI agents operating within the [OpenClaw](https://github.com/openclaw) ecosystem. It provides policy-enforced, auditable on-chain operations with a local-first architecture.
 
-## Features (Planned)
+## Features
 
 - **Policy Engine** — Configurable rules (daily limits, allowed tokens, recipient whitelists)
 - **Audit Logging** — Append-only JSONL log of every operation
 - **Keystore Management** — Encrypted key storage with BIP-44 HD derivation
 - **EVM Support** — Balance queries, transfers, and DeFi operations via alloy
-- **RPC Server** — Local HTTP API for agent integration
-- **AIS Standard** — Agent Interaction Specification for protocol-level skill definitions
+- **IPC Server** — Unix Domain Socket with JSON-RPC 2.0 for agent integration
+- **Session Auth** — Token-based access control with scoped permissions
 
 ## Project Structure
 
 ```
 clawlet/
 ├── crates/
-│   ├── clawlet-core/       # Core types, policy engine, audit logging
+│   ├── clawlet-core/       # Core types, policy engine, audit logging, auth
 │   ├── clawlet-signer/     # Key management and signing
 │   ├── clawlet-evm/        # EVM chain adapter
-│   ├── clawlet-ipc/        # HTTP RPC API server
+│   ├── clawlet-ipc/        # Unix Socket IPC server (JSON-RPC 2.0)
 │   └── clawlet-cli/        # CLI entry point (clawlet binary)
 ├── config/
 │   └── policy.example.yaml # Example policy configuration
+├── docs/
+│   ├── usage.md            # Usage guide
+│   └── deployment.md       # Deployment guide
 └── tests/
     └── integration/        # Integration tests
 ```
 
 ## Installation
-
-### Quick Install (Linux/macOS)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
-```
-
-### Windows (PowerShell)
-
-```powershell
-# Clone and run installer
-git clone https://github.com/owliabot/clawlet.git
-cd clawlet
-.\scripts\install.ps1
-```
 
 ### From Source
 
@@ -64,48 +52,71 @@ sudo cp target/release/clawlet /usr/local/bin/
 | Linux    | aarch64      | ✅ Supported |
 | macOS    | x86_64       | ✅ Supported |
 | macOS    | aarch64 (Apple Silicon) | ✅ Supported |
-| Windows  | x86_64       | ✅ Supported |
-
-### Uninstall
-
-```bash
-# Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
-
-# To also remove config files
-./scripts/uninstall.sh --purge
-```
 
 ## Quick Start
 
 ```bash
-# Initialize (generates keystore + default policy)
+# 1. Initialize (generates keystore + default policy)
 clawlet init
 
-# Start RPC server
-clawlet serve    # Listens on 127.0.0.1:9100
+# 2. Grant token to agent
+clawlet auth grant --scope read,trade --label "my-agent"
+# Save the token: clwt_xxx...
+
+# 3. Start IPC server
+clawlet serve
+# Listening on /run/clawlet/clawlet.sock
+
+# 4. Test (from another terminal)
+echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
 ```
 
 ## Architecture
 
-Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via authenticated HTTP on localhost. Private keys are managed by the human operator — the agent never has direct access to key material.
+Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via JSON-RPC 2.0 over Unix Domain Socket. Private keys are managed by the human operator — the agent never has direct access to key material.
 
 ```
-Agent ──HTTP──▶ clawlet-ipc ──▶ clawlet-core (policy check)
-                     │                  │
-                     ▼                  ▼
-               clawlet-evm        audit log
-                     │
-                     ▼
-               clawlet-signer ──▶ keystore (human-owned)
+Agent ──Unix Socket──▶ clawlet-ipc ──▶ clawlet-core (policy + auth)
+         JSON-RPC 2.0       │                  │
+                            ▼                  ▼
+                      clawlet-evm        audit log
+                            │
+                            ▼
+                      clawlet-signer ──▶ keystore (human-owned)
 ```
+
+### Security Model
+
+| Component | Access |
+|-----------|--------|
+| `clawlet` user | Owns keystore, runs daemon |
+| Agent user | Socket access only, token-authenticated |
+| Keystore | 600 permissions, encrypted with password |
+
+## API Methods
+
+| Method | Scope | Description |
+|--------|-------|-------------|
+| `health` | — | Health check |
+| `balance` | `read` | Query ETH/ERC-20 balances |
+| `transfer` | `trade` | Execute transfers (policy-checked) |
+| `auth.grant` | — | Grant new session token |
+| `auth.list` | — | List active tokens |
+| `auth.revoke` | — | Revoke a token |
+
+See [docs/usage.md](docs/usage.md) for full API documentation.
 
 ## Tech Stack
 
 - **Language**: Rust
 - **EVM Library**: alloy
-- **Registry Chain**: Base (EIP-155:8453)
-- **HTTP Server**: axum
+- **IPC**: interprocess (Unix Domain Socket)
+- **Protocol**: JSON-RPC 2.0
+
+## Documentation
+
+- [Usage Guide](docs/usage.md) — Installation, configuration, API reference
+- [Deployment Guide](docs/deployment.md) — Production setup, systemd, security hardening
 
 ## License
 

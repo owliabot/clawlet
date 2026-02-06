@@ -24,7 +24,7 @@ pub enum RpcMethod {
 
 impl RpcMethod {
     /// Parse a method name string into an RpcMethod.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_method(s: &str) -> Option<Self> {
         match s {
             "health" => Some(Self::Health),
             "balance" => Some(Self::Balance),
@@ -79,25 +79,25 @@ mod tests {
 
     #[test]
     fn test_method_from_str() {
-        assert_eq!(RpcMethod::from_str("health"), Some(RpcMethod::Health));
-        assert_eq!(RpcMethod::from_str("balance"), Some(RpcMethod::Balance));
-        assert_eq!(RpcMethod::from_str("transfer"), Some(RpcMethod::Transfer));
-        assert_eq!(RpcMethod::from_str("skills"), Some(RpcMethod::Skills));
-        assert_eq!(RpcMethod::from_str("execute"), Some(RpcMethod::Execute));
+        assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
+        assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
+        assert_eq!(RpcMethod::parse_method("transfer"), Some(RpcMethod::Transfer));
+        assert_eq!(RpcMethod::parse_method("skills"), Some(RpcMethod::Skills));
+        assert_eq!(RpcMethod::parse_method("execute"), Some(RpcMethod::Execute));
         assert_eq!(
-            RpcMethod::from_str("auth.grant"),
+            RpcMethod::parse_method("auth.grant"),
             Some(RpcMethod::AuthGrant)
         );
-        assert_eq!(RpcMethod::from_str("auth.list"), Some(RpcMethod::AuthList));
+        assert_eq!(RpcMethod::parse_method("auth.list"), Some(RpcMethod::AuthList));
         assert_eq!(
-            RpcMethod::from_str("auth.revoke"),
+            RpcMethod::parse_method("auth.revoke"),
             Some(RpcMethod::AuthRevoke)
         );
         assert_eq!(
-            RpcMethod::from_str("auth.revoke_all"),
+            RpcMethod::parse_method("auth.revoke_all"),
             Some(RpcMethod::AuthRevokeAll)
         );
-        assert_eq!(RpcMethod::from_str("unknown"), None);
+        assert_eq!(RpcMethod::parse_method("unknown"), None);
     }
 
     #[test]
@@ -147,7 +147,7 @@ mod tests {
 
         for method in methods {
             let s = method.as_str();
-            let parsed = RpcMethod::from_str(s);
+            let parsed = RpcMethod::parse_method(s);
             assert_eq!(parsed, Some(method), "roundtrip failed for {:?}", method);
         }
     }

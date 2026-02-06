@@ -29,15 +29,61 @@ clawlet/
     └── integration/        # Integration tests
 ```
 
+## Installation
+
+### Quick Install (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Clone and run installer
+git clone https://github.com/owliabot/clawlet.git
+cd clawlet
+.\scripts\install.ps1
+```
+
+### From Source
+
+```bash
+# Requires Rust toolchain: https://rustup.rs
+git clone https://github.com/owliabot/clawlet.git
+cd clawlet
+cargo build --release
+sudo cp target/release/clawlet /usr/local/bin/
+```
+
+### Platform Support
+
+| Platform | Architecture | Status |
+|----------|--------------|--------|
+| Linux    | x86_64       | ✅ Supported |
+| Linux    | aarch64      | ✅ Supported |
+| macOS    | x86_64       | ✅ Supported |
+| macOS    | aarch64 (Apple Silicon) | ✅ Supported |
+| Windows  | x86_64       | ✅ Supported |
+
+### Uninstall
+
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
+
+# To also remove config files
+./scripts/uninstall.sh --purge
+```
+
 ## Quick Start
 
 ```bash
-# Build
-cargo build
+# Initialize (generates keystore + default policy)
+clawlet init
 
-# Run (once implemented)
-clawlet init     # Generate keystore + default policy
-clawlet serve    # Start RPC server on 127.0.0.1:9100
+# Start RPC server
+clawlet serve    # Listens on 127.0.0.1:9100
 ```
 
 ## Architecture

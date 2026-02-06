@@ -141,23 +141,20 @@ fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
 }
 
 /// Run an auth subcommand.
-pub fn run(
+pub async fn run(
     cmd: AuthCommand,
     _config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Build the tokio runtime for async operations
-    let rt = tokio::runtime::Runtime::new()?;
-
     match cmd {
         AuthCommand::Grant {
             agent,
             scope,
             expires,
             socket,
-        } => rt.block_on(run_grant(agent, scope, expires, socket)),
-        AuthCommand::List { socket } => rt.block_on(run_list(socket)),
-        AuthCommand::Revoke { agent, socket } => rt.block_on(run_revoke(agent, socket)),
-        AuthCommand::RevokeAll { socket } => rt.block_on(run_revoke_all(socket)),
+        } => run_grant(agent, scope, expires, socket).await,
+        AuthCommand::List { socket } => run_list(socket).await,
+        AuthCommand::Revoke { agent, socket } => run_revoke(agent, socket).await,
+        AuthCommand::RevokeAll { socket } => run_revoke_all(socket).await,
     }
 }
 

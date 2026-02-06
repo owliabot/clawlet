@@ -70,7 +70,7 @@ async fn main() {
             data_dir,
         } => commands::init::run(from_mnemonic, data_dir),
         Commands::Serve { config, socket } => commands::serve::run(config, socket).await,
-        Commands::Auth { config, command } => commands::auth::run(command, config),
+        Commands::Auth { config, command } => commands::auth::run(command, config).await,
     };
 
     if let Err(e) = result {

@@ -7,11 +7,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Authentication configuration.
+///
+/// Password verification is done by attempting to unlock the keystore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// Argon2id hash of the admin password, set during init.
-    #[serde(default)]
-    pub password_hash: Option<String>,
     /// Default session TTL in hours (default: 24).
     #[serde(default = "default_session_ttl_hours")]
     pub default_session_ttl_hours: u64,
@@ -38,7 +37,6 @@ fn default_lockout_minutes() -> u32 {
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            password_hash: None,
             default_session_ttl_hours: default_session_ttl_hours(),
             max_failed_attempts: default_max_failed_attempts(),
             lockout_minutes: default_lockout_minutes(),

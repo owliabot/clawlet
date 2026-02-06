@@ -401,7 +401,17 @@ main() {
         installed_version="$VERSION"
 
         if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
-            die "No pre-built binary available for $os/$arch (version: ${VERSION:-unknown}). Use --from-source to build manually."
+            echo ""
+            warn "No pre-built binary available for $os/$arch (version: ${VERSION:-unknown})"
+            echo ""
+            info "You can install from source instead:"
+            echo ""
+            echo "    $0 --from-source"
+            echo ""
+            info "Or check for available releases at:"
+            echo "    https://github.com/${GITHUB_REPO}/releases"
+            echo ""
+            die "Installation failed. See above for alternatives."
         fi
     fi
 

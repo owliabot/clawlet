@@ -3,11 +3,12 @@
 //! Allows humans to grant, list, and revoke session tokens for AI agents.
 //! All commands require password authentication.
 
-use std::path::PathBuf;
+use std::net::SocketAddr;
 
 use clap::Subcommand;
 use clawlet_core::auth::TokenScope;
 use clawlet_ipc::client::RpcClient;
+use clawlet_ipc::server::DEFAULT_ADDR;
 use serde::{Deserialize, Serialize};
 
 /// Auth subcommands.
@@ -27,16 +28,16 @@ pub enum AuthCommand {
         #[arg(long, default_value = "24h")]
         expires: String,
 
-        /// Path to Unix socket (default: auto-detect).
-        #[arg(long)]
-        socket: Option<PathBuf>,
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
     },
 
     /// List all active sessions.
     List {
-        /// Path to Unix socket (default: auto-detect).
-        #[arg(long)]
-        socket: Option<PathBuf>,
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
     },
 
     /// Revoke a session by agent ID.
@@ -45,16 +46,16 @@ pub enum AuthCommand {
         #[arg(long)]
         agent: String,
 
-        /// Path to Unix socket (default: auto-detect).
-        #[arg(long)]
-        socket: Option<PathBuf>,
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
     },
 
     /// Revoke all active sessions.
     RevokeAll {
-        /// Path to Unix socket (default: auto-detect).
-        #[arg(long)]
-        socket: Option<PathBuf>,
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
     },
 }
 
@@ -143,26 +144,26 @@ fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
 /// Run an auth subcommand.
 pub async fn run(
     cmd: AuthCommand,
-    _config_path: Option<PathBuf>,
+    _config_path: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         AuthCommand::Grant {
             agent,
             scope,
             expires,
-            socket,
-        } => run_grant(agent, scope, expires, socket).await,
-        AuthCommand::List { socket } => run_list(socket).await,
-        AuthCommand::Revoke { agent, socket } => run_revoke(agent, socket).await,
-        AuthCommand::RevokeAll { socket } => run_revoke_all(socket).await,
+            addr,
+        } => run_grant(agent, scope, expires, addr).await,
+        AuthCommand::List { addr } => run_list(addr).await,
+        AuthCommand::Revoke { agent, addr } => run_revoke(agent, addr).await,
+        AuthCommand::RevokeAll { addr } => run_revoke_all(addr).await,
     }
 }
 
-/// Create an RPC client with the given socket path.
-fn create_client(socket_path: Option<PathBuf>) -> RpcClient {
-    match socket_path {
-        Some(path) => RpcClient::with_path(path),
-        None => RpcClient::new(),
+/// Create an RPC client with the given server address.
+fn create_client(addr: Option<SocketAddr>) -> RpcClient {
+    match addr {
+        Some(a) => RpcClient::with_addr(&a.to_string()),
+        None => RpcClient::with_addr(DEFAULT_ADDR),
     }
 }
 
@@ -188,7 +189,7 @@ async fn run_grant(
     agent: String,
     scope: String,
     expires: String,
-    socket_path: Option<PathBuf>,
+    addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate scope before prompting for password
     let _: TokenScope = scope
@@ -211,7 +212,7 @@ async fn run_grant(
     };
 
     // Create client and send request
-    let client = create_client(socket_path);
+    let client = create_client(addr);
     let resp: AuthGrantResponse = send_request(&client, "auth.grant", req).await?;
 
     eprintln!();
@@ -228,7 +229,7 @@ async fn run_grant(
 }
 
 /// List all active sessions.
-async fn run_list(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_list(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
     let password = rpassword::read_password()?;
@@ -237,7 +238,7 @@ async fn run_list(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error
     let req = AuthListRequest { password };
 
     // Create client and send request
-    let client = create_client(socket_path);
+    let client = create_client(addr);
     let resp: AuthListResponse = send_request(&client, "auth.list", req).await?;
 
     eprintln!();
@@ -263,7 +264,7 @@ async fn run_list(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error
 /// Revoke a session by agent ID.
 async fn run_revoke(
     agent: String,
-    socket_path: Option<PathBuf>,
+    addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
@@ -276,7 +277,7 @@ async fn run_revoke(
     };
 
     // Create client and send request
-    let client = create_client(socket_path);
+    let client = create_client(addr);
     let resp: AuthRevokeResponse = send_request(&client, "auth.revoke", req).await?;
 
     eprintln!();
@@ -290,7 +291,7 @@ async fn run_revoke(
 }
 
 /// Revoke all sessions.
-async fn run_revoke_all(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_revoke_all(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     eprint!("Enter admin password: ");
     let password = rpassword::read_password()?;
@@ -308,7 +309,7 @@ async fn run_revoke_all(socket_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     let req = AuthRevokeAllRequest { password };
 
     // Create client and send request
-    let client = create_client(socket_path);
+    let client = create_client(addr);
     let resp: AuthRevokeAllResponse = send_request(&client, "auth.revoke_all", req).await?;
 
     eprintln!();

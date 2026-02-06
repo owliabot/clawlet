@@ -1,9 +1,9 @@
 //! Unit tests for JSON-RPC types and server functionality.
 //!
-//! Tests the new interprocess-based JSON-RPC implementation.
+//! Tests the HTTP JSON-RPC implementation using axum.
 
-use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, RequestMeta};
-use serde_json::{json, Value};
+use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, DEFAULT_ADDR};
+use serde_json::json;
 
 #[test]
 fn parse_json_rpc_request() {
@@ -15,21 +15,12 @@ fn parse_json_rpc_request() {
 }
 
 #[test]
-fn parse_json_rpc_request_with_meta() {
-    let json = r#"{"jsonrpc":"2.0","method":"balance","params":{"address":"0x123","chain_id":8453},"id":"abc","meta":{"authorization":"Bearer clwt_xxx"}}"#;
+fn parse_json_rpc_request_with_auth_in_params() {
+    // Authorization is now passed via HTTP header, not in the request body
+    let json = r#"{"jsonrpc":"2.0","method":"balance","params":{"address":"0x123","chain_id":8453},"id":"abc"}"#;
     let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
     assert_eq!(request.method, "balance");
-    assert_eq!(
-        request.meta.authorization,
-        Some("Bearer clwt_xxx".to_string())
-    );
-}
-
-#[test]
-fn parse_json_rpc_request_no_meta() {
-    let json = r#"{"jsonrpc":"2.0","method":"health","id":1}"#;
-    let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-    assert!(request.meta.authorization.is_none());
+    assert_eq!(request.id, json!("abc"));
 }
 
 #[test]
@@ -69,6 +60,7 @@ fn json_rpc_string_id() {
 
 #[test]
 fn extract_bearer_token() {
+    // Simulating how we extract token from Authorization header
     let auth = Some("Bearer clwt_abcd1234".to_string());
     let token = auth
         .as_deref()
@@ -98,13 +90,8 @@ fn extract_bearer_token_wrong_format() {
 }
 
 #[test]
-fn default_socket_path_has_clawlet() {
-    let path = clawlet_ipc::server::default_socket_path();
-    assert!(
-        path.to_string_lossy().contains("clawlet.sock"),
-        "path should contain clawlet.sock: {:?}",
-        path
-    );
+fn default_addr_is_localhost() {
+    assert_eq!(DEFAULT_ADDR, "127.0.0.1:9100");
 }
 
 #[test]
@@ -113,6 +100,7 @@ fn rpc_method_parse_and_roundtrip() {
 
     let methods = [
         ("health", RpcMethod::Health),
+        ("address", RpcMethod::Address),
         ("balance", RpcMethod::Balance),
         ("transfer", RpcMethod::Transfer),
         ("skills", RpcMethod::Skills),
@@ -141,6 +129,7 @@ fn rpc_method_required_scope() {
 
     // Public endpoints
     assert_eq!(RpcMethod::Health.required_scope(), None);
+    assert_eq!(RpcMethod::Address.required_scope(), None);
 
     // Read scope
     assert_eq!(RpcMethod::Balance.required_scope(), Some(TokenScope::Read));

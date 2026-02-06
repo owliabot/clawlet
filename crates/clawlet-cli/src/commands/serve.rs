@@ -1,12 +1,13 @@
 //! `clawlet serve` — start the RPC server.
 //!
-//! Loads config, unlocks keystore, starts the Unix socket server for JSON-RPC,
+//! Loads config, unlocks keystore, starts the HTTP JSON-RPC server,
 //! and handles graceful shutdown on Ctrl+C.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clawlet_core::config::Config;
-use clawlet_ipc::server::RpcServer;
+use clawlet_ipc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
@@ -23,7 +24,7 @@ fn resolve_config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::
 /// Run the `serve` subcommand.
 pub async fn run(
     config_path: Option<PathBuf>,
-    socket_path: Option<PathBuf>,
+    addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = resolve_config_path(config_path)?;
 
@@ -53,19 +54,12 @@ pub async fn run(
         )
     })?;
 
-    let socket_display = socket_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| {
-            clawlet_ipc::server::default_socket_path()
-                .display()
-                .to_string()
-        });
+    let listen_addr = addr.unwrap_or_else(|| DEFAULT_ADDR.parse().unwrap());
 
-    println!("Clawlet RPC server listening on {}", socket_display);
+    println!("Clawlet RPC server listening on http://{}", listen_addr);
 
-    // Start the Unix socket server
-    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), socket_path).await?;
+    // Start the HTTP JSON-RPC server
+    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), Some(listen_addr)).await?;
 
     Ok(())
 }

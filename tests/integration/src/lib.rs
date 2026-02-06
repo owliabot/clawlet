@@ -901,19 +901,14 @@ per_tx_limit_usd: 1000000.0
     /// Test 14: JSON-RPC auth flow types
     #[test]
     fn test_json_rpc_auth_types() {
-        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, RequestMeta};
+        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcResponse};
 
-        // Request with authorization header
-        let json = r#"{"jsonrpc":"2.0","method":"balance","params":{},"id":2,"meta":{"authorization":"Bearer clwt_test"}}"#;
-        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.meta.authorization, Some("Bearer clwt_test".to_string()));
-
-        // Extract token from Bearer header
-        let token = req
-            .meta
-            .authorization
+        // Authorization is now passed via HTTP Authorization header, not in the request body.
+        // Test extracting token from a Bearer header string.
+        let auth_header = Some("Bearer clwt_test".to_string());
+        let token = auth_header
             .as_deref()
-            .and_then(|a| a.strip_prefix("Bearer "))
+            .and_then(|a: &str| a.strip_prefix("Bearer "))
             .unwrap_or("");
         assert_eq!(token, "clwt_test");
 

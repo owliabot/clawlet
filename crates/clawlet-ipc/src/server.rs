@@ -1,14 +1,17 @@
-//! IPC server powered by Unix domain sockets via the `interprocess` crate.
+//! HTTP JSON-RPC server using axum.
 //!
-//! Exposes a JSON-RPC 2.0 interface over a local socket. Each connection
-//! reads newline-delimited JSON requests and writes newline-delimited responses.
+//! Exposes a JSON-RPC 2.0 interface over HTTP at `127.0.0.1:9100` (configurable).
 //!
 //! # Protocol
 //!
+//! `POST /rpc` with `Content-Type: application/json`
+//!
 //! Request format:
 //! ```json
-//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}
+//! {"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1}
 //! ```
+//!
+//! Authorization header: `Authorization: Bearer clwt_xxx`
 //!
 //! Success response:
 //! ```json
@@ -21,18 +24,22 @@
 //! ```
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream},
-    GenericFilePath, ListenerOptions,
+use axum::{
+    extract::State,
+    http::header,
+    routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, error, info, warn};
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
+use tracing::info;
 
 use clawlet_core::audit::AuditLogger;
 use clawlet_core::auth::{AuthError, SessionStore, TokenScope};
@@ -69,9 +76,9 @@ pub enum ServerError {
     #[error("evm adapter error: {0}")]
     EvmAdapter(String),
 
-    /// Failed to bind the socket listener.
-    #[error("socket error: {0}")]
-    Socket(String),
+    /// Failed to bind the HTTP listener.
+    #[error("bind error: {0}")]
+    Bind(String),
 
     /// I/O error during server operation.
     #[error("io error: {0}")]
@@ -117,17 +124,6 @@ pub struct JsonRpcRequest {
     pub params: Value,
     /// Request ID (can be string, number, or null).
     pub id: Value,
-    /// Metadata including authorization (non-standard extension).
-    #[serde(default)]
-    pub meta: RequestMeta,
-}
-
-/// Metadata attached to requests (non-standard JSON-RPC extension).
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct RequestMeta {
-    /// Authorization header value (e.g., "Bearer clwt_xxx").
-    #[serde(default)]
-    pub authorization: Option<String>,
 }
 
 /// JSON-RPC 2.0 success response.
@@ -226,38 +222,26 @@ pub struct AppState {
     pub keystore_path: PathBuf,
 }
 
-// ---- Socket Server ----
+// ---- HTTP Server ----
 
-/// Default socket path.
-pub fn default_socket_path() -> PathBuf {
-    // Try XDG_RUNTIME_DIR first, then fall back to ~/.clawlet/
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("clawlet.sock")
-    } else if let Some(home) = dirs::home_dir() {
-        home.join(".clawlet").join("clawlet.sock")
-    } else {
-        PathBuf::from("/tmp/clawlet.sock")
-    }
-}
+/// Default server address.
+pub const DEFAULT_ADDR: &str = "127.0.0.1:9100";
 
-/// Unix socket server configuration.
+/// HTTP server configuration.
 pub struct ServerConfig {
-    /// Path to the Unix socket file.
-    pub socket_path: PathBuf,
-    /// Socket file permissions (Unix mode).
-    pub permissions: u32,
+    /// Address to bind to.
+    pub addr: SocketAddr,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            socket_path: default_socket_path(),
-            permissions: 0o600,
+            addr: DEFAULT_ADDR.parse().unwrap(),
         }
     }
 }
 
-/// RPC server using Unix domain sockets via interprocess crate.
+/// RPC server using HTTP with axum.
 pub struct RpcServer {
     config: ServerConfig,
     state: Arc<AppState>,
@@ -275,11 +259,11 @@ impl RpcServer {
     /// 1. Load the policy engine from the configured policy file
     /// 2. Create an audit logger at the configured path
     /// 3. Build EVM adapters for each configured chain
-    /// 4. Start the Unix socket server and process requests
+    /// 4. Start the HTTP server and process requests
     pub async fn start_with_config(
         config: &Config,
         signer: LocalSigner,
-        socket_path: Option<PathBuf>,
+        addr: Option<SocketAddr>,
     ) -> Result<(), ServerError> {
         // Load policy
         let policy = PolicyEngine::from_file(&config.policy_path)?;
@@ -317,128 +301,71 @@ impl RpcServer {
         });
 
         let server_config = ServerConfig {
-            socket_path: socket_path.unwrap_or_else(default_socket_path),
-            permissions: 0o600,
+            addr: addr.unwrap_or_else(|| DEFAULT_ADDR.parse().unwrap()),
         };
 
         let server = RpcServer::new(server_config, state);
         server.run().await
     }
 
-    /// Run the socket server.
-    ///
-    /// This will:
-    /// 1. Remove any existing socket file
-    /// 2. Create the socket directory if needed
-    /// 3. Bind the listener
-    /// 4. Set socket permissions
-    /// 5. Accept connections in a loop
+    /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
-        let socket_path = &self.config.socket_path;
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
 
-        // Ensure parent directory exists
-        if let Some(parent) = socket_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        let app = Router::new()
+            .route("/", get(health_handler))
+            .route("/health", get(health_handler))
+            .route("/rpc", post(rpc_handler))
+            .layer(cors)
+            .layer(TraceLayer::new_for_http())
+            .with_state(Arc::clone(&self.state));
 
-        // Remove existing socket file if present
-        if socket_path.exists() {
-            tokio::fs::remove_file(socket_path).await?;
-        }
+        let listener = tokio::net::TcpListener::bind(self.config.addr)
+            .await
+            .map_err(|e| ServerError::Bind(e.to_string()))?;
 
-        // Create the listener using interprocess
-        let name = socket_path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| ServerError::Socket(format!("invalid socket path: {e}")))?;
+        info!(addr = %self.config.addr, "HTTP JSON-RPC server listening");
 
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_tokio()
-            .map_err(|e| ServerError::Socket(format!("failed to create listener: {e}")))?;
-
-        // Set socket permissions
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(self.config.permissions);
-            std::fs::set_permissions(socket_path, perms)?;
-        }
-
-        info!(
-            path = %socket_path.display(),
-            permissions = format!("{:o}", self.config.permissions),
-            "Unix socket server listening"
-        );
-
-        // Accept connections
-        loop {
-            match listener.accept().await {
-                Ok(stream) => {
-                    let state = Arc::clone(&self.state);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(state, stream).await {
-                            warn!("connection error: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("accept error: {}", e);
-                    // Brief pause before retrying
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| ServerError::Io(std::io::Error::other(e)))
     }
 
-    /// Get the socket path.
-    pub fn socket_path(&self) -> &Path {
-        &self.config.socket_path
+    /// Get the server address.
+    pub fn addr(&self) -> SocketAddr {
+        self.config.addr
     }
 }
 
-/// Handle a single client connection.
-///
-/// Reads newline-delimited JSON-RPC requests and writes responses.
-async fn handle_connection(state: Arc<AppState>, stream: Stream) -> Result<(), ServerError> {
-    debug!("new socket connection");
+// ---- HTTP Handlers ----
 
-    // Split into read/write halves - interprocess's tokio types directly implement tokio's traits
-    let (reader, mut writer) = stream.split();
+/// Health check endpoint.
+async fn health_handler() -> Json<Value> {
+    Json(serde_json::json!({"status": "ok"}))
+}
 
-    // Wrap reader in tokio's BufReader for line-based reading
-    let reader = BufReader::new(reader);
-    let mut lines = reader.lines();
+/// JSON-RPC endpoint handler.
+async fn rpc_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<JsonRpcRequest>,
+) -> Json<JsonRpcResponse> {
+    // Extract auth token from Authorization header
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|auth| auth.strip_prefix("Bearer "))
+        .unwrap_or("");
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Parse the request
-        let response = match serde_json::from_str::<JsonRpcRequest>(line) {
-            Ok(request) => handle_request(&state, request).await,
-            Err(e) => JsonRpcResponse::error(
-                Value::Null,
-                JsonRpcErrorCode::ParseError,
-                format!("parse error: {}", e),
-            ),
-        };
-
-        // Write response as newline-delimited JSON
-        let response_json = serde_json::to_string(&response)?;
-        writer.write_all(response_json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
-    }
-
-    debug!("client disconnected");
-    Ok(())
+    let response = handle_request(&state, request, token).await;
+    Json(response)
 }
 
 /// Handle a single JSON-RPC request.
-async fn handle_request(state: &AppState, request: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(state: &AppState, request: JsonRpcRequest, token: &str) -> JsonRpcResponse {
     // Validate JSON-RPC version
     if request.jsonrpc != "2.0" {
         return JsonRpcResponse::error(
@@ -449,14 +376,6 @@ async fn handle_request(state: &AppState, request: JsonRpcRequest) -> JsonRpcRes
     }
 
     let id = request.id.clone();
-
-    // Extract auth token from meta
-    let token = request
-        .meta
-        .authorization
-        .as_deref()
-        .and_then(|auth| auth.strip_prefix("Bearer "))
-        .unwrap_or("");
 
     // Route to appropriate handler
     match request.method.as_str() {
@@ -897,24 +816,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_json_rpc_request_with_meta() {
-        let json = r#"{"jsonrpc":"2.0","method":"balance","params":{"address":"0x123","chain_id":8453},"id":"abc","meta":{"authorization":"Bearer clwt_xxx"}}"#;
-        let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.method, "balance");
-        assert_eq!(
-            request.meta.authorization,
-            Some("Bearer clwt_xxx".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_json_rpc_request_no_meta() {
-        let json = r#"{"jsonrpc":"2.0","method":"health","id":1}"#;
-        let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert!(request.meta.authorization.is_none());
-    }
-
-    #[test]
     fn test_json_rpc_success_response() {
         let response =
             JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({"status": "ok"}));
@@ -954,42 +855,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_bearer_token() {
-        let auth = Some("Bearer clwt_abcd1234".to_string());
-        let token = auth
-            .as_deref()
-            .and_then(|a| a.strip_prefix("Bearer "))
-            .unwrap_or("");
-        assert_eq!(token, "clwt_abcd1234");
-    }
-
-    #[test]
-    fn test_extract_bearer_token_missing() {
-        let auth: Option<String> = None;
-        let token = auth
-            .as_deref()
-            .and_then(|a| a.strip_prefix("Bearer "))
-            .unwrap_or("");
-        assert_eq!(token, "");
-    }
-
-    #[test]
-    fn test_extract_bearer_token_wrong_format() {
-        let auth = Some("Basic xyz".to_string());
-        let token = auth
-            .as_deref()
-            .and_then(|a| a.strip_prefix("Bearer "))
-            .unwrap_or("");
-        assert_eq!(token, "");
-    }
-
-    #[test]
-    fn test_default_socket_path() {
-        let path = default_socket_path();
-        assert!(
-            path.to_string_lossy().contains("clawlet.sock"),
-            "path should contain clawlet.sock: {:?}",
-            path
-        );
+    fn test_default_addr() {
+        let config = ServerConfig::default();
+        assert_eq!(config.addr.to_string(), DEFAULT_ADDR);
     }
 }

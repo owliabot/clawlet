@@ -1,24 +1,19 @@
-//! Client-side helper for connecting to the clawlet-ipc Unix socket server.
+//! HTTP client for connecting to the clawlet-ipc HTTP JSON-RPC server.
 //!
 //! Provides a typed API that serializes requests to JSON-RPC format
 //! and deserializes responses.
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream},
-    GenericFilePath,
-};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::handlers::{
     BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse, SkillsResponse,
     TransferRequest, TransferResponse,
 };
-use crate::server::{default_socket_path, JsonRpcRequest, JsonRpcResponse, RequestMeta};
+use crate::server::{JsonRpcRequest, JsonRpcResponse, DEFAULT_ADDR};
 
 /// Error type for RPC client operations.
 #[derive(Debug, thiserror::Error)]
@@ -27,44 +22,55 @@ pub enum ClientError {
     Connection(String),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
     #[error("timeout waiting for response")]
     Timeout,
     #[error("server returned error: {message} (code {code})")]
     Server { code: i32, message: String },
 }
 
-/// Client for the clawlet-ipc Unix socket server.
+/// Client for the clawlet-ipc HTTP JSON-RPC server.
 pub struct RpcClient {
-    /// Path to the Unix socket.
-    socket_path: PathBuf,
+    /// Base URL of the server.
+    base_url: String,
     /// Auth token to include in every request.
     auth_token: String,
-    /// Timeout for operations.
-    timeout: Duration,
+    /// HTTP client.
+    client: reqwest::Client,
 }
 
 impl Default for RpcClient {
     fn default() -> Self {
         Self {
-            socket_path: default_socket_path(),
+            base_url: format!("http://{}", DEFAULT_ADDR),
             auth_token: String::new(),
-            timeout: Duration::from_secs(5),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client"),
         }
     }
 }
 
 impl RpcClient {
-    /// Create a new client connecting to the default socket path.
+    /// Create a new client connecting to the default address.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a new client connecting to a specific socket path.
-    pub fn with_path(socket_path: impl AsRef<Path>) -> Self {
+    /// Create a new client connecting to a specific address.
+    pub fn with_addr(addr: &str) -> Self {
         Self {
-            socket_path: socket_path.as_ref().to_path_buf(),
+            base_url: format!("http://{}", addr),
+            ..Default::default()
+        }
+    }
+
+    /// Create a new client with a full URL (including scheme).
+    pub fn with_url(url: impl Into<String>) -> Self {
+        Self {
+            base_url: url.into(),
             ..Default::default()
         }
     }
@@ -77,18 +83,26 @@ impl RpcClient {
 
     /// Set the timeout for operations.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build HTTP client");
         self
     }
 
-    /// Get the socket path.
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
+    /// Get the base URL.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Perform a health check.
     pub async fn health(&self) -> Result<serde_json::Value, ClientError> {
         self.call("health", serde_json::json!({})).await
+    }
+
+    /// Query wallet address.
+    pub async fn address(&self) -> Result<serde_json::Value, ClientError> {
+        self.call("address", serde_json::json!({})).await
     }
 
     /// Query ETH balance.
@@ -140,58 +154,53 @@ impl RpcClient {
         serde_json::from_value(result).map_err(ClientError::from)
     }
 
-    /// Low-level: connect, send request, read response.
+    /// Low-level: send HTTP request.
     async fn send_request(
         &self,
         method: &str,
         params: Value,
         token: &str,
     ) -> Result<JsonRpcResponse, ClientError> {
-        // Connect to the socket
-        let name = self
-            .socket_path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| ClientError::Connection(format!("invalid socket path: {e}")))?;
-
-        let stream = Stream::connect(name)
-            .await
-            .map_err(|e| ClientError::Connection(format!("failed to connect: {e}")))?;
-
-        // Split into read/write halves - interprocess's tokio types directly implement tokio's traits
-        let (reader, mut writer) = stream.split();
-
         // Build the request
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params,
             id: Value::Number(1.into()),
-            meta: RequestMeta {
-                authorization: if token.is_empty() {
-                    None
-                } else {
-                    Some(format!("Bearer {}", token))
-                },
-            },
         };
 
-        // Serialize and send
-        let request_json = serde_json::to_string(&request)?;
-        writer.write_all(request_json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
+        // Build headers
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if !token.is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))
+                    .map_err(|e| ClientError::Connection(e.to_string()))?,
+            );
+        }
 
-        // Read response line
-        let reader = BufReader::new(reader);
-        let mut lines = reader.lines();
-        let response_line = lines
-            .next_line()
-            .await?
-            .ok_or_else(|| ClientError::Connection("connection closed".to_string()))?;
+        // Send the request
+        let url = format!("{}/rpc", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ClientError::Timeout
+                } else if e.is_connect() {
+                    ClientError::Connection(e.to_string())
+                } else {
+                    ClientError::Http(e)
+                }
+            })?;
 
         // Parse response
-        let response: JsonRpcResponse = serde_json::from_str(&response_line)?;
+        let response: JsonRpcResponse = response.json().await?;
         Ok(response)
     }
 }
@@ -204,7 +213,7 @@ mod tests {
     fn test_client_default() {
         let client = RpcClient::new();
         assert!(client.auth_token.is_empty());
-        assert_eq!(client.timeout, Duration::from_secs(5));
+        assert_eq!(client.base_url, format!("http://{}", DEFAULT_ADDR));
     }
 
     #[test]
@@ -214,14 +223,21 @@ mod tests {
     }
 
     #[test]
-    fn test_client_with_path() {
-        let client = RpcClient::with_path("/tmp/test.sock");
-        assert_eq!(client.socket_path, PathBuf::from("/tmp/test.sock"));
+    fn test_client_with_addr() {
+        let client = RpcClient::with_addr("192.168.1.1:8080");
+        assert_eq!(client.base_url, "http://192.168.1.1:8080");
+    }
+
+    #[test]
+    fn test_client_with_url() {
+        let client = RpcClient::with_url("https://wallet.example.com");
+        assert_eq!(client.base_url, "https://wallet.example.com");
     }
 
     #[test]
     fn test_client_with_timeout() {
         let client = RpcClient::new().with_timeout(Duration::from_secs(10));
-        assert_eq!(client.timeout, Duration::from_secs(10));
+        // Just ensure it doesn't panic
+        assert!(client.auth_token.is_empty());
     }
 }

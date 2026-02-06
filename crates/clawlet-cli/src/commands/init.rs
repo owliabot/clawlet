@@ -45,7 +45,18 @@ rpc_bind: "127.0.0.1:9100"
 audit_log_path: "{}"
 
 # Map chain IDs to RPC endpoints
-chain_rpc_urls: {{}}
+# Replace with your own RPC URLs for better reliability/performance
+chain_rpc_urls:
+  # Ethereum Mainnet
+  1: "https://eth.llamarpc.com"
+  # Base
+  8453: "https://mainnet.base.org"
+  # Arbitrum One
+  42161: "https://arb1.arbitrum.io/rpc"
+  # Optimism
+  10: "https://mainnet.optimism.io"
+  # Polygon
+  137: "https://polygon-rpc.com"
 
 # Authentication configuration
 # Password verification uses your keystore password - no separate auth password needed.

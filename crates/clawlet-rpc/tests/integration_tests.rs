@@ -9,11 +9,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use jsonrpsee::server::ServerHandle;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
 
 use clawlet_core::audit::AuditLogger;
 use clawlet_core::auth::SessionStore;
@@ -38,12 +37,13 @@ struct TestHarness {
     /// Temporary directory containing test files.
     #[allow(dead_code)]
     temp_dir: TempDir,
-    /// Shutdown signal sender.
+    /// Server handle to keep the server alive for test lifetime.
     #[allow(dead_code)]
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    server_handle: ServerHandle,
     /// Server address.
     addr: SocketAddr,
     /// Path to keystore directory.
+    #[allow(dead_code)]
     keystore_path: PathBuf,
 }
 
@@ -116,23 +116,11 @@ allowed_chains: []
             keystore_path: keystore_path.clone(),
         });
 
-        // Find an available port
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind");
-        let addr = listener.local_addr().expect("failed to get local addr");
-        drop(listener); // Release the port for the server to use
-
-        let server_config = ServerConfig { addr };
+        let server_config = ServerConfig {
+            addr: "127.0.0.1:0".parse().expect("failed to parse addr"),
+        };
         let server = RpcServer::new(server_config, Arc::clone(&state));
-
-        // Start server in background
-        let (shutdown_tx, _shutdown_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            if let Err(e) = server.run().await {
-                eprintln!("Server error: {e}");
-            }
-        });
+        let (addr, server_handle) = server.start().await.expect("failed to start server");
 
         // Wait for server to be ready
         let client = Client::builder()
@@ -171,7 +159,7 @@ allowed_chains: []
             client,
             base_url,
             temp_dir,
-            shutdown_tx: Some(shutdown_tx),
+            server_handle,
             addr,
             keystore_path,
         }

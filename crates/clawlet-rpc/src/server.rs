@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
-use jsonrpsee::server::Server;
+use jsonrpsee::server::{Server, ServerHandle};
 use jsonrpsee::types::ErrorObjectOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -485,17 +485,30 @@ impl RpcServer {
         server.run().await
     }
 
-    /// Run the HTTP server.
-    pub async fn run(&self) -> Result<(), ServerError> {
+    /// Start the HTTP server and return the actual bound address and server handle.
+    pub async fn start(&self) -> Result<(SocketAddr, ServerHandle), ServerError> {
+        let bind_addr = if self.config.addr.port() == 0 {
+            "127.0.0.1:0".parse().unwrap()
+        } else {
+            self.config.addr
+        };
+
         let server = Server::builder()
-            .build(self.config.addr)
+            .build(bind_addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
-
+        let bound_addr = server.local_addr()?;
         let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));
         let handle = server.start(rpc_impl.into_rpc());
 
-        info!(addr = %self.config.addr, "HTTP JSON-RPC server listening");
+        info!(addr = %bound_addr, "HTTP JSON-RPC server listening");
+
+        Ok((bound_addr, handle))
+    }
+
+    /// Run the HTTP server.
+    pub async fn run(&self) -> Result<(), ServerError> {
+        let (_bound_addr, handle) = self.start().await?;
 
         // Wait for server to finish (runs until stopped)
         handle.stopped().await;

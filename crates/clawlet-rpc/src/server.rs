@@ -348,10 +348,13 @@ async fn health_handler() -> Json<Value> {
 }
 
 /// JSON-RPC endpoint handler.
+///
+/// Manually parses the request body to return JSON-RPC compliant errors
+/// for malformed requests (instead of axum's default HTTP 400).
 async fn rpc_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(request): Json<JsonRpcRequest>,
+    body: axum::body::Bytes,
 ) -> Json<JsonRpcResponse> {
     // Extract auth token from Authorization header
     let token = headers
@@ -359,6 +362,18 @@ async fn rpc_handler(
         .and_then(|v| v.to_str().ok())
         .and_then(|auth| auth.strip_prefix("Bearer "))
         .unwrap_or("");
+
+    // Parse the request body manually to return JSON-RPC errors
+    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            return Json(JsonRpcResponse::error(
+                Value::Null,
+                JsonRpcErrorCode::ParseError,
+                format!("parse error: {}", e),
+            ));
+        }
+    };
 
     let response = handle_request(&state, request, token).await;
     Json(response)

@@ -54,7 +54,13 @@ pub async fn run(
         )
     })?;
 
-    let listen_addr = addr.unwrap_or_else(|| DEFAULT_ADDR.parse().unwrap());
+    // Priority: CLI --addr > config.rpc_bind > DEFAULT_ADDR
+    let listen_addr = addr.unwrap_or_else(|| {
+        config
+            .rpc_bind
+            .parse()
+            .unwrap_or_else(|_| DEFAULT_ADDR.parse().unwrap())
+    });
 
     println!("Clawlet RPC server listening on http://{}", listen_addr);
 

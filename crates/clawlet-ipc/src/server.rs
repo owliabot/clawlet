@@ -461,6 +461,7 @@ async fn handle_request(state: &AppState, request: JsonRpcRequest) -> JsonRpcRes
     // Route to appropriate handler
     match request.method.as_str() {
         "health" => handle_health(id),
+        "address" => handle_address(state, id),
         "balance" => handle_balance(state, id, request.params, token).await,
         "transfer" => handle_transfer(state, id, request.params, token).await,
         "skills" => handle_skills(state, id, token),
@@ -481,6 +482,14 @@ async fn handle_request(state: &AppState, request: JsonRpcRequest) -> JsonRpcRes
 
 fn handle_health(id: Value) -> JsonRpcResponse {
     JsonRpcResponse::success(id, serde_json::json!({"status": "ok"}))
+}
+
+fn handle_address(state: &AppState, id: Value) -> JsonRpcResponse {
+    // No auth required — address query is public information
+    match handlers::handle_address(state) {
+        Ok(result) => JsonRpcResponse::success(id, result),
+        Err(e) => handler_error_response(id, e),
+    }
 }
 
 async fn handle_balance(

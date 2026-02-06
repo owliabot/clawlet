@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
+use clawlet_signer::keystore::Keystore;
 
 use crate::server::AppState;
 
@@ -116,6 +117,15 @@ pub struct ExecuteResponse {
     pub error: Option<String>,
 }
 
+/// Response for address query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddressResponse {
+    /// List of managed wallet addresses (hex, 0x-prefixed).
+    pub addresses: Vec<String>,
+    /// Primary address (first in keystore, or configured default).
+    pub primary: Option<String>,
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -132,6 +142,18 @@ pub enum HandlerError {
 /// Health check — always returns `{"status": "ok"}`.
 pub fn handle_health(_state: &AppState) -> serde_json::Value {
     json!({ "status": "ok" })
+}
+
+/// Returns the wallet addresses managed by this clawlet instance.
+pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError> {
+    let keystores = Keystore::list(&state.keystore_path)
+        .map_err(|e| HandlerError::Internal(format!("failed to list keystores: {e}")))?;
+
+    let addresses: Vec<String> = keystores.iter().map(|(addr, _)| addr.to_string()).collect();
+
+    let primary = addresses.first().cloned();
+
+    Ok(AddressResponse { addresses, primary })
 }
 
 /// Query ETH balance for the given address and chain.
@@ -408,6 +430,33 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
 mod tests {
     use super::*;
     use clawlet_evm::U256;
+
+    #[test]
+    fn address_response_serialization() {
+        let response = AddressResponse {
+            addresses: vec![
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string(),
+                "0x8ba1f109551bD432803012645Ac136ddd64DBA72".to_string(),
+            ],
+            primary: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("addresses"));
+        assert!(json.contains("primary"));
+        assert!(json.contains("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"));
+    }
+
+    #[test]
+    fn address_response_empty() {
+        let response = AddressResponse {
+            addresses: vec![],
+            primary: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: AddressResponse = serde_json::from_str(&json).unwrap();
+        assert!(parsed.addresses.is_empty());
+        assert!(parsed.primary.is_none());
+    }
 
     #[test]
     fn format_units_one_eth() {

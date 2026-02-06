@@ -4,11 +4,17 @@
     Clawlet Installation Script for Windows
 
 .DESCRIPTION
-    Installs Clawlet from source on Windows systems.
-    Requires Rust toolchain (will guide installation if missing).
+    Installs Clawlet on Windows systems.
+    Downloads pre-built binary from GitHub Releases, or builds from source as fallback.
 
 .PARAMETER Prefix
     Installation prefix directory. Defaults to $env:USERPROFILE\.cargo\bin
+
+.PARAMETER Version
+    Specific version to install (e.g., v0.1.0). Defaults to latest.
+
+.PARAMETER FromSource
+    Build from source instead of downloading pre-built binary.
 
 .PARAMETER Help
     Show this help message
@@ -17,7 +23,13 @@
     .\install.ps1
     
 .EXAMPLE
+    .\install.ps1 -Version v0.1.0
+
+.EXAMPLE
     .\install.ps1 -Prefix "C:\tools"
+
+.EXAMPLE
+    .\install.ps1 -FromSource
 
 .LINK
     https://github.com/owliabot/clawlet
@@ -29,11 +41,17 @@ param(
     [string]$Prefix = "",
     
     [Parameter(Mandatory = $false)]
+    [string]$Version = "",
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$FromSource,
+    
+    [Parameter(Mandatory = $false)]
     [switch]$Help
 )
 
 # === Configuration ===
-$RepoUrl = "https://github.com/owliabot/clawlet.git"
+$GitHubRepo = "owliabot/clawlet"
 $ConfigDir = Join-Path $env:USERPROFILE ".clawlet"
 
 # === Colors ===
@@ -72,6 +90,14 @@ function Test-Command {
     return $?
 }
 
+function Get-Arch {
+    switch ($env:PROCESSOR_ARCHITECTURE) {
+        "AMD64" { return "x86_64" }
+        "ARM64" { return "aarch64" }
+        default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
+    }
+}
+
 function Ensure-Git {
     if (-not (Test-Command "git")) {
         Write-Err "git is required but not installed."
@@ -101,47 +127,88 @@ function Ensure-Rust {
     exit 1
 }
 
-function Build-FromSource {
-    $tempDir = Join-Path $env:TEMP "clawlet-install-$(Get-Random)"
-    
+function Get-LatestVersion {
     try {
-        Write-Info "Cloning clawlet repository..."
-        & git clone --depth 1 $RepoUrl $tempDir 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to clone repository"
-        }
-
-        Write-Info "Building clawlet (this may take a few minutes)..."
-        Push-Location $tempDir
-        try {
-            & cargo build --release --package clawlet-cli 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "Build failed"
-            }
-        }
-        finally {
-            Pop-Location
-        }
-
-        $binaryPath = Join-Path $tempDir "target\release\clawlet.exe"
-        if (-not (Test-Path $binaryPath)) {
-            $binaryPath = Join-Path $tempDir "target\release\clawlet-cli.exe"
-            if (-not (Test-Path $binaryPath)) {
-                throw "Binary not found after build"
-            }
-        }
-
-        return @{
-            BinaryPath = $binaryPath
-            TempDir = $tempDir
-        }
+        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -ErrorAction Stop
+        return $response.tag_name
     }
     catch {
-        if (Test-Path $tempDir) {
-            Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-        }
-        throw
+        return $null
     }
+}
+
+function Download-Release {
+    param(
+        [string]$Arch,
+        [string]$Ver,
+        [string]$TempDir
+    )
+
+    # Expected asset name: clawlet-<version>-<arch>-windows.zip
+    $assetName = "clawlet-$Ver-$Arch-windows.zip"
+    $downloadUrl = "https://github.com/$GitHubRepo/releases/download/$Ver/$assetName"
+    
+    Write-Info "Downloading $assetName..."
+    
+    $archivePath = Join-Path $TempDir $assetName
+    
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+
+    Write-Info "Extracting..."
+    Expand-Archive -Path $archivePath -DestinationPath $TempDir -Force
+
+    # Find the binary
+    $binaryPath = Join-Path $TempDir "clawlet.exe"
+    if (-not (Test-Path $binaryPath)) {
+        $binaryPath = Get-ChildItem -Path $TempDir -Filter "clawlet.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $binaryPath) {
+            return $null
+        }
+    }
+
+    return $binaryPath
+}
+
+function Build-FromSource {
+    param([string]$TempDir)
+    
+    Ensure-Git
+    Ensure-Rust
+
+    $repoDir = Join-Path $TempDir "clawlet-src"
+
+    Write-Info "Cloning clawlet repository..."
+    & git clone --depth 1 "https://github.com/$GitHubRepo.git" $repoDir 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to clone repository"
+    }
+
+    Write-Info "Building clawlet (this may take a few minutes)..."
+    Push-Location $repoDir
+    try {
+        & cargo build --release --package clawlet-cli 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Build failed"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    $binaryPath = Join-Path $repoDir "target\release\clawlet.exe"
+    if (-not (Test-Path $binaryPath)) {
+        $binaryPath = Join-Path $repoDir "target\release\clawlet-cli.exe"
+        if (-not (Test-Path $binaryPath)) {
+            throw "Binary not found after build"
+        }
+    }
+
+    return $binaryPath
 }
 
 function Install-Binary {
@@ -206,13 +273,22 @@ confirm_above_usd: 50.0
 }
 
 function Show-PostInstall {
-    param([string]$BinDir)
+    param(
+        [string]$BinDir,
+        [string]$InstalledVersion
+    )
 
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Green
     Write-Host "║          Clawlet installed successfully! 🐾              ║" -ForegroundColor Green
     Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Green
     Write-Host ""
+    
+    if ($InstalledVersion) {
+        Write-Host "  Version: " -NoNewline
+        Write-Host $InstalledVersion -ForegroundColor White
+        Write-Host ""
+    }
 
     # Check if bin dir is in PATH
     $pathDirs = $env:PATH -split ';'
@@ -240,7 +316,7 @@ function Show-PostInstall {
     Write-Host "       $ConfigDir\policy.yaml" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  For help, run: clawlet --help"
-    Write-Host "  Documentation: https://github.com/owliabot/clawlet"
+    Write-Host "  Documentation: https://github.com/$GitHubRepo"
     Write-Host ""
 }
 
@@ -255,10 +331,8 @@ function Main {
     Write-Host "================="
     Write-Host ""
 
-    Write-Info "Detected: Windows ($env:PROCESSOR_ARCHITECTURE)"
-
-    Ensure-Git
-    Ensure-Rust
+    $arch = Get-Arch
+    Write-Info "Detected: Windows ($arch)"
 
     # Determine install location
     if ([string]::IsNullOrEmpty($Prefix)) {
@@ -268,17 +342,52 @@ function Main {
         $binDir = Join-Path $Prefix "bin"
     }
 
-    $buildResult = Build-FromSource
-    
+    $tempDir = Join-Path $env:TEMP "clawlet-install-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
     try {
-        $installedDir = Install-Binary -BinaryPath $buildResult.BinaryPath -DestDir $binDir
+        $binaryPath = $null
+        $installedVersion = ""
+
+        if ($FromSource) {
+            Write-Info "Building from source (-FromSource specified)..."
+            $binaryPath = Build-FromSource -TempDir $tempDir
+            $installedVersion = "(built from source)"
+        }
+        else {
+            # Try to download pre-built binary
+            if ([string]::IsNullOrEmpty($Version)) {
+                Write-Info "Fetching latest release version..."
+                $Version = Get-LatestVersion
+            }
+
+            if ($Version) {
+                Write-Info "Version: $Version"
+                $binaryPath = Download-Release -Arch $arch -Ver $Version -TempDir $tempDir
+                $installedVersion = $Version
+            }
+
+            if (-not $binaryPath) {
+                Write-Warn "No pre-built binary available for Windows/$arch"
+                Write-Info "Falling back to building from source..."
+                $binaryPath = Build-FromSource -TempDir $tempDir
+                if ($Version) {
+                    $installedVersion = "$Version (built from source)"
+                }
+                else {
+                    $installedVersion = "(built from source)"
+                }
+            }
+        }
+
+        $installedDir = Install-Binary -BinaryPath $binaryPath -DestDir $binDir
         Create-ConfigDir
-        Show-PostInstall -BinDir $installedDir
+        Show-PostInstall -BinDir $installedDir -InstalledVersion $installedVersion
     }
     finally {
         # Cleanup temp directory
-        if (Test-Path $buildResult.TempDir) {
-            Remove-Item -Recurse -Force $buildResult.TempDir -ErrorAction SilentlyContinue
+        if (Test-Path $tempDir) {
+            Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
         }
     }
 }

@@ -8,14 +8,16 @@
 #   ./install.sh [OPTIONS]
 #
 # Options:
-#   --prefix DIR    Install to DIR instead of /usr/local (default: /usr/local)
-#   --help          Show this help message
+#   --prefix DIR       Install to DIR instead of /usr/local (default: /usr/local)
+#   --version VER      Install specific version (default: latest)
+#   --from-source      Build from source instead of downloading binary
+#   --help             Show this help message
 #
 
 set -euo pipefail
 
 # === Configuration ===
-REPO_URL="https://github.com/owliabot/clawlet.git"
+GITHUB_REPO="owliabot/clawlet"
 DEFAULT_PREFIX="/usr/local"
 CONFIG_DIR="$HOME/.clawlet"
 
@@ -57,24 +59,27 @@ USAGE:
     install.sh [OPTIONS]
 
 OPTIONS:
-    --prefix DIR    Install to DIR/bin instead of /usr/local/bin
-                    Binary will be placed at DIR/bin/clawlet
-    --help          Show this help message
+    --prefix DIR       Install to DIR/bin instead of /usr/local/bin
+                       Binary will be placed at DIR/bin/clawlet
+    --version VER      Install specific version (e.g., v0.1.0). Default: latest
+    --from-source      Build from source instead of downloading binary
+    --help             Show this help message
 
 EXAMPLES:
-    # Install to default location (/usr/local/bin)
+    # Install latest release binary
     ./install.sh
+
+    # Install specific version
+    ./install.sh --version v0.1.0
 
     # Install to custom prefix
     ./install.sh --prefix ~/.local
 
+    # Build from source
+    ./install.sh --from-source
+
     # Pipe from curl
     curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
-
-REQUIREMENTS:
-    - Rust toolchain (will be installed via rustup if missing)
-    - git
-    - curl
 
 EOF
     exit 0
@@ -82,6 +87,8 @@ EOF
 
 # === Argument Parsing ===
 PREFIX="$DEFAULT_PREFIX"
+VERSION=""
+FROM_SOURCE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -91,6 +98,17 @@ while [[ $# -gt 0 ]]; do
                 die "--prefix requires a directory argument"
             fi
             shift 2
+            ;;
+        --version)
+            VERSION="${2:-}"
+            if [[ -z "$VERSION" ]]; then
+                die "--version requires a version argument"
+            fi
+            shift 2
+            ;;
+        --from-source)
+            FROM_SOURCE=true
+            shift
             ;;
         --help|-h)
             show_help
@@ -109,7 +127,7 @@ detect_os() {
     os="$(uname -s)"
     case "$os" in
         Linux*)  echo "linux" ;;
-        Darwin*) echo "macos" ;;
+        Darwin*) echo "darwin" ;;
         *)       die "Unsupported operating system: $os" ;;
     esac
 }
@@ -129,15 +147,15 @@ check_command() {
     command -v "$1" &> /dev/null
 }
 
-ensure_git() {
-    if ! check_command git; then
-        die "git is required but not installed. Please install git first."
-    fi
-}
-
 ensure_curl() {
     if ! check_command curl; then
         die "curl is required but not installed. Please install curl first."
+    fi
+}
+
+ensure_git() {
+    if ! check_command git; then
+        die "git is required but not installed. Please install git first."
     fi
 }
 
@@ -152,10 +170,6 @@ ensure_rust() {
     warn "Rust toolchain not found"
     info "Installing Rust via rustup..."
 
-    if ! check_command curl; then
-        die "curl is required to install Rust"
-    fi
-
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 
     # Source cargo env for current session
@@ -169,14 +183,63 @@ ensure_rust() {
     success "Rust installed successfully"
 }
 
-# === Installation ===
+# === Release Download ===
+get_latest_version() {
+    local version
+    version=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
+        | grep '"tag_name"' \
+        | sed -E 's/.*"([^"]+)".*/\1/')
+    
+    if [[ -z "$version" ]]; then
+        return 1
+    fi
+    echo "$version"
+}
+
+download_release() {
+    local os="$1"
+    local arch="$2"
+    local version="$3"
+    local tmp_dir="$4"
+
+    # Construct download URL
+    # Expected asset name: clawlet-<version>-<arch>-<os>.tar.gz
+    # e.g., clawlet-v0.1.0-x86_64-linux.tar.gz
+    local asset_name="clawlet-${version}-${arch}-${os}.tar.gz"
+    local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset_name}"
+
+    info "Downloading ${asset_name}..."
+    
+    local archive_path="${tmp_dir}/${asset_name}"
+    if ! curl -fsSL -o "$archive_path" "$download_url" 2>/dev/null; then
+        return 1
+    fi
+
+    info "Extracting..."
+    tar -xzf "$archive_path" -C "$tmp_dir" || return 1
+
+    # Find the binary
+    local binary_path="${tmp_dir}/clawlet"
+    if [[ ! -f "$binary_path" ]]; then
+        # Try in subdirectory
+        binary_path=$(find "$tmp_dir" -name "clawlet" -type f -perm -u+x | head -1)
+        if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
+            return 1
+        fi
+    fi
+
+    echo "$binary_path"
+}
+
+# === Build from Source ===
 build_from_source() {
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT
+    local tmp_dir="$1"
+
+    ensure_git
+    ensure_rust
 
     info "Cloning clawlet repository..."
-    git clone --depth 1 "$REPO_URL" "$tmp_dir/clawlet" || die "Failed to clone repository"
+    git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "$tmp_dir/clawlet" || die "Failed to clone repository"
 
     info "Building clawlet (this may take a few minutes)..."
     cd "$tmp_dir/clawlet"
@@ -194,6 +257,7 @@ build_from_source() {
     echo "$binary_path"
 }
 
+# === Installation ===
 install_binary() {
     local binary_path="$1"
     local dest="$BIN_DIR/clawlet"
@@ -257,11 +321,18 @@ POLICY
 }
 
 print_post_install() {
+    local installed_version="$1"
+
     echo ""
     echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}${BOLD}║          Clawlet installed successfully! 🐾              ║${NC}"
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
     echo ""
+    
+    if [[ -n "$installed_version" ]]; then
+        echo -e "  Version: ${BOLD}${installed_version}${NC}"
+        echo ""
+    fi
 
     # Check if bin dir is in PATH
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -285,7 +356,7 @@ print_post_install() {
     echo -e "       ${BLUE}$CONFIG_DIR/policy.yaml${NC}"
     echo ""
     echo "  For help, run: clawlet --help"
-    echo "  Documentation: https://github.com/owliabot/clawlet"
+    echo "  Documentation: https://github.com/${GITHUB_REPO}"
     echo ""
 }
 
@@ -301,16 +372,43 @@ main() {
     arch=$(detect_arch)
     info "Detected: $os ($arch)"
 
-    ensure_git
     ensure_curl
-    ensure_rust
 
-    local binary_path
-    binary_path=$(build_from_source)
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    local binary_path=""
+    local installed_version=""
+
+    if [[ "$FROM_SOURCE" == true ]]; then
+        info "Building from source (--from-source specified)..."
+        binary_path=$(build_from_source "$tmp_dir")
+        installed_version="(built from source)"
+    else
+        # Try to download pre-built binary
+        if [[ -z "$VERSION" ]]; then
+            info "Fetching latest release version..."
+            VERSION=$(get_latest_version) || true
+        fi
+
+        if [[ -n "$VERSION" ]]; then
+            info "Version: $VERSION"
+            binary_path=$(download_release "$os" "$arch" "$VERSION" "$tmp_dir") || true
+            installed_version="$VERSION"
+        fi
+
+        if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
+            warn "No pre-built binary available for $os/$arch"
+            info "Falling back to building from source..."
+            binary_path=$(build_from_source "$tmp_dir")
+            installed_version="${VERSION:-latest} (built from source)"
+        fi
+    fi
 
     install_binary "$binary_path"
     create_config_dir
-    print_post_install
+    print_post_install "$installed_version"
 }
 
 main "$@"

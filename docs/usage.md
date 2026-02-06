@@ -309,11 +309,7 @@ echo '{"jsonrpc":"2.0","method":"address","params":{},"id":1}' | nc -U /run/claw
 {
   "jsonrpc": "2.0",
   "result": {
-    "addresses": [
-      "0x742d35cc6634c0532925a3b844bc9e7595f5b5e2",
-      "0x8ba1f109551bd432803012645ac136ddd64dba72"
-    ],
-    "primary": "0x742d35cc6634c0532925a3b844bc9e7595f5b5e2"
+    "address": "0x742d35cc6634c0532925a3b844bc9e7595f5b5e2"
   },
   "id": 1
 }
@@ -322,8 +318,7 @@ echo '{"jsonrpc":"2.0","method":"address","params":{},"id":1}' | nc -U /run/claw
 字段说明：
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `addresses` | string[] | 所有管理的钱包地址（0x 前缀） |
-| `primary` | string \| null | 主地址（keystore 中的第一个地址） |
+| `address` | string | 钱包地址（0x 前缀） |
 
 ### balance
 

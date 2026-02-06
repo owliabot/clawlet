@@ -120,10 +120,8 @@ pub struct ExecuteResponse {
 /// Response for address query.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AddressResponse {
-    /// List of managed wallet addresses (hex, 0x-prefixed).
-    pub addresses: Vec<String>,
-    /// Primary address (first in keystore, or configured default).
-    pub primary: Option<String>,
+    /// The wallet address managed by this clawlet instance (hex, 0x-prefixed).
+    pub address: String,
 }
 
 /// Errors returned by handlers.
@@ -144,14 +142,12 @@ pub fn handle_health(_state: &AppState) -> serde_json::Value {
     json!({ "status": "ok" })
 }
 
-/// Returns the wallet addresses managed by this clawlet instance.
+/// Returns the wallet address managed by this clawlet instance.
 pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError> {
     // Get the address from the loaded signer instance
     let address = state.signer.address().to_string();
-    let addresses = vec![address.clone()];
-    let primary = Some(address);
 
-    Ok(AddressResponse { addresses, primary })
+    Ok(AddressResponse { address })
 }
 
 /// Query ETH balance for the given address and chain.
@@ -432,28 +428,21 @@ mod tests {
     #[test]
     fn address_response_serialization() {
         let response = AddressResponse {
-            addresses: vec![
-                "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string(),
-                "0x8ba1f109551bD432803012645Ac136ddd64DBA72".to_string(),
-            ],
-            primary: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string()),
+            address: "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2".to_string(),
         };
         let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("addresses"));
-        assert!(json.contains("primary"));
+        assert!(json.contains("address"));
         assert!(json.contains("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"));
     }
 
     #[test]
-    fn address_response_empty() {
+    fn address_response_roundtrip() {
         let response = AddressResponse {
-            addresses: vec![],
-            primary: None,
+            address: "0x8ba1f109551bD432803012645Ac136ddd64DBA72".to_string(),
         };
         let json = serde_json::to_string(&response).unwrap();
         let parsed: AddressResponse = serde_json::from_str(&json).unwrap();
-        assert!(parsed.addresses.is_empty());
-        assert!(parsed.primary.is_none());
+        assert_eq!(parsed.address, "0x8ba1f109551bD432803012645Ac136ddd64DBA72");
     }
 
     #[test]

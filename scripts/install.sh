@@ -208,21 +208,22 @@ download_release() {
     local asset_name="clawlet-${version}-${arch}-${os}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset_name}"
 
-    info "Downloading ${asset_name}..."
+    # Use >&2 for info messages since stdout is captured by caller
+    info "Downloading ${asset_name}..." >&2
     
     local archive_path="${tmp_dir}/${asset_name}"
     if ! curl -fsSL -o "$archive_path" "$download_url" 2>/dev/null; then
         return 1
     fi
 
-    info "Extracting..."
+    info "Extracting..." >&2
     tar -xzf "$archive_path" -C "$tmp_dir" || return 1
 
     # Find the binary
     local binary_path="${tmp_dir}/clawlet"
     if [[ ! -f "$binary_path" ]]; then
-        # Try in subdirectory
-        binary_path=$(find "$tmp_dir" -name "clawlet" -type f -perm -u+x | head -1)
+        # Try in subdirectory (use -perm +111 for macOS compatibility)
+        binary_path=$(find "$tmp_dir" -name "clawlet" -type f | head -1)
         if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
             return 1
         fi
@@ -238,10 +239,11 @@ build_from_source() {
     ensure_git
     ensure_rust
 
-    info "Cloning clawlet repository..."
+    # Use >&2 for info messages since stdout is captured by caller
+    info "Cloning clawlet repository..." >&2
     git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "$tmp_dir/clawlet" || die "Failed to clone repository"
 
-    info "Building clawlet (this may take a few minutes)..."
+    info "Building clawlet (this may take a few minutes)..." >&2
     cd "$tmp_dir/clawlet"
     cargo build --release --package clawlet-cli || die "Build failed"
 

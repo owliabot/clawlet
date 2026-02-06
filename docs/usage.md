@@ -41,6 +41,23 @@ echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawl
 
 ## 安装
 
+### 一键安装（推荐）
+
+```bash
+# 下载预编译二进制
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
+
+# 或者指定选项
+./scripts/install.sh --prefix ~/.local    # 自定义安装路径
+./scripts/install.sh --from-source        # 从源码构建
+./scripts/install.sh --version v0.1.0     # 指定版本
+```
+
+支持的平台：
+- Linux x86_64 / aarch64
+- macOS x86_64 / Apple Silicon (M1/M2/M3)
+- Windows x86_64
+
 ### 从源码编译
 
 ```bash
@@ -55,6 +72,12 @@ sudo cp target/release/clawlet /usr/local/bin/
 
 ```bash
 cargo install --git https://github.com/owliabot/clawlet clawlet-cli
+```
+
+### 卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
 ```
 
 ### 验证安装

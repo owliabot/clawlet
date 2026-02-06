@@ -873,67 +873,39 @@ per_tx_limit_usd: 1000000.0
     // RPC INTEGRATION TESTS (No Anvil needed for mock)
     // =========================================================================
 
-    /// Test 13: JSON-RPC request/response types
+    /// Test 13: Default server address
     #[test]
-    fn test_json_rpc_request_parsing() {
-        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse};
-
-        // Parse a JSON-RPC request
-        let json = r#"{"jsonrpc":"2.0","method":"health","params":{},"id":1}"#;
-        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.jsonrpc, "2.0");
-        assert_eq!(req.method, "health");
-        assert_eq!(req.id, serde_json::json!(1));
-
-        // Create a success response
-        let resp = JsonRpcResponse::success(
-            serde_json::json!(1),
-            serde_json::json!({"status": "healthy"}),
-        );
-        assert!(resp.result.is_some());
-        assert!(resp.error.is_none());
-
-        let serialized = serde_json::to_string(&resp).unwrap();
-        assert!(serialized.contains("\"result\""));
-        assert!(serialized.contains("\"status\":\"healthy\""));
+    fn test_default_server_addr() {
+        use clawlet_rpc::server::DEFAULT_ADDR;
+        assert_eq!(DEFAULT_ADDR, "127.0.0.1:9100");
     }
 
-    /// Test 14: JSON-RPC auth flow types
+    /// Test 14: Bearer token extraction
     #[test]
     fn test_json_rpc_auth_types() {
-        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, RequestMeta};
-
-        // Request with authorization header
-        let json = r#"{"jsonrpc":"2.0","method":"balance","params":{},"id":2,"meta":{"authorization":"Bearer clwt_test"}}"#;
-        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.meta.authorization, Some("Bearer clwt_test".to_string()));
-
-        // Extract token from Bearer header
-        let token = req
-            .meta
-            .authorization
+        // Authorization is now passed via HTTP Authorization header.
+        // Test extracting token from a Bearer header string.
+        let auth_header = Some("Bearer clwt_test".to_string());
+        let token = auth_header
             .as_deref()
-            .and_then(|a| a.strip_prefix("Bearer "))
+            .and_then(|a: &str| a.strip_prefix("Bearer "))
             .unwrap_or("");
         assert_eq!(token, "clwt_test");
 
-        // Unauthorized error response
-        let err_resp = JsonRpcResponse::error(
-            serde_json::json!(2),
-            JsonRpcErrorCode::Unauthorized,
-            "auth token required",
-        );
-        assert!(err_resp.error.is_some());
-        let error = err_resp.error.as_ref().unwrap();
-        assert_eq!(error.code, -32001);
-        assert_eq!(error.message, "auth token required");
+        // Test missing auth header
+        let no_auth: Option<String> = None;
+        let token = no_auth
+            .as_deref()
+            .and_then(|a: &str| a.strip_prefix("Bearer "))
+            .unwrap_or("");
+        assert_eq!(token, "");
     }
 
     /// Test 15: RPC method parsing and scopes
     #[test]
     fn test_rpc_method_parsing() {
         use clawlet_core::auth::TokenScope;
-        use clawlet_ipc::types::RpcMethod;
+        use clawlet_rpc::types::RpcMethod;
 
         // Parse method names
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));

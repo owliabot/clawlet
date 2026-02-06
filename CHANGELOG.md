@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-06
+
+### Changed
+- **Breaking**: IPC protocol changed from Unix domain sockets to HTTP JSON-RPC (#X)
+  - Server now listens on `127.0.0.1:9100` by default (was Unix socket)
+  - CLI `--socket` flag replaced with `--addr` flag
+  - Authorization moved from request body (`meta.authorization`) to HTTP `Authorization` header
+  - Removed `interprocess` crate dependency, added `axum`, `hyper`, `reqwest`
+
+### Migration
+- Old: `echo '...' | nc -U /run/clawlet/clawlet.sock`
+- New: `curl -X POST http://127.0.0.1:9100/rpc -H "Authorization: Bearer clwt_xxx" -d '...'`
+
 ## [0.1.4] - 2026-02-06
 
 ### Added

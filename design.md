@@ -85,8 +85,8 @@
 - [x] M1-4: clawlet-signer — BIP-44 HD 派生（EVM 路径）
 - [x] M1-5: clawlet-evm — 余额查询（ETH + ERC-20）
 - [x] M1-6: clawlet-evm — 转账构建 + 签名 + 广播
-- [x] M1-7: clawlet-ipc — HTTP server (axum) + auth middleware
-- [x] M1-8: clawlet-ipc — Routes: GET /balance, POST /transfer
+- [x] M1-7: clawlet-rpc — HTTP server (axum) + auth middleware
+- [x] M1-8: clawlet-rpc — Routes: GET /balance, POST /transfer
 - [x] M1-9: clawlet-cli — `clawlet init` (生成 keystore + policy)
 - [x] M1-10: clawlet-cli — `clawlet serve` (启动 RPC server)
 - [x] M1-11: 集成测试（Anvil local fork）

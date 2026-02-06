@@ -8,6 +8,8 @@ use clawlet_core::auth::TokenScope;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcMethod {
     Health,
+    /// Query wallet address (no auth required).
+    Address,
     Balance,
     Transfer,
     Skills,
@@ -27,6 +29,7 @@ impl RpcMethod {
     pub fn parse_method(s: &str) -> Option<Self> {
         match s {
             "health" => Some(Self::Health),
+            "address" => Some(Self::Address),
             "balance" => Some(Self::Balance),
             "transfer" => Some(Self::Transfer),
             "skills" => Some(Self::Skills),
@@ -43,6 +46,7 @@ impl RpcMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Health => "health",
+            Self::Address => "address",
             Self::Balance => "balance",
             Self::Transfer => "transfer",
             Self::Skills => "skills",
@@ -58,10 +62,11 @@ impl RpcMethod {
     ///
     /// Returns `None` for methods that don't require token auth:
     /// - `Health`: public endpoint
+    /// - `Address`: public endpoint
     /// - `Auth*`: use password-based auth instead (handled in their handlers)
     pub fn required_scope(&self) -> Option<TokenScope> {
         match self {
-            RpcMethod::Health => None, // Public endpoint
+            RpcMethod::Health | RpcMethod::Address => None, // Public endpoints
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
             RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
             // Auth methods use password verification, not token auth
@@ -80,6 +85,7 @@ mod tests {
     #[test]
     fn test_method_from_str() {
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
+        assert_eq!(RpcMethod::parse_method("address"), Some(RpcMethod::Address));
         assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
         assert_eq!(
             RpcMethod::parse_method("transfer"),
@@ -109,6 +115,7 @@ mod tests {
     #[test]
     fn test_method_as_str() {
         assert_eq!(RpcMethod::Health.as_str(), "health");
+        assert_eq!(RpcMethod::Address.as_str(), "address");
         assert_eq!(RpcMethod::Balance.as_str(), "balance");
         assert_eq!(RpcMethod::Transfer.as_str(), "transfer");
         assert_eq!(RpcMethod::Skills.as_str(), "skills");
@@ -124,6 +131,7 @@ mod tests {
         use clawlet_core::auth::TokenScope;
 
         assert_eq!(RpcMethod::Health.required_scope(), None);
+        assert_eq!(RpcMethod::Address.required_scope(), None);
         assert_eq!(RpcMethod::Balance.required_scope(), Some(TokenScope::Read));
         assert_eq!(RpcMethod::Skills.required_scope(), Some(TokenScope::Read));
         assert_eq!(
@@ -141,6 +149,7 @@ mod tests {
     fn test_method_roundtrip() {
         let methods = [
             RpcMethod::Health,
+            RpcMethod::Address,
             RpcMethod::Balance,
             RpcMethod::Transfer,
             RpcMethod::Skills,

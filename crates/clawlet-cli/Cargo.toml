@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }
 clawlet-signer = { path = "../clawlet-signer" }
-clawlet-ipc = { path = "../clawlet-ipc" }
+clawlet-rpc = { path = "../clawlet-rpc" }
 clawlet-evm = { path = "../clawlet-evm" }
 clap = { version = "4", features = ["derive"] }
 rpassword = "5"

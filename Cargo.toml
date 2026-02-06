@@ -3,7 +3,7 @@ members = [
     "crates/clawlet-core",
     "crates/clawlet-signer",
     "crates/clawlet-evm",
-    "crates/clawlet-ipc",
+    "crates/clawlet-rpc",
     "crates/clawlet-cli",
     "tests/integration",
 ]

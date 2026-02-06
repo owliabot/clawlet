@@ -33,8 +33,10 @@ clawlet auth grant --scope read,trade --label "my-agent"
 # 4. 启动服务
 clawlet serve
 
-# 5. 测试（通过 Unix Socket）
-echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
+# 5. 测试（通过 HTTP）
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"health","params":{},"id":1}'
 ```
 
 ---
@@ -139,9 +141,6 @@ clawlet init --data-dir /path/to/clawlet
 ### config.yaml
 
 ```yaml
-# Unix Socket 路径
-socket_path: "/run/clawlet/clawlet.sock"
-
 # 策略文件路径
 policy_path: "~/.clawlet/policy.yaml"
 
@@ -171,19 +170,19 @@ chain_rpc_urls:
 
 ## 启动服务
 
-### IPC 模式（Unix Socket）
+### HTTP 模式（默认）
 
-Clawlet 使用 Unix Domain Socket 进行进程间通信，协议为 JSON-RPC 2.0。
+Clawlet 使用 HTTP JSON-RPC 2.0 协议提供 API 服务。
 
 ```bash
 clawlet serve
-# 默认 socket: /run/clawlet/clawlet.sock
+# 默认监听: http://127.0.0.1:9100
 ```
 
-### 自定义 Socket 路径
+### 自定义监听地址
 
 ```bash
-clawlet serve --socket /tmp/clawlet.sock
+clawlet serve --addr 0.0.0.0:8080
 ```
 
 ### 指定配置文件
@@ -253,19 +252,21 @@ clawlet auth revoke --id a1b2
 
 ## API 接口
 
-Clawlet 使用 **JSON-RPC 2.0** 协议，通过 Unix Domain Socket 通信。
+Clawlet 使用 **JSON-RPC 2.0** 协议，通过 HTTP 通信。
 
 ### 请求格式
 
-```json
+```
+POST /rpc HTTP/1.1
+Host: 127.0.0.1:9100
+Content-Type: application/json
+Authorization: Bearer clwt_xxx
+
 {
   "jsonrpc": "2.0",
   "method": "<方法名>",
   "params": { ... },
-  "id": 1,
-  "meta": {
-    "authorization": "Bearer clwt_xxx"
-  }
+  "id": 1
 }
 ```
 
@@ -288,7 +289,9 @@ Clawlet 使用 **JSON-RPC 2.0** 协议，通过 Unix Domain Socket 通信。
 健康检查（无需认证）。
 
 ```bash
-echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"health","params":{},"id":1}'
 ```
 
 响应：
@@ -301,7 +304,9 @@ echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawl
 查询 clawlet 管理的钱包地址（无需认证）。
 
 ```bash
-echo '{"jsonrpc":"2.0","method":"address","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"address","params":{},"id":1}'
 ```
 
 响应：
@@ -325,7 +330,10 @@ echo '{"jsonrpc":"2.0","method":"address","params":{},"id":1}' | nc -U /run/claw
 查询余额（需要 `read` scope）。
 
 ```bash
-echo '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x742d35Cc...","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer clwt_xxx" \
+  -d '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x742d35Cc...","chain_id":8453},"id":1}'
 ```
 
 参数：
@@ -359,7 +367,10 @@ echo '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x742d35Cc...","c
 执行转账（需要 `trade` scope）。
 
 ```bash
-echo '{"jsonrpc":"2.0","method":"transfer","params":{"to":"0x742d35Cc...","amount":"0.1","token":"ETH","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer clwt_xxx" \
+  -d '{"jsonrpc":"2.0","method":"transfer","params":{"to":"0x742d35Cc...","amount":"0.1","token":"ETH","chain_id":8453},"id":1}'
 ```
 
 参数：
@@ -399,57 +410,56 @@ echo '{"jsonrpc":"2.0","method":"transfer","params":{"to":"0x742d35Cc...","amoun
 
 ### 客户端示例
 
-#### Shell (netcat)
+#### Shell (curl)
 
 ```bash
-echo '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer clwt_xxx" \
+  -d '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1}'
 ```
 
-#### Node.js
+#### Node.js (fetch)
 
 ```javascript
-const net = require('net');
-
-const client = net.createConnection('/run/clawlet/clawlet.sock');
-
-const request = {
-  jsonrpc: '2.0',
-  method: 'balance',
-  params: { address: '0x...', chain_id: 8453 },
-  id: 1,
-  meta: { authorization: 'Bearer clwt_xxx' }
-};
-
-client.write(JSON.stringify(request) + '\n');
-
-client.on('data', (data) => {
-  const response = JSON.parse(data.toString());
-  console.log(response.result);
-  client.end();
+const response = await fetch('http://127.0.0.1:9100/rpc', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer clwt_xxx'
+  },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'balance',
+    params: { address: '0x...', chain_id: 8453 },
+    id: 1
+  })
 });
+
+const { result } = await response.json();
+console.log(result);
 ```
 
-#### Python
+#### Python (requests)
 
 ```python
-import socket
-import json
+import requests
 
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.connect('/run/clawlet/clawlet.sock')
+response = requests.post(
+    'http://127.0.0.1:9100/rpc',
+    headers={
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer clwt_xxx'
+    },
+    json={
+        'jsonrpc': '2.0',
+        'method': 'balance',
+        'params': {'address': '0x...', 'chain_id': 8453},
+        'id': 1
+    }
+)
 
-request = {
-    'jsonrpc': '2.0',
-    'method': 'balance',
-    'params': {'address': '0x...', 'chain_id': 8453},
-    'id': 1,
-    'meta': {'authorization': 'Bearer clwt_xxx'}
-}
-
-sock.send((json.dumps(request) + '\n').encode())
-response = json.loads(sock.recv(4096).decode())
-print(response['result'])
-sock.close()
+print(response.json()['result'])
 ```
 
 ---

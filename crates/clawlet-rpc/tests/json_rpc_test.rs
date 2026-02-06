@@ -2,7 +2,7 @@
 //!
 //! Tests the HTTP JSON-RPC implementation using axum.
 
-use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, DEFAULT_ADDR};
+use clawlet_rpc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, DEFAULT_ADDR};
 use serde_json::json;
 
 #[test]
@@ -96,7 +96,7 @@ fn default_addr_is_localhost() {
 
 #[test]
 fn rpc_method_parse_and_roundtrip() {
-    use clawlet_ipc::types::RpcMethod;
+    use clawlet_rpc::types::RpcMethod;
 
     let methods = [
         ("health", RpcMethod::Health),
@@ -125,7 +125,7 @@ fn rpc_method_parse_and_roundtrip() {
 #[test]
 fn rpc_method_required_scope() {
     use clawlet_core::auth::TokenScope;
-    use clawlet_ipc::types::RpcMethod;
+    use clawlet_rpc::types::RpcMethod;
 
     // Public endpoints
     assert_eq!(RpcMethod::Health.required_scope(), None);

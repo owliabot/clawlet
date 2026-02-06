@@ -876,7 +876,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 13: JSON-RPC request/response types
     #[test]
     fn test_json_rpc_request_parsing() {
-        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse};
+        use clawlet_rpc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse};
 
         // Parse a JSON-RPC request
         let json = r#"{"jsonrpc":"2.0","method":"health","params":{},"id":1}"#;
@@ -901,7 +901,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 14: JSON-RPC auth flow types
     #[test]
     fn test_json_rpc_auth_types() {
-        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcResponse};
+        use clawlet_rpc::server::{JsonRpcErrorCode, JsonRpcResponse};
 
         // Authorization is now passed via HTTP Authorization header, not in the request body.
         // Test extracting token from a Bearer header string.
@@ -928,7 +928,7 @@ per_tx_limit_usd: 1000000.0
     #[test]
     fn test_rpc_method_parsing() {
         use clawlet_core::auth::TokenScope;
-        use clawlet_ipc::types::RpcMethod;
+        use clawlet_rpc::types::RpcMethod;
 
         // Parse method names
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));

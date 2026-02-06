@@ -1,9 +1,9 @@
 [package]
-name = "clawlet-ipc"
+name = "clawlet-rpc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "RPC API server for Clawlet (HTTP JSON-RPC)"
+description = "HTTP JSON-RPC server for Clawlet"
 
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }

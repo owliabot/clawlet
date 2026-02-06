@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 
 use clap::Subcommand;
 use clawlet_core::auth::TokenScope;
-use clawlet_ipc::client::RpcClient;
-use clawlet_ipc::server::DEFAULT_ADDR;
+use clawlet_rpc::client::RpcClient;
+use clawlet_rpc::server::DEFAULT_ADDR;
 use serde::{Deserialize, Serialize};
 
 /// Auth subcommands.

@@ -1,4 +1,4 @@
-//! # clawlet-ipc
+//! # clawlet-rpc
 //!
 //! HTTP JSON-RPC server exposing wallet operations.
 //!

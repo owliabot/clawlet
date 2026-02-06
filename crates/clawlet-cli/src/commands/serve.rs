@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clawlet_core::config::Config;
-use clawlet_ipc::server::{RpcServer, DEFAULT_ADDR};
+use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 

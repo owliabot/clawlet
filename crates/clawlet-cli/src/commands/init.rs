@@ -57,6 +57,8 @@ chain_rpc_urls:
   10: "https://mainnet.optimism.io"
   # Polygon
   137: "https://polygon-rpc.com"
+  # BNB Smart Chain
+  56: "https://bsc-dataseed.binance.org"
 
 # Authentication configuration
 # Password verification uses your keystore password - no separate auth password needed.

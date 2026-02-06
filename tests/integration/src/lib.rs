@@ -873,63 +873,89 @@ per_tx_limit_usd: 1000000.0
     // RPC INTEGRATION TESTS (No Anvil needed for mock)
     // =========================================================================
 
-    /// Test 13: RPC health endpoint (simulated via types)
+    /// Test 13: JSON-RPC request/response types
     #[test]
-    fn test_rpc_health_endpoint() {
-        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+    fn test_json_rpc_request_parsing() {
+        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse};
 
-        // Simulate a health request
-        let req = RpcRequest::new(RpcMethod::Health, "", &[]);
-        assert_eq!(req.rpc_method(), Some(RpcMethod::Health));
+        // Parse a JSON-RPC request
+        let json = r#"{"jsonrpc":"2.0","method":"health","params":{},"id":1}"#;
+        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.jsonrpc, "2.0");
+        assert_eq!(req.method, "health");
+        assert_eq!(req.id, serde_json::json!(1));
 
-        // Simulate a health response
-        let response_json = serde_json::json!({"status": "healthy"}).to_string();
-        let resp = RpcResponse::ok(response_json.as_bytes());
-        assert!(resp.is_ok());
-        assert_eq!(resp.status, RpcStatus::Ok as u32);
+        // Create a success response
+        let resp = JsonRpcResponse::success(
+            serde_json::json!(1),
+            serde_json::json!({"status": "healthy"}),
+        );
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
 
-        let payload = std::str::from_utf8(resp.payload_bytes()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(payload).unwrap();
-        assert_eq!(parsed["status"], "healthy");
+        let serialized = serde_json::to_string(&resp).unwrap();
+        assert!(serialized.contains("\"result\""));
+        assert!(serialized.contains("\"status\":\"healthy\""));
     }
 
-    /// Test 14: RPC auth required - request without token gets 401
+    /// Test 14: JSON-RPC auth flow types
     #[test]
-    fn test_rpc_auth_required() {
-        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+    fn test_json_rpc_auth_types() {
+        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, RequestMeta};
 
-        // Request with empty token
-        let req = RpcRequest::new(RpcMethod::Balance, "", b"{}");
-        assert_eq!(req.token_str(), "");
+        // Request with authorization header
+        let json = r#"{"jsonrpc":"2.0","method":"balance","params":{},"id":2,"meta":{"authorization":"Bearer clwt_test"}}"#;
+        let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.meta.authorization, Some("Bearer clwt_test".to_string()));
 
-        // Simulate unauthorized response
-        let resp = RpcResponse::error(RpcStatus::Unauthorized, "auth token required");
-        assert!(!resp.is_ok());
-        assert_eq!(resp.status, RpcStatus::Unauthorized as u32);
+        // Extract token from Bearer header
+        let token = req
+            .meta
+            .authorization
+            .as_deref()
+            .and_then(|a| a.strip_prefix("Bearer "))
+            .unwrap_or("");
+        assert_eq!(token, "clwt_test");
 
-        let payload = std::str::from_utf8(resp.payload_bytes()).unwrap();
-        assert!(payload.contains("auth token required"));
+        // Unauthorized error response
+        let err_resp = JsonRpcResponse::error(
+            serde_json::json!(2),
+            JsonRpcErrorCode::Unauthorized,
+            "auth token required",
+        );
+        assert!(err_resp.error.is_some());
+        let error = err_resp.error.as_ref().unwrap();
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.message, "auth token required");
     }
 
-    /// Test 15: RPC auth valid - request with token gets 200
+    /// Test 15: RPC method parsing and scopes
     #[test]
-    fn test_rpc_auth_valid() {
-        use clawlet_ipc::types::{RpcMethod, RpcRequest, RpcResponse, RpcStatus};
+    fn test_rpc_method_parsing() {
+        use clawlet_core::auth::TokenScope;
+        use clawlet_ipc::types::RpcMethod;
 
-        // Request with valid token
-        let token = "test-secret-token-12345";
-        let req = RpcRequest::new(RpcMethod::Balance, token, b"{}");
-        assert_eq!(req.token_str(), token);
+        // Parse method names
+        assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
+        assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
+        assert_eq!(
+            RpcMethod::parse_method("transfer"),
+            Some(RpcMethod::Transfer)
+        );
+        assert_eq!(
+            RpcMethod::parse_method("auth.grant"),
+            Some(RpcMethod::AuthGrant)
+        );
+        assert_eq!(RpcMethod::parse_method("unknown"), None);
 
-        // Simulate successful response
-        let response_json = serde_json::json!({"balance": "10000000000000000000"}).to_string();
-        let resp = RpcResponse::ok(response_json.as_bytes());
-        assert!(resp.is_ok());
-        assert_eq!(resp.status, RpcStatus::Ok as u32);
-
-        let payload = std::str::from_utf8(resp.payload_bytes()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(payload).unwrap();
-        assert!(parsed["balance"].as_str().is_some());
+        // Verify required scopes
+        assert_eq!(RpcMethod::Health.required_scope(), None);
+        assert_eq!(RpcMethod::Balance.required_scope(), Some(TokenScope::Read));
+        assert_eq!(
+            RpcMethod::Transfer.required_scope(),
+            Some(TokenScope::Trade)
+        );
+        assert_eq!(RpcMethod::AuthGrant.required_scope(), None); // Uses password
     }
 
     // =========================================================================

@@ -1,0 +1,130 @@
+# Clawlet E2E Test Container
+#
+# Multi-stage build for smaller final image
+
+# Build stage
+# Use latest Rust (needs 1.85+ for edition2024)
+FROM rust:latest AS builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy manifests and source
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY tests ./tests
+
+# Build release binary
+RUN cargo build --release -p clawlet-cli
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create clawlet user
+RUN useradd --system --create-home --shell /usr/sbin/nologin clawlet
+
+# Copy binary
+COPY --from=builder /build/target/release/clawlet /usr/local/bin/clawlet
+
+# Create directories
+RUN mkdir -p /run/clawlet /home/clawlet/.clawlet && \
+    chown -R clawlet:clawlet /run/clawlet /home/clawlet/.clawlet
+
+# Create data directories (DO NOT pre-create config.yaml - let init generate it with password hash)
+RUN mkdir -p /home/clawlet/.clawlet/keystore /home/clawlet/.clawlet/skills && \
+    chown -R clawlet:clawlet /home/clawlet/.clawlet
+
+# Permissive policy for E2E tests (policy.yaml can be pre-created)
+COPY --chown=clawlet:clawlet <<EOF /home/clawlet/.clawlet/policy.yaml
+# E2E Test Policy - permissive
+daily_transfer_limit_usd: 100000.0
+per_tx_limit_usd: 10000.0
+allowed_tokens: []
+allowed_chains:
+  - 31337
+require_approval_above_usd: null
+EOF
+
+USER clawlet
+WORKDIR /home/clawlet
+
+# Socket path
+ENV CLAWLET_SOCKET_PATH=/run/clawlet/clawlet.sock
+ENV CLAWLET_ADMIN_PASSWORD=e2e-test-password
+
+# Start script that handles initialization
+COPY --chown=clawlet:clawlet <<'SCRIPT' /home/clawlet/start.sh
+#!/bin/bash
+set -e
+
+# Wait for RPC to be available
+echo "Waiting for RPC endpoint..."
+for i in {1..30}; do
+    if curl -sf "${CLAWLET_RPC_URL:-http://anvil:18545}" -X POST \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null 2>&1; then
+        echo "RPC endpoint ready"
+        break
+    fi
+    sleep 1
+done
+
+# Initialize if not already done (this sets up keystore and password)
+# Check for keystore files (glob doesn't work well in -f test, use ls)
+if ! ls /home/clawlet/.clawlet/keystore/*.json >/dev/null 2>&1; then
+    echo "Initializing clawlet..."
+    
+    # Remove any stale config.yaml so init can generate fresh one with password hash
+    rm -f /home/clawlet/.clawlet/config.yaml
+    
+    # Create password input file with exact values
+    # Prompt order: keystore_pw, keystore_pw_confirm, auth_pw, auth_pw_confirm, mnemonic
+    cat > /tmp/init_input.txt <<'INIT_INPUT'
+testpassword123
+testpassword123
+testpassword123
+testpassword123
+test test test test test test test test test test test junk
+INIT_INPUT
+    # Run init with input file
+    /usr/local/bin/clawlet init --from-mnemonic --data-dir /home/clawlet/.clawlet < /tmp/init_input.txt
+    rm -f /tmp/init_input.txt
+    
+    # Update chain_rpc_urls in the generated config (init creates empty map)
+    # Replace "chain_rpc_urls: {}" with actual RPC URL config
+    sed -i 's|chain_rpc_urls: {}|chain_rpc_urls:\n  31337: "http://anvil:18545"|' /home/clawlet/.clawlet/config.yaml
+    
+    # Debug: show generated config
+    echo "=== Generated config.yaml ==="
+    cat /home/clawlet/.clawlet/config.yaml
+    echo "==========================="
+fi
+
+# Update config with RPC URL (idempotent)
+sed -i "s|http://anvil:18545|${CLAWLET_RPC_URL:-http://anvil:18545}|g" /home/clawlet/.clawlet/config.yaml
+
+# Start clawlet with socket mode
+echo "testpassword123" | exec /usr/local/bin/clawlet serve \
+    --config /home/clawlet/.clawlet/config.yaml \
+    --socket "${CLAWLET_SOCKET_PATH}"
+SCRIPT
+
+RUN chmod +x /home/clawlet/start.sh
+
+# Install curl for healthcheck
+USER root
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+USER clawlet
+
+ENTRYPOINT ["/bin/bash", "/home/clawlet/start.sh"]

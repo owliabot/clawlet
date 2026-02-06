@@ -3,19 +3,20 @@ name = "clawlet-ipc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "RPC API server for Clawlet (iceoryx2 IPC)"
+description = "RPC API server for Clawlet (Unix domain socket IPC)"
 
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }
 clawlet-evm = { path = "../clawlet-evm" }
 clawlet-signer = { path = "../clawlet-signer" }
-iceoryx2 = "0.8"
+interprocess = { version = "2", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
 thiserror = "2"
 tracing = "0.1"
+dirs = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -35,10 +35,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
 use clawlet_core::audit::AuditLogger;
-use clawlet_core::auth::{self, AuthError, SessionStore, TokenScope};
+use clawlet_core::auth::{AuthError, SessionStore, TokenScope};
 use clawlet_core::config::{AuthConfig, Config};
 use clawlet_core::policy::PolicyEngine;
 use clawlet_evm::EvmAdapter;
+use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
 use crate::dispatch::{
@@ -221,6 +222,8 @@ pub struct AppState {
     pub signer: Arc<LocalSigner>,
     /// Skills directory containing AIS specs.
     pub skills_dir: PathBuf,
+    /// Path to keystore directory (for password verification).
+    pub keystore_path: PathBuf,
 }
 
 // ---- Socket Server ----
@@ -310,6 +313,7 @@ impl RpcServer {
             auth_config: config.auth.clone(),
             signer: Arc::new(signer),
             skills_dir,
+            keystore_path: config.keystore_path.clone(),
         });
 
         let server_config = ServerConfig {
@@ -756,8 +760,8 @@ async fn handle_auth_revoke_all(state: &AppState, id: Value, params: Value) -> J
 
 /// Check authentication for token-based methods.
 fn check_auth(state: &AppState, token: &str, required_scope: TokenScope) -> Result<(), AuthError> {
-    // If no auth is configured, allow all requests
-    if state.auth_config.password_hash.is_none() {
+    // If no keystore exists, allow all requests (unauthenticated mode)
+    if !state.keystore_path.exists() {
         return Ok(());
     }
 
@@ -776,7 +780,11 @@ fn check_auth(state: &AppState, token: &str, required_scope: TokenScope) -> Resu
     Ok(())
 }
 
-/// Verify password for admin operations.
+/// Verify password for admin operations by attempting to unlock the keystore.
+///
+/// Instead of storing a separate password hash, we verify the password by
+/// attempting to unlock the keystore. If the keystore unlocks successfully,
+/// the password is valid.
 fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthError> {
     // Check lockout
     {
@@ -793,24 +801,30 @@ fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthErr
         }
     }
 
-    let password_hash = state
-        .auth_config
-        .password_hash
-        .as_ref()
-        .ok_or(AuthError::PasswordIncorrect)?;
+    // Try to unlock any keystore file - if successful, password is valid
+    let keystores =
+        Keystore::list(&state.keystore_path).map_err(|_| AuthError::PasswordIncorrect)?;
 
-    if auth::verify_password(password, password_hash) {
-        // Clear failed attempts on success
-        if let Ok(mut store) = state.session_store.write() {
-            store.clear_failed_attempts("admin");
+    if keystores.is_empty() {
+        return Err(AuthError::PasswordIncorrect);
+    }
+
+    let (_, keystore_path) = &keystores[0];
+    match Keystore::unlock(keystore_path, password) {
+        Ok(_) => {
+            // Clear failed attempts on success
+            if let Ok(mut store) = state.session_store.write() {
+                store.clear_failed_attempts("admin");
+            }
+            Ok(())
         }
-        Ok(())
-    } else {
-        // Record failed attempt
-        if let Ok(mut store) = state.session_store.write() {
-            store.record_failed_attempt("admin");
+        Err(_) => {
+            // Record failed attempt
+            if let Ok(mut store) = state.session_store.write() {
+                store.record_failed_attempt("admin");
+            }
+            Err(AuthError::PasswordIncorrect)
         }
-        Err(AuthError::PasswordIncorrect)
     }
 }
 

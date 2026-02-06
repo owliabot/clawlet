@@ -252,7 +252,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             socket_path: default_socket_path(),
-            permissions: 0o660,
+            permissions: 0o600,
         }
     }
 }
@@ -318,7 +318,7 @@ impl RpcServer {
 
         let server_config = ServerConfig {
             socket_path: socket_path.unwrap_or_else(default_socket_path),
-            permissions: 0o660,
+            permissions: 0o600,
         };
 
         let server = RpcServer::new(server_config, state);

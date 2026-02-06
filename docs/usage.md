@@ -33,8 +33,8 @@ clawlet auth grant --scope read,trade --label "my-agent"
 # 4. 启动服务
 clawlet serve
 
-# 5. 测试
-curl -H "Authorization: Bearer <token>" http://127.0.0.1:9100/health
+# 5. 测试（通过 Unix Socket）
+echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
 ```
 
 ---
@@ -116,8 +116,8 @@ clawlet init --data-dir /path/to/clawlet
 ### config.yaml
 
 ```yaml
-# RPC 绑定地址
-rpc_bind: "127.0.0.1:9100"
+# Unix Socket 路径
+socket_path: "/run/clawlet/clawlet.sock"
 
 # 策略文件路径
 policy_path: "~/.clawlet/policy.yaml"
@@ -148,23 +148,18 @@ chain_rpc_urls:
 
 ## 启动服务
 
-### HTTP 模式（默认）
+### IPC 模式（Unix Socket）
+
+Clawlet 使用 Unix Domain Socket 进行进程间通信，协议为 JSON-RPC 2.0。
 
 ```bash
 clawlet serve
+# 默认 socket: /run/clawlet/clawlet.sock
 ```
 
-服务运行在 `127.0.0.1:9100`。
-
-### Unix Socket 模式
-
-适用于 Node.js / Python 等非 Rust 客户端：
+### 自定义 Socket 路径
 
 ```bash
-clawlet serve --socket
-# 默认: /run/clawlet/clawlet.sock
-
-# 自定义路径
 clawlet serve --socket /tmp/clawlet.sock
 ```
 
@@ -235,34 +230,55 @@ clawlet auth revoke --id a1b2
 
 ## API 接口
 
-### 认证
+Clawlet 使用 **JSON-RPC 2.0** 协议，通过 Unix Domain Socket 通信。
 
-所有请求需要在 Header 中带 Bearer token：
+### 请求格式
 
-```bash
-curl -H "Authorization: Bearer clwt_xxx" http://127.0.0.1:9100/...
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "<方法名>",
+  "params": { ... },
+  "id": 1,
+  "meta": {
+    "authorization": "Bearer clwt_xxx"
+  }
+}
 ```
 
-### GET /health
+### 响应格式
+
+成功：
+```json
+{"jsonrpc": "2.0", "result": { ... }, "id": 1}
+```
+
+错误：
+```json
+{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Unauthorized"}, "id": 1}
+```
+
+---
+
+### health
 
 健康检查（无需认证）。
 
 ```bash
-curl http://127.0.0.1:9100/health
+echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
 ```
 
 响应：
 ```json
-{"status": "ok"}
+{"jsonrpc":"2.0","result":{"status":"ok"},"id":1}
 ```
 
-### GET /balance
+### balance
 
 查询余额（需要 `read` scope）。
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:9100/balance?address=0x742d35Cc6634C0532925a3b844Bc9e7595f0Ab&chain_id=8453"
+echo '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x742d35Cc...","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
 ```
 
 参数：
@@ -275,35 +291,31 @@ curl -H "Authorization: Bearer $TOKEN" \
 响应：
 ```json
 {
-  "eth": "1.234567890123456789",
-  "tokens": [
-    {
-      "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-      "symbol": "USDC",
-      "decimals": 6,
-      "balance": "1000.000000"
-    }
-  ]
+  "jsonrpc": "2.0",
+  "result": {
+    "eth": "1.234567890123456789",
+    "tokens": [
+      {
+        "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "symbol": "USDC",
+        "decimals": 6,
+        "balance": "1000.000000"
+      }
+    ]
+  },
+  "id": 1
 }
 ```
 
-### POST /transfer
+### transfer
 
 执行转账（需要 `trade` scope）。
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0Ab",
-    "amount": "0.1",
-    "token": "ETH",
-    "chain_id": 8453
-  }' \
-  http://127.0.0.1:9100/transfer
+echo '{"jsonrpc":"2.0","method":"transfer","params":{"to":"0x742d35Cc...","amount":"0.1","token":"ETH","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
 ```
 
-请求体：
+参数：
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `to` | string | 是 | 目标地址 |
@@ -314,46 +326,83 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 成功响应：
 ```json
 {
-  "status": "success",
-  "tx_hash": "0xabc...def",
-  "audit_id": "evt_123456"
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "success",
+    "tx_hash": "0xabc...def",
+    "audit_id": "evt_123456"
+  },
+  "id": 1
 }
 ```
 
 失败响应（策略拒绝）：
 ```json
 {
-  "status": "denied",
-  "reason": "Transfer exceeds daily limit (100 USD)"
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "denied",
+    "reason": "Transfer exceeds daily limit (100 USD)"
+  },
+  "id": 1
 }
 ```
 
-### Unix Socket 调用示例
+---
 
-使用 JSON-RPC 2.0 协议：
+### 客户端示例
+
+#### Shell (netcat)
 
 ```bash
-# 使用 nc (netcat)
 echo '{"jsonrpc":"2.0","method":"balance","params":{"address":"0x...","chain_id":8453},"id":1,"meta":{"authorization":"Bearer clwt_xxx"}}' | nc -U /run/clawlet/clawlet.sock
 ```
 
-Node.js 示例：
+#### Node.js
+
 ```javascript
 const net = require('net');
 
-const socket = net.createConnection('/run/clawlet/clawlet.sock');
+const client = net.createConnection('/run/clawlet/clawlet.sock');
 
-socket.write(JSON.stringify({
+const request = {
   jsonrpc: '2.0',
   method: 'balance',
   params: { address: '0x...', chain_id: 8453 },
   id: 1,
   meta: { authorization: 'Bearer clwt_xxx' }
-}));
+};
 
-socket.on('data', (data) => {
-  console.log(JSON.parse(data.toString()));
+client.write(JSON.stringify(request) + '\n');
+
+client.on('data', (data) => {
+  const response = JSON.parse(data.toString());
+  console.log(response.result);
+  client.end();
 });
+```
+
+#### Python
+
+```python
+import socket
+import json
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect('/run/clawlet/clawlet.sock')
+
+request = {
+    'jsonrpc': '2.0',
+    'method': 'balance',
+    'params': {'address': '0x...', 'chain_id': 8453},
+    'id': 1,
+    'meta': {'authorization': 'Bearer clwt_xxx'}
+}
+
+sock.send((json.dumps(request) + '\n').encode())
+response = json.loads(sock.recv(4096).decode())
+print(response['result'])
+sock.close()
 ```
 
 ---

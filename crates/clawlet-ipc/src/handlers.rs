@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_signer::keystore::Keystore;
+use clawlet_signer::Signer;
 
 use crate::server::AppState;
 
@@ -146,12 +146,10 @@ pub fn handle_health(_state: &AppState) -> serde_json::Value {
 
 /// Returns the wallet addresses managed by this clawlet instance.
 pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError> {
-    let keystores = Keystore::list(&state.keystore_path)
-        .map_err(|e| HandlerError::Internal(format!("failed to list keystores: {e}")))?;
-
-    let addresses: Vec<String> = keystores.iter().map(|(addr, _)| addr.to_string()).collect();
-
-    let primary = addresses.first().cloned();
+    // Get the address from the loaded signer instance
+    let address = state.signer.address().to_string();
+    let addresses = vec![address.clone()];
+    let primary = Some(address);
 
     Ok(AddressResponse { addresses, primary })
 }

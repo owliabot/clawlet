@@ -752,12 +752,12 @@ allowed_chains: []
             "policy.example.yaml should exist at {policy_path:?}"
         );
 
-        // Read and verify it has expected structure
+        // Read and verify it has expected structure (flat schema)
         let contents = std::fs::read_to_string(&policy_path).unwrap();
-        assert!(contents.contains("limits:"));
-        assert!(contents.contains("daily_transfer_usd"));
+        assert!(contents.contains("daily_transfer_limit_usd"));
+        assert!(contents.contains("per_tx_limit_usd"));
         assert!(contents.contains("allowed_tokens"));
-        assert!(contents.contains("audit:"));
+        assert!(contents.contains("allowed_chains"));
     }
 
     /// Test 11: Daily limit accumulation across multiple checks

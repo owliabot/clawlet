@@ -29,7 +29,8 @@ use std::time::Duration;
 
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
-use jsonrpsee::server::Server;
+use jsonrpsee::server::middleware::rpc::{RpcServiceBuilder, RpcServiceT};
+use jsonrpsee::server::{MethodResponse, Server};
 use jsonrpsee::types::ErrorObjectOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -102,6 +103,40 @@ pub mod error_code {
 /// Token extracted from Authorization header, stored in request extensions.
 #[derive(Clone, Debug, Default)]
 pub struct AuthToken(pub Option<String>);
+
+// Task-local storage for per-request auth token (avoids race conditions)
+tokio::task_local! {
+    static REQUEST_AUTH_TOKEN: AuthToken;
+}
+
+/// RPC middleware that extracts auth token from HTTP extensions and sets task-local storage.
+/// This ensures each RPC method call has access to its own request's token.
+#[derive(Clone)]
+struct AuthTokenMiddleware<S> {
+    inner: S,
+}
+
+impl<'a, S> RpcServiceT<'a> for AuthTokenMiddleware<S>
+where
+    S: RpcServiceT<'a> + Send + Sync + Clone + 'a,
+{
+    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = MethodResponse> + Send + 'a>>;
+
+    fn call(&self, request: jsonrpsee::types::Request<'a>) -> Self::Future {
+        // Extract auth token from HTTP request extensions (set by HTTP middleware)
+        let token = request
+            .extensions()
+            .get::<AuthToken>()
+            .cloned()
+            .unwrap_or_default();
+
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            // Wrap the inner service call in a task-local scope with the per-request token
+            REQUEST_AUTH_TOKEN.scope(token, inner.call(request)).await
+        })
+    }
+}
 
 // ---- Application State ----
 
@@ -232,25 +267,22 @@ pub trait ClawletApi {
     ) -> Result<Value, ErrorObjectOwned>;
 }
 
-/// RPC server implementation with auth token context.
+/// RPC server implementation with per-request auth token via task-local storage.
 pub struct RpcServerImpl {
     state: Arc<AppState>,
-    /// Auth token extracted from the current request's Authorization header.
-    /// This is set per-request by the middleware before the handler runs.
-    auth_token: Arc<RwLock<Option<String>>>,
 }
 
 impl RpcServerImpl {
-    pub fn new(state: Arc<AppState>, auth_token: Arc<RwLock<Option<String>>>) -> Self {
-        Self { state, auth_token }
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
     }
 
-    /// Get the auth token for the current request.
-    fn get_token(&self) -> String {
-        self.auth_token
-            .read()
+    /// Get the auth token from task-local storage (set per-request by middleware).
+    fn get_token() -> String {
+        REQUEST_AUTH_TOKEN
+            .try_with(|t| t.0.clone())
             .ok()
-            .and_then(|t| t.clone())
+            .flatten()
             .unwrap_or_default()
     }
 }
@@ -269,8 +301,8 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn balance(&self, params: BalanceRequest) -> Result<Value, ErrorObjectOwned> {
-        // Check auth with token from Authorization header
-        let token = self.get_token();
+        // Check auth with token from task-local storage (set per-request by middleware)
+        let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
@@ -287,7 +319,7 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn transfer(&self, params: TransferRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
-        let token = self.get_token();
+        let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
@@ -306,7 +338,7 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn skills(&self, _params: SkillsRequest) -> Result<Value, ErrorObjectOwned> {
-        let token = self.get_token();
+        let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
             return Err(auth_error_to_rpc(e));
         }
@@ -318,7 +350,7 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
-        let token = self.get_token();
+        let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
@@ -492,12 +524,8 @@ impl RpcServer {
 
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
-        // Create shared auth token storage accessible from both middleware and handlers
-        let auth_token_store: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
-        let auth_token_for_middleware = Arc::clone(&auth_token_store);
-
-        // Build RPC service with middleware that extracts Authorization header
-        let rpc_middleware =
+        // Build HTTP middleware that extracts Authorization header into per-request extensions
+        let http_middleware =
             tower::ServiceBuilder::new().map_request(move |mut req: http::Request<_>| {
                 // Extract Bearer token from Authorization header
                 let token = req
@@ -507,24 +535,26 @@ impl RpcServer {
                     .and_then(|s| s.strip_prefix("Bearer "))
                     .map(|s| s.to_string());
 
-                // Store in shared state for handlers to access
-                if let Ok(mut store) = auth_token_for_middleware.write() {
-                    *store = token.clone();
-                }
-
-                // Also store in extensions for potential future use
+                // Store in per-request extensions for propagation to RPC layer
                 req.extensions_mut().insert(AuthToken(token));
                 req
             });
 
+        // Build RPC middleware that extracts token from extensions and sets task-local storage.
+        // This wraps each RPC method call in a task-local scope, ensuring each request
+        // has its own isolated auth token - no race conditions between concurrent requests.
+        let rpc_middleware =
+            RpcServiceBuilder::new().layer_fn(|service| AuthTokenMiddleware { inner: service });
+
         let server = Server::builder()
-            .set_http_middleware(rpc_middleware)
+            .set_http_middleware(http_middleware)
+            .set_rpc_middleware(rpc_middleware)
             .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
 
-        // Create the RPC implementation with the shared auth token store
-        let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state), auth_token_store);
+        // Create the RPC implementation (token accessed via task-local set by RPC middleware)
+        let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));
         let handle = server.start(rpc_impl.into_rpc());
 
         info!(addr = %self.config.addr, "HTTP JSON-RPC server listening");

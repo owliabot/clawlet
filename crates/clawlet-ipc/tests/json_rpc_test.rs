@@ -43,7 +43,8 @@ fn json_rpc_success_response() {
 
 #[test]
 fn json_rpc_error_response() {
-    let response = JsonRpcResponse::error(json!(1), JsonRpcErrorCode::Unauthorized, "invalid token");
+    let response =
+        JsonRpcResponse::error(json!(1), JsonRpcErrorCode::Unauthorized, "invalid token");
     let serialized = serde_json::to_string(&response).unwrap();
     assert!(serialized.contains("\"jsonrpc\":\"2.0\""));
     assert!(serialized.contains("\"error\":"));
@@ -146,7 +147,10 @@ fn rpc_method_required_scope() {
     assert_eq!(RpcMethod::Skills.required_scope(), Some(TokenScope::Read));
 
     // Trade scope
-    assert_eq!(RpcMethod::Transfer.required_scope(), Some(TokenScope::Trade));
+    assert_eq!(
+        RpcMethod::Transfer.required_scope(),
+        Some(TokenScope::Trade)
+    );
     assert_eq!(RpcMethod::Execute.required_scope(), Some(TokenScope::Trade));
 
     // Auth methods use password, not token

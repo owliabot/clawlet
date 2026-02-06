@@ -81,14 +81,20 @@ mod tests {
     fn test_method_from_str() {
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
         assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
-        assert_eq!(RpcMethod::parse_method("transfer"), Some(RpcMethod::Transfer));
+        assert_eq!(
+            RpcMethod::parse_method("transfer"),
+            Some(RpcMethod::Transfer)
+        );
         assert_eq!(RpcMethod::parse_method("skills"), Some(RpcMethod::Skills));
         assert_eq!(RpcMethod::parse_method("execute"), Some(RpcMethod::Execute));
         assert_eq!(
             RpcMethod::parse_method("auth.grant"),
             Some(RpcMethod::AuthGrant)
         );
-        assert_eq!(RpcMethod::parse_method("auth.list"), Some(RpcMethod::AuthList));
+        assert_eq!(
+            RpcMethod::parse_method("auth.list"),
+            Some(RpcMethod::AuthList)
+        );
         assert_eq!(
             RpcMethod::parse_method("auth.revoke"),
             Some(RpcMethod::AuthRevoke)

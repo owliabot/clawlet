@@ -876,7 +876,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 13: JSON-RPC request/response types
     #[test]
     fn test_json_rpc_request_parsing() {
-        use clawlet_ipc::server::{JsonRpcRequest, JsonRpcResponse, JsonRpcErrorCode};
+        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse};
 
         // Parse a JSON-RPC request
         let json = r#"{"jsonrpc":"2.0","method":"health","params":{},"id":1}"#;
@@ -886,7 +886,10 @@ per_tx_limit_usd: 1000000.0
         assert_eq!(req.id, serde_json::json!(1));
 
         // Create a success response
-        let resp = JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({"status": "healthy"}));
+        let resp = JsonRpcResponse::success(
+            serde_json::json!(1),
+            serde_json::json!({"status": "healthy"}),
+        );
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
 
@@ -898,7 +901,7 @@ per_tx_limit_usd: 1000000.0
     /// Test 14: JSON-RPC auth flow types
     #[test]
     fn test_json_rpc_auth_types() {
-        use clawlet_ipc::server::{JsonRpcRequest, JsonRpcResponse, JsonRpcErrorCode, RequestMeta};
+        use clawlet_ipc::server::{JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse, RequestMeta};
 
         // Request with authorization header
         let json = r#"{"jsonrpc":"2.0","method":"balance","params":{},"id":2,"meta":{"authorization":"Bearer clwt_test"}}"#;
@@ -906,7 +909,9 @@ per_tx_limit_usd: 1000000.0
         assert_eq!(req.meta.authorization, Some("Bearer clwt_test".to_string()));
 
         // Extract token from Bearer header
-        let token = req.meta.authorization
+        let token = req
+            .meta
+            .authorization
             .as_deref()
             .and_then(|a| a.strip_prefix("Bearer "))
             .unwrap_or("");
@@ -916,7 +921,7 @@ per_tx_limit_usd: 1000000.0
         let err_resp = JsonRpcResponse::error(
             serde_json::json!(2),
             JsonRpcErrorCode::Unauthorized,
-            "auth token required"
+            "auth token required",
         );
         assert!(err_resp.error.is_some());
         let error = err_resp.error.as_ref().unwrap();
@@ -927,20 +932,29 @@ per_tx_limit_usd: 1000000.0
     /// Test 15: RPC method parsing and scopes
     #[test]
     fn test_rpc_method_parsing() {
-        use clawlet_ipc::types::RpcMethod;
         use clawlet_core::auth::TokenScope;
+        use clawlet_ipc::types::RpcMethod;
 
         // Parse method names
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
         assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
-        assert_eq!(RpcMethod::parse_method("transfer"), Some(RpcMethod::Transfer));
-        assert_eq!(RpcMethod::parse_method("auth.grant"), Some(RpcMethod::AuthGrant));
+        assert_eq!(
+            RpcMethod::parse_method("transfer"),
+            Some(RpcMethod::Transfer)
+        );
+        assert_eq!(
+            RpcMethod::parse_method("auth.grant"),
+            Some(RpcMethod::AuthGrant)
+        );
         assert_eq!(RpcMethod::parse_method("unknown"), None);
 
         // Verify required scopes
         assert_eq!(RpcMethod::Health.required_scope(), None);
         assert_eq!(RpcMethod::Balance.required_scope(), Some(TokenScope::Read));
-        assert_eq!(RpcMethod::Transfer.required_scope(), Some(TokenScope::Trade));
+        assert_eq!(
+            RpcMethod::Transfer.required_scope(),
+            Some(TokenScope::Trade)
+        );
         assert_eq!(RpcMethod::AuthGrant.required_scope(), None); // Uses password
     }
 

@@ -10,7 +10,7 @@ Clawlet is a Rust-based wallet engine designed for AI agents operating within th
 - **Audit Logging** — Append-only JSONL log of every operation
 - **Keystore Management** — Encrypted key storage with BIP-44 HD derivation
 - **EVM Support** — Balance queries, transfers, and DeFi operations via alloy
-- **IPC Server** — Unix Domain Socket with JSON-RPC 2.0 for agent integration
+- **HTTP RPC Server** — JSON-RPC 2.0 over HTTP for agent integration
 - **Session Auth** — Token-based access control with scoped permissions
 
 ## Project Structure
@@ -21,7 +21,7 @@ clawlet/
 │   ├── clawlet-core/       # Core types, policy engine, audit logging, auth
 │   ├── clawlet-signer/     # Key management and signing
 │   ├── clawlet-evm/        # EVM chain adapter
-│   ├── clawlet-ipc/        # Unix Socket IPC server (JSON-RPC 2.0)
+│   ├── clawlet-rpc/        # HTTP JSON-RPC 2.0 server
 │   └── clawlet-cli/        # CLI entry point (clawlet binary)
 ├── config/
 │   └── policy.example.yaml # Example policy configuration
@@ -81,26 +81,28 @@ clawlet init
 clawlet auth grant --scope read,trade --label "my-agent"
 # Save the token: clwt_xxx...
 
-# 3. Start IPC server
+# 3. Start HTTP server
 clawlet serve
-# Listening on /run/clawlet/clawlet.sock
+# Listening on http://127.0.0.1:9100
 
-# 4. Test (from another terminal)
-echo '{"jsonrpc":"2.0","method":"health","params":{},"id":1}' | nc -U /run/clawlet/clawlet.sock
+# 4. Test
+curl -X POST http://127.0.0.1:9100/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"health","params":{},"id":1}'
 ```
 
 ## Architecture
 
-Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via JSON-RPC 2.0 over Unix Domain Socket. Private keys are managed by the human operator — the agent never has direct access to key material.
+Clawlet runs as a **local daemon** owned by a dedicated OS user. The agent communicates via JSON-RPC 2.0 over HTTP. Private keys are managed by the human operator — the agent never has direct access to key material.
 
 ```
-Agent ──Unix Socket──▶ clawlet-ipc ──▶ clawlet-core (policy + auth)
-         JSON-RPC 2.0       │                  │
-                            ▼                  ▼
-                      clawlet-evm        audit log
-                            │
-                            ▼
-                      clawlet-signer ──▶ keystore (human-owned)
+Agent ────HTTP────▶ clawlet-rpc ──▶ clawlet-core (policy + auth)
+       JSON-RPC 2.0       │                  │
+                          ▼                  ▼
+                    clawlet-evm        audit log
+                          │
+                          ▼
+                    clawlet-signer ──▶ keystore (human-owned)
 ```
 
 ### Security Model
@@ -108,7 +110,7 @@ Agent ──Unix Socket──▶ clawlet-ipc ──▶ clawlet-core (policy + au
 | Component | Access |
 |-----------|--------|
 | `clawlet` user | Owns keystore, runs daemon |
-| Agent user | Socket access only, token-authenticated |
+| Agent user | HTTP access only, token-authenticated |
 | Keystore | 600 permissions, encrypted with password |
 
 ## API Methods
@@ -116,6 +118,7 @@ Agent ──Unix Socket──▶ clawlet-ipc ──▶ clawlet-core (policy + au
 | Method | Scope | Description |
 |--------|-------|-------------|
 | `health` | — | Health check |
+| `address` | — | Get wallet address |
 | `balance` | `read` | Query ETH/ERC-20 balances |
 | `transfer` | `trade` | Execute transfers (policy-checked) |
 | `auth.grant` | — | Grant new session token |
@@ -128,7 +131,7 @@ See [docs/usage.md](docs/usage.md) for full API documentation.
 
 - **Language**: Rust
 - **EVM Library**: alloy
-- **IPC**: interprocess (Unix Domain Socket)
+- **HTTP Server**: axum
 - **Protocol**: JSON-RPC 2.0
 
 ## Documentation

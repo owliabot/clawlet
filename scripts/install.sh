@@ -372,6 +372,13 @@ main() {
     arch=$(detect_arch)
     info "Detected: $os ($arch)"
 
+    # macOS Intel requires building from source (no prebuilt binary)
+    if [[ "$os" == "darwin" && "$arch" == "x86_64" && "$FROM_SOURCE" != true ]]; then
+        warn "No pre-built binary available for macOS Intel (x86_64)"
+        info "Automatically switching to --from-source build"
+        FROM_SOURCE=true
+    fi
+
     ensure_curl
 
     local tmp_dir

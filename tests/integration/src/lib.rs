@@ -513,14 +513,14 @@ allowed_chains: []
             let engine = PolicyEngine::new(policy);
 
             // Try to transfer ETH on chain 31337 (Anvil) - should be denied
-            let decision = engine.check_transfer(10.0, "ETH", 31337).unwrap();
+            let decision = engine.check_transfer(Some(10.0), "ETH", 31337).unwrap();
             assert!(
                 matches!(decision, PolicyDecision::Denied(_)),
                 "ETH transfer on chain 31337 should be denied by policy"
             );
 
             // Also check token not in allowlist
-            let decision = engine.check_transfer(10.0, "ETH", 1).unwrap();
+            let decision = engine.check_transfer(Some(10.0), "ETH", 1).unwrap();
             assert!(
                 matches!(decision, PolicyDecision::Denied(_)),
                 "ETH (not USDC) should be denied"
@@ -573,11 +573,11 @@ allowed_chains: []
         let engine = PolicyEngine::new(policy);
 
         // Under threshold - allowed
-        let decision = engine.check_transfer(50.0, "ETH", 1).unwrap();
+        let decision = engine.check_transfer(Some(50.0), "ETH", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Over threshold - requires approval
-        let decision = engine.check_transfer(150.0, "ETH", 1).unwrap();
+        let decision = engine.check_transfer(Some(150.0), "ETH", 1).unwrap();
         assert!(
             matches!(decision, PolicyDecision::RequiresApproval(_)),
             "Transfer over $100 should require approval"
@@ -776,24 +776,24 @@ allowed_chains: []
         // 300 + 300 + 300 = 900 (allowed)
         // 300 + 900 = 1200 > 1000 (denied)
 
-        let d1 = engine.check_transfer(300.0, "ETH", 1).unwrap();
+        let d1 = engine.check_transfer(Some(300.0), "ETH", 1).unwrap();
         assert_eq!(d1, PolicyDecision::Allowed, "First transfer of $300");
 
-        let d2 = engine.check_transfer(300.0, "ETH", 1).unwrap();
+        let d2 = engine.check_transfer(Some(300.0), "ETH", 1).unwrap();
         assert_eq!(d2, PolicyDecision::Allowed, "Second transfer of $300");
 
-        let d3 = engine.check_transfer(300.0, "ETH", 1).unwrap();
+        let d3 = engine.check_transfer(Some(300.0), "ETH", 1).unwrap();
         assert_eq!(d3, PolicyDecision::Allowed, "Third transfer of $300");
 
         // Now at $900, try to transfer $200 more (would be $1100 > $1000 limit)
-        let d4 = engine.check_transfer(200.0, "ETH", 1).unwrap();
+        let d4 = engine.check_transfer(Some(200.0), "ETH", 1).unwrap();
         assert!(
             matches!(d4, PolicyDecision::Denied(_)),
             "Fourth transfer should be denied - exceeds daily limit"
         );
 
         // But $100 should still work (900 + 100 = 1000 exactly)
-        let d5 = engine.check_transfer(100.0, "ETH", 1).unwrap();
+        let d5 = engine.check_transfer(Some(100.0), "ETH", 1).unwrap();
         assert_eq!(
             d5,
             PolicyDecision::Allowed,
@@ -801,7 +801,7 @@ allowed_chains: []
         );
 
         // Now at exactly limit, any more should be denied
-        let d6 = engine.check_transfer(0.01, "ETH", 1).unwrap();
+        let d6 = engine.check_transfer(Some(0.01), "ETH", 1).unwrap();
         assert!(
             matches!(d6, PolicyDecision::Denied(_)),
             "Even $0.01 more should be denied"
@@ -826,31 +826,31 @@ require_approval_above_usd: 5.0
 
         // Under approval threshold
         assert_eq!(
-            e1.check_transfer(4.0, "USDC", 1).unwrap(),
+            e1.check_transfer(Some(4.0), "USDC", 1).unwrap(),
             PolicyDecision::Allowed
         );
 
         // Over approval threshold
         assert!(matches!(
-            e1.check_transfer(8.0, "USDC", 1).unwrap(),
+            e1.check_transfer(Some(8.0), "USDC", 1).unwrap(),
             PolicyDecision::RequiresApproval(_)
         ));
 
         // Over per-tx limit
         assert!(matches!(
-            e1.check_transfer(15.0, "USDC", 1).unwrap(),
+            e1.check_transfer(Some(15.0), "USDC", 1).unwrap(),
             PolicyDecision::Denied(_)
         ));
 
         // Wrong token
         assert!(matches!(
-            e1.check_transfer(1.0, "ETH", 1).unwrap(),
+            e1.check_transfer(Some(1.0), "ETH", 1).unwrap(),
             PolicyDecision::Denied(_)
         ));
 
         // Wrong chain
         assert!(matches!(
-            e1.check_transfer(1.0, "USDC", 137).unwrap(),
+            e1.check_transfer(Some(1.0), "USDC", 137).unwrap(),
             PolicyDecision::Denied(_)
         ));
 
@@ -864,7 +864,8 @@ per_tx_limit_usd: 1000000.0
 
         // Everything should be allowed
         assert_eq!(
-            e2.check_transfer(999999.0, "ANYTHING", 99999).unwrap(),
+            e2.check_transfer(Some(999999.0), "ANYTHING", 99999)
+                .unwrap(),
             PolicyDecision::Allowed
         );
     }
@@ -1197,7 +1198,7 @@ allowed_chains: []
             };
             let engine = PolicyEngine::new(policy);
 
-            let decision = engine.check_transfer(10.0, "ETH", 31337).unwrap();
+            let decision = engine.check_transfer(Some(10.0), "ETH", 31337).unwrap();
             assert_eq!(decision, PolicyDecision::Allowed);
 
             // 2. Import Anvil's default key
@@ -1242,7 +1243,7 @@ allowed_chains: []
             require_approval_above_usd: None,
         };
         let engine = PolicyEngine::new(policy);
-        let decision = engine.check_transfer(200.0, "ETH", 1).unwrap();
+        let decision = engine.check_transfer(Some(200.0), "ETH", 1).unwrap();
         assert!(
             matches!(decision, PolicyDecision::Denied(_)),
             "should be denied: exceeds per-tx limit"
@@ -1257,10 +1258,10 @@ allowed_chains: []
             require_approval_above_usd: None,
         });
         assert_eq!(
-            engine2.check_transfer(90.0, "ETH", 1).unwrap(),
+            engine2.check_transfer(Some(90.0), "ETH", 1).unwrap(),
             PolicyDecision::Allowed
         );
-        let decision2 = engine2.check_transfer(90.0, "ETH", 1).unwrap();
+        let decision2 = engine2.check_transfer(Some(90.0), "ETH", 1).unwrap();
         assert!(
             matches!(decision2, PolicyDecision::Denied(_)),
             "should be denied: daily limit exceeded"

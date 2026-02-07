@@ -10,6 +10,11 @@ use std::collections::HashMap;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
+use clawlet_evm::tx::{
+    build_erc20_transfer, build_eth_transfer, send_transaction,
+    TransferRequest as EvmTransferRequest,
+};
+use clawlet_evm::U256;
 use clawlet_signer::Signer;
 
 use crate::server::AppState;
@@ -52,7 +57,7 @@ pub struct TransferRequest {
     pub to: String,
     /// Amount as a decimal string (e.g. "1.0").
     pub amount: String,
-    /// Token to transfer — "ETH" for native, or a symbol/address.
+    /// Token to transfer — "ETH" for native, or a contract address (hex, 0x-prefixed) for ERC-20.
     pub token: String,
     /// Chain ID to execute on.
     pub chain_id: u64,
@@ -193,22 +198,61 @@ pub async fn handle_balance(
 }
 
 /// Execute a transfer within policy limits.
+///
+/// The `amount` field is in token units (e.g., "1.5" means 1.5 ETH or 1.5 USDC).
+/// USD-based policy checks are skipped until a price oracle is integrated.
 pub async fn handle_transfer(
     state: &AppState,
     req: TransferRequest,
 ) -> Result<TransferResponse, HandlerError> {
-    let amount_usd: f64 = req
-        .amount
-        .parse()
-        .map_err(|_| HandlerError::BadRequest("invalid amount".to_string()))?;
-
+    // Policy check — USD amount is None (no price oracle yet), so only
+    // allowed_tokens and allowed_chains are enforced.
     let decision = state
         .policy
-        .check_transfer(amount_usd, &req.token, req.chain_id)
+        .check_transfer(None, &req.token, req.chain_id)
         .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {
         PolicyDecision::Allowed => {
+            let adapter = state.adapters.get(&req.chain_id).ok_or_else(|| {
+                HandlerError::BadRequest(format!("unsupported chain_id: {}", req.chain_id))
+            })?;
+
+            let to: clawlet_evm::Address = req
+                .to
+                .parse()
+                .map_err(|e| HandlerError::BadRequest(format!("invalid 'to' address: {e}")))?;
+
+            let is_native = req.token.eq_ignore_ascii_case("ETH");
+
+            let tx_req = if is_native {
+                let value = parse_units(&req.amount, 18).map_err(HandlerError::BadRequest)?;
+                build_eth_transfer(&EvmTransferRequest {
+                    to,
+                    value,
+                    chain_id: req.chain_id,
+                    gas_limit: None,
+                })
+            } else {
+                // ERC-20: token field is a contract address
+                let token_addr: clawlet_evm::Address = req
+                    .token
+                    .parse()
+                    .map_err(|e| HandlerError::BadRequest(format!("invalid token address: {e}")))?;
+                let token_info = adapter.get_erc20_info(token_addr).await.map_err(|e| {
+                    HandlerError::Internal(format!("failed to query token info: {e}"))
+                })?;
+                let amount = parse_units(&req.amount, token_info.decimals as u32)
+                    .map_err(HandlerError::BadRequest)?;
+                build_erc20_transfer(token_addr, to, amount, req.chain_id)
+            };
+
+            let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx_req)
+                .await
+                .map_err(|e| HandlerError::Internal(format!("send tx error: {e}")))?;
+
+            let tx_hash_hex = format!("0x{}", hex::encode(tx_hash));
+
             let audit_id = format!(
                 "{:016x}",
                 std::time::SystemTime::now()
@@ -226,6 +270,7 @@ pub async fn handle_transfer(
                         "amount": req.amount,
                         "token": req.token,
                         "chain_id": req.chain_id,
+                        "tx_hash": tx_hash_hex,
                         "audit_id": audit_id,
                     }),
                     "allowed",
@@ -235,11 +280,9 @@ pub async fn handle_transfer(
                 }
             }
 
-            let tx_hash = format!("0x{}", "0".repeat(64));
-
             Ok(TransferResponse {
                 status: "success".to_string(),
-                tx_hash: Some(tx_hash),
+                tx_hash: Some(tx_hash_hex),
                 audit_id: Some(audit_id),
                 reason: None,
             })
@@ -391,6 +434,40 @@ pub async fn handle_execute(
     })
 }
 
+/// Parse a decimal string (e.g. "1.5") into a U256 with the given number of decimals.
+///
+/// `parse_units("1.5", 18)` → `U256(1_500_000_000_000_000_000)`.
+fn parse_units(amount: &str, decimals: u32) -> Result<U256, String> {
+    let amount = amount.trim();
+    if amount.is_empty() {
+        return Err("empty amount".to_string());
+    }
+
+    let (integer, fractional) = match amount.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (amount, ""),
+    };
+
+    if fractional.len() > decimals as usize {
+        return Err(format!(
+            "too many decimal places: got {}, max {decimals}",
+            fractional.len()
+        ));
+    }
+
+    // Pad fractional part to `decimals` digits
+    let padded = format!("{fractional:0<width$}", width = decimals as usize);
+
+    // Combine integer + padded fractional as a single integer string
+    let combined = format!("{integer}{padded}");
+
+    // Strip leading zeros (but keep at least "0")
+    let combined = combined.trim_start_matches('0');
+    let combined = if combined.is_empty() { "0" } else { combined };
+
+    U256::from_str_radix(combined, 10).map_err(|e| format!("invalid amount: {e}"))
+}
+
 /// Convert a U256 wei value to a decimal string with the given number of decimals.
 fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
     let s = value.to_string();
@@ -424,6 +501,75 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
 mod tests {
     use super::*;
     use clawlet_evm::U256;
+
+    // ---- parse_units tests ----
+
+    #[test]
+    fn parse_units_one_eth() {
+        let result = parse_units("1.0", 18).unwrap();
+        assert_eq!(result, U256::from(1_000_000_000_000_000_000u64));
+    }
+
+    #[test]
+    fn parse_units_fractional() {
+        let result = parse_units("1.5", 18).unwrap();
+        assert_eq!(result, U256::from(1_500_000_000_000_000_000u64));
+    }
+
+    #[test]
+    fn parse_units_zero() {
+        let result = parse_units("0", 18).unwrap();
+        assert_eq!(result, U256::ZERO);
+    }
+
+    #[test]
+    fn parse_units_zero_point_zero() {
+        let result = parse_units("0.0", 18).unwrap();
+        assert_eq!(result, U256::ZERO);
+    }
+
+    #[test]
+    fn parse_units_no_decimal() {
+        let result = parse_units("100", 18).unwrap();
+        assert_eq!(
+            result,
+            U256::from(100u64) * U256::from(10u64).pow(U256::from(18u64))
+        );
+    }
+
+    #[test]
+    fn parse_units_usdc_six_decimals() {
+        let result = parse_units("1000.0", 6).unwrap();
+        assert_eq!(result, U256::from(1_000_000_000u64));
+    }
+
+    #[test]
+    fn parse_units_small_fraction() {
+        let result = parse_units("0.000001", 18).unwrap();
+        assert_eq!(result, U256::from(1_000_000_000_000u64));
+    }
+
+    #[test]
+    fn parse_units_too_many_decimals() {
+        let result = parse_units("1.1234567", 6);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_units_empty() {
+        let result = parse_units("", 18);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_units_roundtrip_with_format_units() {
+        let original = "1.5";
+        let wei = parse_units(original, 18).unwrap();
+        let back = format_units(wei, 18);
+        assert_eq!(back, original);
+    }
+
+    // ---- existing tests ----
 
     #[test]
     fn address_response_serialization() {

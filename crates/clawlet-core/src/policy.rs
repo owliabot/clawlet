@@ -93,21 +93,15 @@ impl PolicyEngine {
 
     /// Check whether a transfer is allowed by the policy.
     ///
-    /// If allowed, the amount is added to the daily spending tracker.
+    /// If allowed and `amount_usd` is `Some`, the amount is added to the daily spending tracker.
+    /// When `amount_usd` is `None`, USD-based checks (per-tx limit, daily limit, approval
+    /// threshold) are skipped — only token and chain allowlists are enforced.
     pub fn check_transfer(
         &self,
-        amount_usd: f64,
+        amount_usd: Option<f64>,
         token: &str,
         chain_id: u64,
     ) -> Result<PolicyDecision, PolicyError> {
-        // Check per-tx limit
-        if amount_usd > self.policy.per_tx_limit_usd {
-            return Ok(PolicyDecision::Denied(format!(
-                "amount ${amount_usd:.2} exceeds per-tx limit of ${:.2}",
-                self.policy.per_tx_limit_usd
-            )));
-        }
-
         // Check allowed tokens (empty = all allowed)
         if !self.policy.allowed_tokens.is_empty()
             && !self
@@ -129,33 +123,44 @@ impl PolicyEngine {
             )));
         }
 
-        // Check daily limit
-        let mut tracker = self.tracker.lock().map_err(|_| PolicyError::LockError)?;
-        let current_date = today();
-        if tracker.date != current_date {
-            // New day — reset tracker
-            tracker.date = current_date;
-            tracker.total_usd = 0.0;
-        }
-
-        if tracker.total_usd + amount_usd > self.policy.daily_transfer_limit_usd {
-            return Ok(PolicyDecision::Denied(format!(
-                "daily limit would be exceeded: ${:.2} spent + ${amount_usd:.2} > ${:.2} limit",
-                tracker.total_usd, self.policy.daily_transfer_limit_usd
-            )));
-        }
-
-        // Check approval threshold
-        if let Some(threshold) = self.policy.require_approval_above_usd {
-            if amount_usd > threshold {
-                return Ok(PolicyDecision::RequiresApproval(format!(
-                    "amount ${amount_usd:.2} exceeds approval threshold of ${threshold:.2}"
+        // USD-based checks require a known price
+        if let Some(amount_usd) = amount_usd {
+            // Check per-tx limit
+            if amount_usd > self.policy.per_tx_limit_usd {
+                return Ok(PolicyDecision::Denied(format!(
+                    "amount ${amount_usd:.2} exceeds per-tx limit of ${:.2}",
+                    self.policy.per_tx_limit_usd
                 )));
             }
-        }
 
-        // All checks passed — record spending
-        tracker.total_usd += amount_usd;
+            // Check daily limit
+            let mut tracker = self.tracker.lock().map_err(|_| PolicyError::LockError)?;
+            let current_date = today();
+            if tracker.date != current_date {
+                // New day — reset tracker
+                tracker.date = current_date;
+                tracker.total_usd = 0.0;
+            }
+
+            if tracker.total_usd + amount_usd > self.policy.daily_transfer_limit_usd {
+                return Ok(PolicyDecision::Denied(format!(
+                    "daily limit would be exceeded: ${:.2} spent + ${amount_usd:.2} > ${:.2} limit",
+                    tracker.total_usd, self.policy.daily_transfer_limit_usd
+                )));
+            }
+
+            // Check approval threshold
+            if let Some(threshold) = self.policy.require_approval_above_usd {
+                if amount_usd > threshold {
+                    return Ok(PolicyDecision::RequiresApproval(format!(
+                        "amount ${amount_usd:.2} exceeds approval threshold of ${threshold:.2}"
+                    )));
+                }
+            }
+
+            // All checks passed — record spending
+            tracker.total_usd += amount_usd;
+        }
 
         Ok(PolicyDecision::Allowed)
     }
@@ -220,35 +225,35 @@ per_tx_limit_usd: 50.0
     #[test]
     fn allow_transfer() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(100.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(100.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
     #[test]
     fn deny_per_tx_limit() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(600.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(600.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
     #[test]
     fn deny_unknown_token() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(10.0, "SHIB", 1).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "SHIB", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
     #[test]
     fn deny_unknown_chain() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(10.0, "USDC", 999).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "USDC", 999).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
     #[test]
     fn require_approval_above_threshold() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(300.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(300.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::RequiresApproval(_)));
     }
 
@@ -260,21 +265,21 @@ per_tx_limit_usd: 50.0
 
         // Transfer 400 three times: 400 + 400 = 800, third should fail (800 + 400 > 1000)
         assert_eq!(
-            engine.check_transfer(400.0, "USDC", 1).unwrap(),
+            engine.check_transfer(Some(400.0), "USDC", 1).unwrap(),
             PolicyDecision::Allowed
         );
         assert_eq!(
-            engine.check_transfer(400.0, "USDC", 1).unwrap(),
+            engine.check_transfer(Some(400.0), "USDC", 1).unwrap(),
             PolicyDecision::Allowed
         );
-        let decision = engine.check_transfer(400.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(400.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
     #[test]
     fn token_check_case_insensitive() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(10.0, "usdc", 1).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "usdc", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -283,7 +288,7 @@ per_tx_limit_usd: 50.0
         let mut policy = test_policy();
         policy.allowed_tokens = vec![];
         let engine = PolicyEngine::new(policy);
-        let decision = engine.check_transfer(10.0, "ANYTHING", 1).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "ANYTHING", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -292,7 +297,7 @@ per_tx_limit_usd: 50.0
         let mut policy = test_policy();
         policy.allowed_chains = vec![];
         let engine = PolicyEngine::new(policy);
-        let decision = engine.check_transfer(10.0, "USDC", 99999).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "USDC", 99999).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -301,7 +306,7 @@ per_tx_limit_usd: 50.0
     #[test]
     fn test_zero_amount_transfer() {
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(0.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(0.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -310,7 +315,7 @@ per_tx_limit_usd: 50.0
         // Negative amounts should still pass policy checks (semantically weird but policy doesn't validate)
         // This documents current behavior - may want to add validation later
         let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer(-10.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(-10.0), "USDC", 1).unwrap();
         // Currently allowed because -10 < 500 per-tx and -10 < 1000 daily
         assert_eq!(decision, PolicyDecision::Allowed);
     }
@@ -319,7 +324,7 @@ per_tx_limit_usd: 50.0
     fn test_exact_per_tx_limit() {
         let engine = PolicyEngine::new(test_policy());
         // Exactly at 500.0 per-tx limit - should be allowed (not denied)
-        let decision = engine.check_transfer(500.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(500.0), "USDC", 1).unwrap();
         // Note: current code uses `>` not `>=`, so exactly at limit is allowed
         assert!(matches!(
             decision,
@@ -335,11 +340,11 @@ per_tx_limit_usd: 50.0
         let engine = PolicyEngine::new(policy);
 
         // Exactly at daily limit should be allowed
-        let decision = engine.check_transfer(1000.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(1000.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Now any additional amount should be denied
-        let decision = engine.check_transfer(0.01, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(0.01), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
@@ -347,12 +352,12 @@ per_tx_limit_usd: 50.0
     fn test_exact_approval_threshold() {
         let engine = PolicyEngine::new(test_policy());
         // Exactly at 200.0 threshold - current code uses `>`, so exactly at is allowed
-        let decision = engine.check_transfer(200.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(200.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Just above threshold requires approval
         let engine2 = PolicyEngine::new(test_policy());
-        let decision = engine2.check_transfer(200.01, "USDC", 1).unwrap();
+        let decision = engine2.check_transfer(Some(200.01), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::RequiresApproval(_)));
     }
 
@@ -365,7 +370,7 @@ per_tx_limit_usd: 50.0
         let engine = PolicyEngine::new(policy);
 
         // Any positive amount should be denied
-        let decision = engine.check_transfer(0.01, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(0.01), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Zero amount should still be allowed
@@ -374,7 +379,7 @@ per_tx_limit_usd: 50.0
             p.daily_transfer_limit_usd = 0.0;
             p
         });
-        let decision = engine2.check_transfer(0.0, "USDC", 1).unwrap();
+        let decision = engine2.check_transfer(Some(0.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -385,7 +390,7 @@ per_tx_limit_usd: 50.0
         let engine = PolicyEngine::new(policy);
 
         // Any positive amount should be denied due to per-tx limit
-        let decision = engine.check_transfer(0.01, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(0.01), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Zero amount passes per-tx check (0 is not > 0)
@@ -394,7 +399,7 @@ per_tx_limit_usd: 50.0
             p.per_tx_limit_usd = 0.0;
             p
         });
-        let decision = engine2.check_transfer(0.0, "USDC", 1).unwrap();
+        let decision = engine2.check_transfer(Some(0.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -411,7 +416,7 @@ per_tx_limit_usd: 50.0
 
         // Very large transfer should be allowed
         let decision = engine
-            .check_transfer(1_000_000_000_000.0, "ETH", 1)
+            .check_transfer(Some(1_000_000_000_000.0), "ETH", 1)
             .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
@@ -426,7 +431,9 @@ per_tx_limit_usd: 1000.0
         let engine = PolicyEngine::new(policy);
 
         // Should work with any token and chain
-        let decision = engine.check_transfer(100.0, "RANDOM_TOKEN", 12345).unwrap();
+        let decision = engine
+            .check_transfer(Some(100.0), "RANDOM_TOKEN", 12345)
+            .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -438,19 +445,19 @@ per_tx_limit_usd: 1000.0
 
         // Test USDC
         assert_eq!(
-            engine.check_transfer(10.0, "USDC", 1).unwrap(),
+            engine.check_transfer(Some(10.0), "USDC", 1).unwrap(),
             PolicyDecision::Allowed
         );
 
         // Test ETH
         assert_eq!(
-            engine.check_transfer(10.0, "ETH", 1).unwrap(),
+            engine.check_transfer(Some(10.0), "ETH", 1).unwrap(),
             PolicyDecision::Allowed
         );
 
         // Test disallowed token
         assert!(matches!(
-            engine.check_transfer(10.0, "WBTC", 1).unwrap(),
+            engine.check_transfer(Some(10.0), "WBTC", 1).unwrap(),
             PolicyDecision::Denied(_)
         ));
     }
@@ -465,7 +472,7 @@ per_tx_limit_usd: 1000.0
 
         // Should match the address
         let decision = engine
-            .check_transfer(10.0, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 1)
+            .check_transfer(Some(10.0), "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 1)
             .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
@@ -478,13 +485,13 @@ per_tx_limit_usd: 1000.0
 
         // Lowercase should match (case-insensitive)
         let decision = engine
-            .check_transfer(10.0, "0xabcdef1234567890abcdef1234567890abcdef12", 1)
+            .check_transfer(Some(10.0), "0xabcdef1234567890abcdef1234567890abcdef12", 1)
             .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Uppercase should match
         let decision = engine
-            .check_transfer(10.0, "0XABCDEF1234567890ABCDEF1234567890ABCDEF12", 1)
+            .check_transfer(Some(10.0), "0XABCDEF1234567890ABCDEF1234567890ABCDEF12", 1)
             .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
@@ -493,7 +500,7 @@ per_tx_limit_usd: 1000.0
     fn test_empty_token_string() {
         let engine = PolicyEngine::new(test_policy());
         // Empty string token should be denied (not in allowed list)
-        let decision = engine.check_transfer(10.0, "", 1).unwrap();
+        let decision = engine.check_transfer(Some(10.0), "", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
@@ -503,19 +510,19 @@ per_tx_limit_usd: 1000.0
 
         // Chain 1 (Ethereum mainnet) is allowed
         assert_eq!(
-            engine.check_transfer(10.0, "USDC", 1).unwrap(),
+            engine.check_transfer(Some(10.0), "USDC", 1).unwrap(),
             PolicyDecision::Allowed
         );
 
         // Chain 8453 (Base) is allowed
         assert_eq!(
-            engine.check_transfer(10.0, "USDC", 8453).unwrap(),
+            engine.check_transfer(Some(10.0), "USDC", 8453).unwrap(),
             PolicyDecision::Allowed
         );
 
         // Chain 137 (Polygon) is not allowed
         assert!(matches!(
-            engine.check_transfer(10.0, "USDC", 137).unwrap(),
+            engine.check_transfer(Some(10.0), "USDC", 137).unwrap(),
             PolicyDecision::Denied(_)
         ));
     }
@@ -529,18 +536,18 @@ per_tx_limit_usd: 1000.0
         let engine = PolicyEngine::new(policy);
 
         // Make a transfer that gets denied due to per-tx limit
-        let decision = engine.check_transfer(600.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(600.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Daily total should still be 0, so we can transfer up to 1000
-        let decision = engine.check_transfer(500.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(500.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
-        let decision = engine.check_transfer(500.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(500.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Now at 1000, next should fail
-        let decision = engine.check_transfer(1.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(1.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
@@ -549,12 +556,12 @@ per_tx_limit_usd: 1000.0
         let engine = PolicyEngine::new(test_policy());
 
         // Denied due to token not allowed
-        let decision = engine.check_transfer(100.0, "SHIB", 1).unwrap();
+        let decision = engine.check_transfer(Some(100.0), "SHIB", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Should still have full daily limit available
         // Using allowed token now - should work
-        let decision = engine.check_transfer(100.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(100.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -563,11 +570,11 @@ per_tx_limit_usd: 1000.0
         let engine = PolicyEngine::new(test_policy());
 
         // Denied due to chain not allowed
-        let decision = engine.check_transfer(100.0, "USDC", 999).unwrap();
+        let decision = engine.check_transfer(Some(100.0), "USDC", 999).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Should still have full daily limit available
-        let decision = engine.check_transfer(100.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(100.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -623,7 +630,7 @@ daily_transfer_limit_usd: 1000.0
         let engine = PolicyEngine::new(policy);
 
         // Even large amounts don't require approval
-        let decision = engine.check_transfer(499.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(499.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -632,12 +639,12 @@ daily_transfer_limit_usd: 1000.0
         let engine = PolicyEngine::new(test_policy());
 
         // At threshold (200.0) - allowed (uses > not >=)
-        let decision = engine.check_transfer(200.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(200.0), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // Just above - requires approval
         let engine2 = PolicyEngine::new(test_policy());
-        let decision = engine2.check_transfer(200.001, "USDC", 1).unwrap();
+        let decision = engine2.check_transfer(Some(200.001), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::RequiresApproval(_)));
     }
 
@@ -646,24 +653,24 @@ daily_transfer_limit_usd: 1000.0
         let engine = PolicyEngine::new(test_policy());
 
         // This requires approval, so should NOT count toward daily limit
-        let decision = engine.check_transfer(300.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(300.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::RequiresApproval(_)));
 
         // Daily limit should still be full (1000)
         // We can do 5 transfers of 100 each (under approval threshold)
         for _ in 0..5 {
-            let decision = engine.check_transfer(100.0, "USDC", 1).unwrap();
+            let decision = engine.check_transfer(Some(100.0), "USDC", 1).unwrap();
             assert_eq!(decision, PolicyDecision::Allowed);
         }
 
         // At 500 now, can do 5 more
         for _ in 0..5 {
-            let decision = engine.check_transfer(100.0, "USDC", 1).unwrap();
+            let decision = engine.check_transfer(Some(100.0), "USDC", 1).unwrap();
             assert_eq!(decision, PolicyDecision::Allowed);
         }
 
         // At 1000, next should fail
-        let decision = engine.check_transfer(1.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(1.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
@@ -672,15 +679,15 @@ daily_transfer_limit_usd: 1000.0
         let engine = PolicyEngine::new(test_policy());
 
         // Invalid token - should be denied, not require approval
-        let decision = engine.check_transfer(300.0, "INVALID", 1).unwrap();
+        let decision = engine.check_transfer(Some(300.0), "INVALID", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Invalid chain - should be denied, not require approval
-        let decision = engine.check_transfer(300.0, "USDC", 999).unwrap();
+        let decision = engine.check_transfer(Some(300.0), "USDC", 999).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
 
         // Over per-tx limit - should be denied, not require approval
-        let decision = engine.check_transfer(600.0, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(600.0), "USDC", 1).unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 
@@ -695,15 +702,15 @@ daily_transfer_limit_usd: 1000.0
         let engine = PolicyEngine::new(policy);
 
         // Transfer amounts that might cause float precision issues
-        let decision = engine.check_transfer(33.33, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(33.33), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
-        let decision = engine.check_transfer(33.33, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(33.33), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
-        let decision = engine.check_transfer(33.33, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(33.33), "USDC", 1).unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
 
         // 33.33 * 3 = 99.99, should have 0.01 left
-        let decision = engine.check_transfer(0.02, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(0.02), "USDC", 1).unwrap();
         // This might fail due to float precision (99.99 might be 99.99000000000001)
         // Document current behavior
         assert!(matches!(
@@ -716,7 +723,7 @@ daily_transfer_limit_usd: 1000.0
     fn test_nan_amount() {
         let engine = PolicyEngine::new(test_policy());
         // NaN comparisons are always false in Rust, so this tests edge case
-        let decision = engine.check_transfer(f64::NAN, "USDC", 1).unwrap();
+        let decision = engine.check_transfer(Some(f64::NAN), "USDC", 1).unwrap();
         // NaN > per_tx_limit is false, NaN + total > daily is false
         // So NaN might actually be allowed! This documents current behavior.
         // In production, you'd want input validation to reject NaN
@@ -732,7 +739,9 @@ daily_transfer_limit_usd: 1000.0
     fn test_infinity_amount() {
         let engine = PolicyEngine::new(test_policy());
         // Infinity should definitely exceed limits
-        let decision = engine.check_transfer(f64::INFINITY, "USDC", 1).unwrap();
+        let decision = engine
+            .check_transfer(Some(f64::INFINITY), "USDC", 1)
+            .unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 }

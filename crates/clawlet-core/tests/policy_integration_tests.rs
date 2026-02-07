@@ -63,7 +63,7 @@ allowed_chains: []
     fs::write(&policy_path, yaml).unwrap();
 
     let engine = PolicyEngine::from_file(&policy_path).unwrap();
-    let decision = engine.check_transfer(100.0, "ANY", 1).unwrap();
+    let decision = engine.check_transfer(Some(100.0), "ANY", 1).unwrap();
     assert_eq!(decision, PolicyDecision::Allowed);
 }
 
@@ -116,7 +116,7 @@ fn test_concurrent_transfers_accumulate_correctly() {
     for _ in 0..10 {
         let engine_clone = Arc::clone(&engine);
         handles.push(thread::spawn(move || {
-            engine_clone.check_transfer(100.0, "USDC", 1).unwrap()
+            engine_clone.check_transfer(Some(100.0), "USDC", 1).unwrap()
         }));
     }
 
@@ -148,7 +148,7 @@ fn test_concurrent_transfers_exceed_limit() {
     for _ in 0..10 {
         let engine_clone = Arc::clone(&engine);
         handles.push(thread::spawn(move || {
-            engine_clone.check_transfer(100.0, "USDC", 1).unwrap()
+            engine_clone.check_transfer(Some(100.0), "USDC", 1).unwrap()
         }));
     }
 
@@ -179,7 +179,9 @@ fn test_concurrent_mixed_outcomes() {
     for amount in amounts {
         let engine_clone = Arc::clone(&engine);
         handles.push(thread::spawn(move || {
-            engine_clone.check_transfer(amount, "USDC", 1).unwrap()
+            engine_clone
+                .check_transfer(Some(amount), "USDC", 1)
+                .unwrap()
         }));
     }
 
@@ -284,28 +286,28 @@ fn test_realistic_spending_pattern() {
     let engine = PolicyEngine::new(policy);
 
     // Morning coffee
-    let d = engine.check_transfer(5.50, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(5.50), "USDC", 1).unwrap();
     assert_eq!(d, PolicyDecision::Allowed);
 
     // Lunch
-    let d = engine.check_transfer(15.00, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(15.00), "USDC", 1).unwrap();
     assert_eq!(d, PolicyDecision::Allowed);
 
     // Small purchase
-    let d = engine.check_transfer(35.00, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(35.00), "USDC", 1).unwrap();
     assert_eq!(d, PolicyDecision::Allowed);
 
     // Larger purchase - needs approval
-    let d = engine.check_transfer(150.00, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(150.00), "USDC", 1).unwrap();
     assert!(matches!(d, PolicyDecision::RequiresApproval(_)));
 
     // End of day, small transfer
-    let d = engine.check_transfer(10.00, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(10.00), "USDC", 1).unwrap();
     assert_eq!(d, PolicyDecision::Allowed);
 
     // Total approved so far: 5.50 + 15 + 35 + 10 = 65.50
     // Can still transfer more
-    let d = engine.check_transfer(100.00, "USDC", 1).unwrap();
+    let d = engine.check_transfer(Some(100.00), "USDC", 1).unwrap();
     assert_eq!(d, PolicyDecision::Allowed);
 
     // Now at 165.50, still under 500
@@ -329,33 +331,37 @@ fn test_multi_chain_multi_token_scenario() {
 
     // Various combinations
     assert_eq!(
-        engine.check_transfer(100.0, "USDC", 1).unwrap(),
+        engine.check_transfer(Some(100.0), "USDC", 1).unwrap(),
         PolicyDecision::Allowed
     );
     assert_eq!(
-        engine.check_transfer(100.0, "USDT", 10).unwrap(),
+        engine.check_transfer(Some(100.0), "USDT", 10).unwrap(),
         PolicyDecision::Allowed
     );
     assert_eq!(
-        engine.check_transfer(100.0, "DAI", 8453).unwrap(),
+        engine.check_transfer(Some(100.0), "DAI", 8453).unwrap(),
         PolicyDecision::Allowed
     );
     assert_eq!(
         engine
-            .check_transfer(100.0, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 42161)
+            .check_transfer(
+                Some(100.0),
+                "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                42161
+            )
             .unwrap(),
         PolicyDecision::Allowed
     );
 
     // Wrong chain
     assert!(matches!(
-        engine.check_transfer(100.0, "USDC", 137).unwrap(), // Polygon not allowed
+        engine.check_transfer(Some(100.0), "USDC", 137).unwrap(), // Polygon not allowed
         PolicyDecision::Denied(_)
     ));
 
     // Wrong token
     assert!(matches!(
-        engine.check_transfer(100.0, "WBTC", 1).unwrap(),
+        engine.check_transfer(Some(100.0), "WBTC", 1).unwrap(),
         PolicyDecision::Denied(_)
     ));
 }
@@ -367,7 +373,7 @@ fn test_denial_message_per_tx() {
     let policy = make_policy(1000.0, 100.0, None);
     let engine = PolicyEngine::new(policy);
 
-    let decision = engine.check_transfer(150.0, "USDC", 1).unwrap();
+    let decision = engine.check_transfer(Some(150.0), "USDC", 1).unwrap();
     if let PolicyDecision::Denied(msg) = decision {
         assert!(msg.contains("per-tx limit"));
         assert!(msg.contains("$150.00"));
@@ -383,10 +389,10 @@ fn test_denial_message_daily() {
     let engine = PolicyEngine::new(policy);
 
     // Use up most of daily limit
-    engine.check_transfer(90.0, "USDC", 1).unwrap();
+    engine.check_transfer(Some(90.0), "USDC", 1).unwrap();
 
     // Try to exceed
-    let decision = engine.check_transfer(20.0, "USDC", 1).unwrap();
+    let decision = engine.check_transfer(Some(20.0), "USDC", 1).unwrap();
     if let PolicyDecision::Denied(msg) = decision {
         assert!(msg.contains("daily limit"));
         assert!(msg.contains("$90.00"));
@@ -400,7 +406,7 @@ fn test_denial_message_token() {
     let policy = make_policy(1000.0, 500.0, None);
     let engine = PolicyEngine::new(policy);
 
-    let decision = engine.check_transfer(100.0, "SHIB", 1).unwrap();
+    let decision = engine.check_transfer(Some(100.0), "SHIB", 1).unwrap();
     if let PolicyDecision::Denied(msg) = decision {
         assert!(msg.contains("SHIB"));
         assert!(msg.contains("not in the allowed list"));
@@ -414,7 +420,7 @@ fn test_denial_message_chain() {
     let policy = make_policy(1000.0, 500.0, None);
     let engine = PolicyEngine::new(policy);
 
-    let decision = engine.check_transfer(100.0, "USDC", 999).unwrap();
+    let decision = engine.check_transfer(Some(100.0), "USDC", 999).unwrap();
     if let PolicyDecision::Denied(msg) = decision {
         assert!(msg.contains("999"));
         assert!(msg.contains("not in the allowed list"));
@@ -428,7 +434,7 @@ fn test_approval_message() {
     let policy = make_policy(1000.0, 500.0, Some(100.0));
     let engine = PolicyEngine::new(policy);
 
-    let decision = engine.check_transfer(150.0, "USDC", 1).unwrap();
+    let decision = engine.check_transfer(Some(150.0), "USDC", 1).unwrap();
     if let PolicyDecision::RequiresApproval(msg) = decision {
         assert!(msg.contains("$150.00"));
         assert!(msg.contains("$100.00"));

@@ -118,7 +118,7 @@ mod token_hash_serde {
 /// When created with [`SessionStore::with_persistence`], sessions are
 /// automatically saved to a JSON file after every mutation (grant, revoke,
 /// etc.) so they survive daemon restarts.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SessionStore {
     /// Active sessions keyed by agent ID.
     sessions: HashMap<String, Session>,
@@ -126,16 +126,6 @@ pub struct SessionStore {
     failed_attempts: HashMap<String, FailedAttempts>,
     /// Path to the sessions JSON file for persistence (None = in-memory only).
     persist_path: Option<PathBuf>,
-}
-
-impl Default for SessionStore {
-    fn default() -> Self {
-        Self {
-            sessions: HashMap::new(),
-            failed_attempts: HashMap::new(),
-            persist_path: None,
-        }
-    }
 }
 
 /// Tracks failed authentication attempts for rate limiting.
@@ -679,10 +669,18 @@ mod tests {
         let token2;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token1 =
-                store.grant("agent-1", TokenScope::Trade, Duration::from_secs(3600), 1000);
-            token2 =
-                store.grant("agent-2", TokenScope::Admin, Duration::from_secs(7200), 1001);
+            token1 = store.grant(
+                "agent-1",
+                TokenScope::Trade,
+                Duration::from_secs(3600),
+                1000,
+            );
+            token2 = store.grant(
+                "agent-2",
+                TokenScope::Admin,
+                Duration::from_secs(7200),
+                1001,
+            );
             assert_eq!(store.list().len(), 2);
         }
 
@@ -713,9 +711,13 @@ mod tests {
         let token;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token =
-                store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
-            store.grant("agent-2", TokenScope::Trade, Duration::from_secs(3600), 1000);
+            token = store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+            store.grant(
+                "agent-2",
+                TokenScope::Trade,
+                Duration::from_secs(3600),
+                1000,
+            );
             store.revoke("agent-1");
         }
 

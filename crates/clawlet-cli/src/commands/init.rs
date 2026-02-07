@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use clawlet_core::fs::write_secure;
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 
@@ -150,13 +151,13 @@ pub fn run(
     // Write default policy.yaml
     let policy_path = data_dir.join("policy.yaml");
     if !policy_path.exists() {
-        std::fs::write(&policy_path, DEFAULT_POLICY)?;
+        write_secure(&policy_path, DEFAULT_POLICY)?;
     }
 
     // Write default config.yaml
     let config_path = data_dir.join("config.yaml");
     if !config_path.exists() {
-        std::fs::write(&config_path, default_config(&data_dir))?;
+        write_secure(&config_path, default_config(&data_dir))?;
     }
 
     // Store password in Keychain for auto-unlock (macOS only)

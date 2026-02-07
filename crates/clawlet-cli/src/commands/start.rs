@@ -6,16 +6,21 @@
 //! 3. Start the HTTP JSON-RPC server
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use chrono::Utc;
 use clawlet_core::auth::{SessionStore, TokenScope};
 use clawlet_core::config::Config;
+use clawlet_core::fs::write_secure;
 use clawlet_rpc::server::DEFAULT_ADDR;
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
+
+use crate::commands::daemon::{write_daemon_state, DaemonState};
 
 /// Default policy YAML template.
 const DEFAULT_POLICY: &str = r#"# Clawlet transfer policy
@@ -120,6 +125,7 @@ pub async fn run(
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
+    daemon: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
@@ -139,7 +145,7 @@ pub async fn run(
         !keys.is_empty()
     };
 
-    let (signing_key, _address) = if already_initialized {
+    let (signing_key, address) = if already_initialized {
         // Already initialized - try Keychain first, then prompt
         let password = if let Some(pw) = clawlet_signer::keychain::retrieve_password() {
             eprintln!("🔐 Using password from Keychain");
@@ -190,12 +196,12 @@ pub async fn run(
         // Write default policy.yaml
         let policy_path = data_dir.join("policy.yaml");
         if !policy_path.exists() {
-            std::fs::write(&policy_path, DEFAULT_POLICY)?;
+            write_secure(&policy_path, DEFAULT_POLICY)?;
         }
 
         // Write default config.yaml
         if !config_path.exists() {
-            std::fs::write(&config_path, default_config(&data_dir))?;
+            write_secure(&config_path, default_config(&data_dir))?;
         }
 
         // Store password in Keychain for auto-unlock (macOS only)
@@ -241,7 +247,11 @@ pub async fn run(
         scope,
         expires_at.format("%Y-%m-%d")
     );
-    println!("   {token}");
+    if daemon {
+        println!("{token}");
+    } else {
+        println!("   {token}");
+    }
 
     // Determine listen address
     let listen_addr = addr.unwrap_or_else(|| {
@@ -251,9 +261,22 @@ pub async fn run(
             .unwrap_or_else(|_| DEFAULT_ADDR.parse().unwrap())
     });
 
-    eprintln!();
-    eprintln!("🚀 Clawlet server running on http://{listen_addr}");
-    eprintln!("   Press Ctrl+C to stop");
+    if daemon {
+        std::io::Write::flush(&mut std::io::stdout())?;
+        daemonize_process()?;
+
+        let state = DaemonState {
+            pid: current_pid(),
+            token: token.clone(),
+            wallet_address: address.to_string(),
+            started_at: Utc::now(),
+        };
+        write_daemon_state(&state)?;
+    } else {
+        eprintln!();
+        eprintln!("🚀 Clawlet server running on http://{listen_addr}");
+        eprintln!("   Press Ctrl+C to stop");
+    }
 
     // Start the server with pre-granted session
     start_server_with_session(
@@ -265,6 +288,65 @@ pub async fn run(
     .await?;
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn daemonize_process() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::io::AsRawFd;
+
+    let first = unsafe { libc::fork() };
+    if first < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if first > 0 {
+        std::process::exit(0);
+    }
+
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let second = unsafe { libc::fork() };
+    if second < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if second > 0 {
+        std::process::exit(0);
+    }
+
+    std::env::set_current_dir(Path::new("/"))?;
+
+    let devnull = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")?;
+    let fd = devnull.as_raw_fd();
+    if unsafe { libc::dup2(fd, libc::STDIN_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::dup2(fd, libc::STDOUT_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn daemonize_process() -> Result<(), Box<dyn std::error::Error>> {
+    Err("daemon mode is only supported on unix platforms".into())
+}
+
+#[cfg(unix)]
+fn current_pid() -> i32 {
+    unsafe { libc::getpid() as i32 }
+}
+
+#[cfg(not(unix))]
+fn current_pid() -> i32 {
+    0
 }
 
 /// Start the RPC server with a pre-populated session store.

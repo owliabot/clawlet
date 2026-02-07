@@ -7,6 +7,7 @@
 //! - `clawlet serve` — Start the RPC server
 //! - `clawlet auth`  — Manage session tokens for AI agents
 //! - `clawlet start` — Quick start: init + auth grant + serve
+//! - `clawlet status` — Show daemon status
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -78,7 +79,14 @@ enum Commands {
         /// Address to bind the HTTP server (default: 127.0.0.1:9100).
         #[arg(long, short)]
         addr: Option<SocketAddr>,
+
+        /// Run the server in daemon mode.
+        #[arg(long)]
+        daemon: bool,
     },
+
+    /// Show current daemon status from ~/.clawlet/daemon.json.
+    Status,
 }
 
 #[tokio::main]
@@ -100,7 +108,9 @@ async fn main() {
             expires,
             data_dir,
             addr,
-        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
+            daemon,
+        } => commands::start::run(agent, scope, expires, data_dir, addr, daemon).await,
+        Commands::Status => commands::status::run(),
     };
 
     if let Err(e) = result {

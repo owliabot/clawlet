@@ -44,6 +44,7 @@ impl Keystore {
             .map_err(|e| KeystoreError::Keystore(e.to_string()))?;
 
         let path = dir.join(name);
+        set_owner_only_permissions(&path)?;
         let signing_key = SigningKey::from_bytes(secret.as_slice().into())
             .map_err(|_| KeystoreError::InvalidKey)?;
         let address = public_key_to_address(&signing_key);
@@ -65,6 +66,7 @@ impl Keystore {
             .map_err(|e| KeystoreError::Keystore(e.to_string()))?;
 
         let path = dir.join(name);
+        set_owner_only_permissions(&path)?;
         let signing_key =
             SigningKey::from_bytes(private_key.into()).map_err(|_| KeystoreError::InvalidKey)?;
         let address = public_key_to_address(&signing_key);
@@ -107,6 +109,19 @@ impl Keystore {
 
         Ok(results)
     }
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Derives an Ethereum address from a signing key.

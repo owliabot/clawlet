@@ -672,29 +672,38 @@ print_post_install_isolated() {
     echo "    - RPC binds to 127.0.0.1 only"
     echo ""
 
-    echo -e "  ${BOLD}Next steps:${NC}"
+    echo -e "  ${BOLD}Quick start (init + grant token + serve):${NC}"
     echo ""
-    echo -e "    ${BOLD}1.${NC} Initialize keystore (as clawlet user):"
+    echo -e "    ${BLUE}sudo -u $CLAWLET_USER clawlet start --agent owliabot${NC}"
+    echo ""
+    echo "    This will:"
+    echo "      • Create keystore (prompts for password)"
+    echo "      • Grant a session token to 'owliabot'"
+    echo "      • Start the RPC server on 127.0.0.1:9100"
+    echo ""
+
+    echo -e "  ${BOLD}Or step-by-step:${NC}"
+    echo ""
+    echo -e "    ${BOLD}1.${NC} Initialize keystore:"
     echo -e "       ${BLUE}sudo -u $CLAWLET_USER clawlet init${NC}"
+    echo ""
+    echo -e "    ${BOLD}2.${NC} Grant token to agent:"
+    echo -e "       ${BLUE}sudo -u $CLAWLET_USER clawlet auth grant --agent owliabot --scope trade${NC}"
     echo ""
 
     if [[ "$os" == "linux" ]]; then
-        echo -e "    ${BOLD}2.${NC} Start the service:"
+        echo -e "    ${BOLD}3.${NC} Enable service (auto-start on boot):"
         echo -e "       ${BLUE}sudo systemctl enable --now clawlet${NC}"
         echo ""
-        echo -e "    ${BOLD}3.${NC} View logs:"
+        echo -e "    ${BOLD}4.${NC} View logs:"
         echo -e "       ${BLUE}sudo journalctl -u clawlet -f${NC}"
     else
-        echo -e "    ${BOLD}2.${NC} Start the service:"
+        echo -e "    ${BOLD}3.${NC} Enable service (auto-start on boot):"
         echo -e "       ${BLUE}sudo launchctl load /Library/LaunchDaemons/com.openclaw.clawlet.plist${NC}"
         echo ""
-        echo -e "    ${BOLD}3.${NC} View logs:"
+        echo -e "    ${BOLD}4.${NC} View logs:"
         echo -e "       ${BLUE}tail -f $clawlet_home/.clawlet/logs/clawlet.stderr.log${NC}"
     fi
-    echo ""
-
-    echo -e "    ${BOLD}4.${NC} Configure RPC endpoints:"
-    echo -e "       ${BLUE}sudo -u $CLAWLET_USER nano $clawlet_home/.clawlet/config.yaml${NC}"
     echo ""
 
     echo "  For help, run: clawlet --help"

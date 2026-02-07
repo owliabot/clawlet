@@ -34,7 +34,7 @@ clawlet/
 
 ## Installation
 
-### Quick Install (Recommended)
+### Quick Install (User Mode)
 
 ```bash
 # One-liner install (downloads pre-built binary)
@@ -45,6 +45,39 @@ curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/insta
 ./scripts/install.sh --from-source        # Build from source
 ./scripts/install.sh --version v0.1.0     # Specific version
 ```
+
+### Isolated Mode (Recommended for Production)
+
+For production deployments, use isolated mode which creates a dedicated `clawlet` system user for key isolation:
+
+```bash
+# Linux - installs binary, creates user, sets up systemd service
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | sudo bash -s -- --isolated
+
+# macOS - installs binary, creates user, sets up launchd service
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | sudo bash -s -- --isolated
+```
+
+**Isolated mode provides:**
+- Dedicated `clawlet` system user (cannot login)
+- Keystore isolated from agent processes
+- Data directory with 700 permissions
+- Auto-configured systemd (Linux) or launchd (macOS) service
+- Security hardening (NoNewPrivileges, ProtectSystem, etc.)
+
+**Post-install steps:**
+```bash
+# Initialize keystore (as clawlet user)
+sudo -u clawlet clawlet init
+
+# Linux: Start service
+sudo systemctl enable --now clawlet
+
+# macOS: Start service
+sudo launchctl load /Library/LaunchDaemons/com.openclaw.clawlet.plist
+```
+
+See [docs/deployment.md](docs/deployment.md) for full production setup guide.
 
 ### From Source
 
@@ -59,7 +92,14 @@ sudo cp target/release/clawlet /usr/local/bin/
 ### Uninstall
 
 ```bash
+# User mode
 curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
+
+# Isolated mode (removes service, optionally user and data)
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | sudo bash -s -- --isolated
+
+# Full cleanup (removes user, data, and keystore)
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | sudo bash -s -- --isolated --purge
 ```
 
 ### Platform Support

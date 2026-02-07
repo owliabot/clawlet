@@ -9,6 +9,7 @@
 # Options:
 #   --prefix DIR    Look for binary in DIR/bin instead of /usr/local/bin
 #   --purge         Also remove configuration directory (~/.clawlet)
+#   --isolated      Uninstall isolated mode (service, user, data)
 #   --yes           Skip confirmation prompts
 #   --help          Show this help message
 #
@@ -18,6 +19,7 @@ set -euo pipefail
 # === Configuration ===
 DEFAULT_PREFIX="/usr/local"
 CONFIG_DIR="$HOME/.clawlet"
+CLAWLET_USER="clawlet"
 
 # === Colors ===
 RED='\033[0;31m'
@@ -60,6 +62,10 @@ OPTIONS:
     --prefix DIR    Look for binary in DIR/bin instead of /usr/local/bin
     --purge         Also remove configuration directory (~/.clawlet)
                     WARNING: This will delete your keys and logs!
+    --isolated      Uninstall isolated mode installation:
+                    - Stops and removes systemd/launchd service
+                    - Optionally removes clawlet system user
+                    - Removes /home/clawlet or /Users/clawlet data
     --yes, -y       Skip confirmation prompts
     --help          Show this help message
 
@@ -69,6 +75,12 @@ EXAMPLES:
 
     # Uninstall everything including config
     ./uninstall.sh --purge
+
+    # Uninstall isolated mode installation
+    sudo ./uninstall.sh --isolated
+
+    # Uninstall isolated mode with full cleanup
+    sudo ./uninstall.sh --isolated --purge
 
     # Uninstall from custom location without prompts
     ./uninstall.sh --prefix ~/.local --yes
@@ -91,9 +103,26 @@ confirm() {
     esac
 }
 
+detect_os() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "darwin" ;;
+        *)       die "Unsupported operating system: $os" ;;
+    esac
+}
+
+ensure_root() {
+    if [[ $EUID -ne 0 ]]; then
+        die "Isolated mode uninstall requires root privileges. Please run with sudo."
+    fi
+}
+
 # === Argument Parsing ===
 PREFIX="$DEFAULT_PREFIX"
 PURGE="false"
+ISOLATED="false"
 SKIP_CONFIRM="false"
 
 while [[ $# -gt 0 ]]; do
@@ -107,6 +136,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --purge)
             PURGE="true"
+            shift
+            ;;
+        --isolated)
+            ISOLATED="true"
             shift
             ;;
         --yes|-y)
@@ -125,7 +158,8 @@ done
 BIN_DIR="$PREFIX/bin"
 BINARY_PATH="$BIN_DIR/clawlet"
 
-# === Uninstallation ===
+# === Uninstallation Functions ===
+
 remove_binary() {
     if [[ ! -f "$BINARY_PATH" ]]; then
         warn "Binary not found at $BINARY_PATH"
@@ -166,6 +200,195 @@ remove_config() {
     success "Configuration directory removed"
 }
 
+# === Isolated Mode Uninstallation ===
+
+stop_systemd_service() {
+    if ! command -v systemctl &>/dev/null; then
+        return 0
+    fi
+
+    if systemctl is-active --quiet clawlet 2>/dev/null; then
+        info "Stopping clawlet service..."
+        systemctl stop clawlet || warn "Failed to stop service"
+        success "Service stopped"
+    fi
+
+    if systemctl is-enabled --quiet clawlet 2>/dev/null; then
+        info "Disabling clawlet service..."
+        systemctl disable clawlet || warn "Failed to disable service"
+        success "Service disabled"
+    fi
+}
+
+remove_systemd_service() {
+    local service_file="/etc/systemd/system/clawlet.service"
+    
+    if [[ ! -f "$service_file" ]]; then
+        return 0
+    fi
+
+    info "Removing systemd service file..."
+    rm -f "$service_file" || die "Failed to remove service file"
+    systemctl daemon-reload
+    success "Systemd service removed"
+}
+
+stop_launchd_service() {
+    local plist_file="/Library/LaunchDaemons/com.openclaw.clawlet.plist"
+    
+    if [[ ! -f "$plist_file" ]]; then
+        return 0
+    fi
+
+    # Check if loaded
+    if launchctl list | grep -q "com.openclaw.clawlet"; then
+        info "Stopping clawlet service..."
+        launchctl unload "$plist_file" 2>/dev/null || warn "Failed to unload service"
+        success "Service stopped"
+    fi
+}
+
+remove_launchd_service() {
+    local plist_file="/Library/LaunchDaemons/com.openclaw.clawlet.plist"
+    
+    if [[ ! -f "$plist_file" ]]; then
+        return 0
+    fi
+
+    info "Removing launchd plist..."
+    rm -f "$plist_file" || die "Failed to remove plist"
+    success "Launchd plist removed"
+}
+
+remove_clawlet_user_linux() {
+    if ! id "$CLAWLET_USER" &>/dev/null; then
+        return 0
+    fi
+
+    echo ""
+    warn "User '$CLAWLET_USER' exists with home directory"
+    
+    if ! confirm "Remove user '$CLAWLET_USER' and home directory?"; then
+        info "Skipping user removal"
+        return 0
+    fi
+
+    info "Removing user '$CLAWLET_USER'..."
+    
+    # Kill any processes owned by user
+    pkill -u "$CLAWLET_USER" 2>/dev/null || true
+    sleep 1
+    
+    # Remove user and home directory
+    userdel -r "$CLAWLET_USER" 2>/dev/null || userdel "$CLAWLET_USER" || die "Failed to remove user"
+    
+    success "User '$CLAWLET_USER' removed"
+}
+
+remove_clawlet_user_macos() {
+    if ! id "$CLAWLET_USER" &>/dev/null; then
+        return 0
+    fi
+
+    echo ""
+    warn "User '$CLAWLET_USER' exists with home directory"
+    
+    if ! confirm "Remove user '$CLAWLET_USER' and home directory?"; then
+        info "Skipping user removal"
+        return 0
+    fi
+
+    info "Removing user '$CLAWLET_USER'..."
+    
+    # Kill any processes owned by user
+    pkill -u "$CLAWLET_USER" 2>/dev/null || true
+    sleep 1
+    
+    local clawlet_home="/Users/$CLAWLET_USER"
+    
+    # Remove user via dscl
+    dscl . -delete "/Users/$CLAWLET_USER" || die "Failed to remove user"
+    
+    # Remove home directory
+    if [[ -d "$clawlet_home" ]]; then
+        rm -rf "$clawlet_home" || warn "Failed to remove home directory"
+    fi
+    
+    success "User '$CLAWLET_USER' removed"
+}
+
+remove_isolated_data() {
+    local os="$1"
+    local clawlet_home
+    
+    case "$os" in
+        linux)  clawlet_home="/home/$CLAWLET_USER" ;;
+        darwin) clawlet_home="/Users/$CLAWLET_USER" ;;
+    esac
+
+    local data_dir="$clawlet_home/.clawlet"
+    
+    if [[ ! -d "$data_dir" ]]; then
+        return 0
+    fi
+
+    echo ""
+    warn "This will permanently delete isolated mode data:"
+    echo "    - Keystore in $data_dir/keystore/"
+    echo "    - Logs in $data_dir/logs/"
+    echo "    - Config at $data_dir/config.yaml"
+    echo "    - Policy at $data_dir/policy.yaml"
+    echo "    - Audit log at $data_dir/audit.jsonl"
+    echo ""
+
+    if ! confirm "Are you sure you want to delete $data_dir?"; then
+        info "Skipping data directory removal"
+        return 0
+    fi
+
+    info "Removing data directory..."
+    rm -rf "$data_dir" || die "Failed to remove data directory"
+    success "Data directory removed"
+}
+
+uninstall_isolated() {
+    local os
+    os=$(detect_os)
+    
+    info "Uninstalling isolated mode installation..."
+    echo ""
+
+    # Stop and remove service
+    if [[ "$os" == "linux" ]]; then
+        stop_systemd_service
+        remove_systemd_service
+    else
+        stop_launchd_service
+        remove_launchd_service
+    fi
+
+    # Remove binary
+    remove_binary
+
+    if [[ "$PURGE" == "true" ]]; then
+        # Remove data directory
+        remove_isolated_data "$os"
+        
+        # Remove user (this also removes home directory)
+        if [[ "$os" == "linux" ]]; then
+            remove_clawlet_user_linux
+        else
+            remove_clawlet_user_macos
+        fi
+    else
+        echo ""
+        info "Data preserved. To remove completely, run:"
+        echo ""
+        echo "    sudo $0 --isolated --purge"
+        echo ""
+    fi
+}
+
 # === Main ===
 main() {
     echo ""
@@ -173,25 +396,44 @@ main() {
     echo "==================="
     echo ""
 
-    if [[ "$PURGE" == "true" ]]; then
-        warn "Running in purge mode - will remove config files"
+    if [[ "$ISOLATED" == "true" ]]; then
+        ensure_root
+        
+        if [[ "$PURGE" == "true" ]]; then
+            warn "Running in isolated + purge mode - will remove service, data, and user"
+        else
+            info "Running in isolated mode - will remove service and binary"
+        fi
         echo ""
-    fi
-
-    if ! confirm "Uninstall clawlet from $BIN_DIR?"; then
-        info "Uninstallation cancelled"
-        exit 0
-    fi
-
-    remove_binary
-
-    if [[ "$PURGE" == "true" ]]; then
-        remove_config
+        
+        if ! confirm "Proceed with isolated mode uninstall?"; then
+            info "Uninstallation cancelled"
+            exit 0
+        fi
+        
+        uninstall_isolated
     else
-        if [[ -d "$CONFIG_DIR" ]]; then
+        # Standard uninstall
+        if [[ "$PURGE" == "true" ]]; then
+            warn "Running in purge mode - will remove config files"
             echo ""
-            info "Configuration directory preserved at $CONFIG_DIR"
-            info "To remove it, run: ./uninstall.sh --purge"
+        fi
+
+        if ! confirm "Uninstall clawlet from $BIN_DIR?"; then
+            info "Uninstallation cancelled"
+            exit 0
+        fi
+
+        remove_binary
+
+        if [[ "$PURGE" == "true" ]]; then
+            remove_config
+        else
+            if [[ -d "$CONFIG_DIR" ]]; then
+                echo ""
+                info "Configuration directory preserved at $CONFIG_DIR"
+                info "To remove it, run: $0 --purge"
+            fi
         fi
     fi
 

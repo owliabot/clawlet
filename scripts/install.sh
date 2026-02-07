@@ -503,7 +503,7 @@ Environment=RUST_LOG=info
 Environment=CLAWLET_HOME=$clawlet_home/.clawlet
 
 # Execution
-ExecStart=/usr/local/bin/clawlet serve
+ExecStart=${PREFIX}/bin/clawlet serve
 Restart=on-failure
 RestartSec=5
 
@@ -551,7 +551,7 @@ install_launchd_plist() {
     
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/clawlet</string>
+        <string>${PREFIX}/bin/clawlet</string>
         <string>serve</string>
     </array>
     

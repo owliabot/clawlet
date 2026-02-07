@@ -140,9 +140,14 @@ pub async fn run(
     };
 
     let (signing_key, _address) = if already_initialized {
-        // Already initialized - just ask for password once
-        eprintln!("🔐 Enter password: ");
-        let password = rpassword::read_password()?;
+        // Already initialized - try Keychain first, then prompt
+        let password = if let Some(pw) = clawlet_signer::keychain::retrieve_password() {
+            eprintln!("🔐 Using password from Keychain");
+            pw
+        } else {
+            eprintln!("🔐 Enter password: ");
+            rpassword::read_password()?
+        };
 
         let keys = Keystore::list(&keystore_dir)?;
         let (_addr, key_path) = &keys[0];
@@ -191,6 +196,19 @@ pub async fn run(
         // Write default config.yaml
         if !config_path.exists() {
             std::fs::write(&config_path, default_config(&data_dir))?;
+        }
+
+        // Store password in Keychain for auto-unlock (macOS only)
+        if let Err(e) = clawlet_signer::keychain::store_password(&password) {
+            eprintln!();
+            eprintln!("⚠️  Could not store password in Keychain: {e}");
+            eprintln!("   You'll need to enter the password manually when starting the service.");
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                eprintln!();
+                eprintln!("✅ Password stored in macOS Keychain");
+            }
         }
 
         eprintln!("✅ Initialized {}", data_dir.display());

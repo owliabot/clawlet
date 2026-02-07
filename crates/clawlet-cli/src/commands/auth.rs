@@ -57,6 +57,9 @@ pub enum AuthCommand {
         #[arg(long, short)]
         addr: Option<SocketAddr>,
     },
+
+    /// Remove the stored password from macOS Keychain.
+    ForgetPassword,
 }
 
 /// Request body for auth grant RPC.
@@ -156,6 +159,29 @@ pub async fn run(
         AuthCommand::List { addr } => run_list(addr).await,
         AuthCommand::Revoke { agent, addr } => run_revoke(agent, addr).await,
         AuthCommand::RevokeAll { addr } => run_revoke_all(addr).await,
+        AuthCommand::ForgetPassword => run_forget_password(),
+    }
+}
+
+/// Remove stored password from Keychain.
+fn run_forget_password() -> Result<(), Box<dyn std::error::Error>> {
+    match clawlet_signer::keychain::delete_password() {
+        Ok(()) => {
+            #[cfg(target_os = "macos")]
+            {
+                eprintln!("✅ Password removed from macOS Keychain");
+                eprintln!("   You'll need to enter the password manually when starting clawlet.");
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                eprintln!("ℹ️  Keychain integration is only available on macOS.");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("⚠️  Could not remove password from Keychain: {e}");
+            Ok(())
+        }
     }
 }
 

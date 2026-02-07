@@ -6,6 +6,7 @@
 //! - `clawlet init`  — Generate keystore and default policy
 //! - `clawlet serve` — Start the RPC server
 //! - `clawlet auth`  — Manage session tokens for AI agents
+//! - `clawlet start` — Quick start: init + auth grant + serve
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -55,6 +56,29 @@ enum Commands {
         #[command(subcommand)]
         command: commands::auth::AuthCommand,
     },
+
+    /// Quick start: init (if needed) + grant token + serve.
+    Start {
+        /// Agent identifier to grant token to.
+        #[arg(long)]
+        agent: String,
+
+        /// Token scope: read, trade, or admin (default: trade).
+        #[arg(long, default_value = "trade")]
+        scope: String,
+
+        /// Token expiry duration (default: 1y).
+        #[arg(long, default_value = "1y")]
+        expires: String,
+
+        /// Data directory (default: ~/.clawlet).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Address to bind the HTTP server (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
+    },
 }
 
 #[tokio::main]
@@ -70,6 +94,13 @@ async fn main() {
         } => commands::init::run(from_mnemonic, data_dir),
         Commands::Serve { config, addr } => commands::serve::run(config, addr).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
+        Commands::Start {
+            agent,
+            scope,
+            expires,
+            data_dir,
+            addr,
+        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
     };
 
     if let Err(e) = result {

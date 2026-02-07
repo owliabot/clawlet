@@ -13,5 +13,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use client::{ClientError, RpcClient};
-pub use server::{AppState, RpcServer, ServerConfig, ServerError, DEFAULT_ADDR};
+pub use server::{
+    AppState, ClawletApiServer, RpcServer, RpcServerImpl, ServerConfig, ServerError, DEFAULT_ADDR,
+};
 pub use types::RpcMethod;

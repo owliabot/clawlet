@@ -10,6 +10,7 @@
 #   --prefix DIR    Look for binary in DIR/bin instead of /usr/local/bin
 #   --purge         Also remove configuration directory (~/.clawlet)
 #   --isolated      Uninstall isolated mode (service, user, data)
+#   --skip-service  Skip service removal (for Docker/testing)
 #   --yes           Skip confirmation prompts
 #   --help          Show this help message
 #
@@ -66,6 +67,7 @@ OPTIONS:
                     - Stops and removes systemd/launchd service
                     - Optionally removes clawlet system user
                     - Removes /home/clawlet or /Users/clawlet data
+    --skip-service  Skip service removal (useful for Docker)
     --yes, -y       Skip confirmation prompts
     --help          Show this help message
 
@@ -123,6 +125,7 @@ ensure_root() {
 PREFIX="$DEFAULT_PREFIX"
 PURGE="false"
 ISOLATED="false"
+SKIP_SERVICE="false"
 SKIP_CONFIRM="false"
 
 while [[ $# -gt 0 ]]; do
@@ -140,6 +143,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --isolated)
             ISOLATED="true"
+            shift
+            ;;
+        --skip-service)
+            SKIP_SERVICE="true"
             shift
             ;;
         --yes|-y)
@@ -359,12 +366,16 @@ uninstall_isolated() {
     echo ""
 
     # Stop and remove service
-    if [[ "$os" == "linux" ]]; then
-        stop_systemd_service
-        remove_systemd_service
+    if [[ "$SKIP_SERVICE" != "true" ]]; then
+        if [[ "$os" == "linux" ]]; then
+            stop_systemd_service
+            remove_systemd_service
+        else
+            stop_launchd_service
+            remove_launchd_service
+        fi
     else
-        stop_launchd_service
-        remove_launchd_service
+        info "Skipping service removal (--skip-service)"
     fi
 
     # Remove binary

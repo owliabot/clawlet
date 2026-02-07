@@ -864,7 +864,8 @@ per_tx_limit_usd: 1000000.0
 
         // Everything should be allowed
         assert_eq!(
-            e2.check_transfer(Some(999999.0), "ANYTHING", 99999).unwrap(),
+            e2.check_transfer(Some(999999.0), "ANYTHING", 99999)
+                .unwrap(),
             PolicyDecision::Allowed
         );
     }

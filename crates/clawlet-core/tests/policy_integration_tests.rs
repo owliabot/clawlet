@@ -179,7 +179,9 @@ fn test_concurrent_mixed_outcomes() {
     for amount in amounts {
         let engine_clone = Arc::clone(&engine);
         handles.push(thread::spawn(move || {
-            engine_clone.check_transfer(Some(amount), "USDC", 1).unwrap()
+            engine_clone
+                .check_transfer(Some(amount), "USDC", 1)
+                .unwrap()
         }));
     }
 
@@ -342,7 +344,11 @@ fn test_multi_chain_multi_token_scenario() {
     );
     assert_eq!(
         engine
-            .check_transfer(Some(100.0), "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 42161)
+            .check_transfer(
+                Some(100.0),
+                "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                42161
+            )
             .unwrap(),
         PolicyDecision::Allowed
     );

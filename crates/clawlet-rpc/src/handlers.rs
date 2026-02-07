@@ -235,15 +235,15 @@ pub async fn handle_transfer(
                 })
             } else {
                 // ERC-20: token field is a contract address
-                let token_addr: clawlet_evm::Address = req.token.parse().map_err(|e| {
-                    HandlerError::BadRequest(format!("invalid token address: {e}"))
+                let token_addr: clawlet_evm::Address = req
+                    .token
+                    .parse()
+                    .map_err(|e| HandlerError::BadRequest(format!("invalid token address: {e}")))?;
+                let token_info = adapter.get_erc20_info(token_addr).await.map_err(|e| {
+                    HandlerError::Internal(format!("failed to query token info: {e}"))
                 })?;
-                let token_info = adapter
-                    .get_erc20_info(token_addr)
-                    .await
-                    .map_err(|e| HandlerError::Internal(format!("failed to query token info: {e}")))?;
-                let amount =
-                    parse_units(&req.amount, token_info.decimals as u32).map_err(HandlerError::BadRequest)?;
+                let amount = parse_units(&req.amount, token_info.decimals as u32)
+                    .map_err(HandlerError::BadRequest)?;
                 build_erc20_transfer(token_addr, to, amount, req.chain_id)
             };
 
@@ -531,7 +531,10 @@ mod tests {
     #[test]
     fn parse_units_no_decimal() {
         let result = parse_units("100", 18).unwrap();
-        assert_eq!(result, U256::from(100u64) * U256::from(10u64).pow(U256::from(18u64)));
+        assert_eq!(
+            result,
+            U256::from(100u64) * U256::from(10u64).pow(U256::from(18u64))
+        );
     }
 
     #[test]

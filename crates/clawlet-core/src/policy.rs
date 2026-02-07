@@ -431,7 +431,9 @@ per_tx_limit_usd: 1000.0
         let engine = PolicyEngine::new(policy);
 
         // Should work with any token and chain
-        let decision = engine.check_transfer(Some(100.0), "RANDOM_TOKEN", 12345).unwrap();
+        let decision = engine
+            .check_transfer(Some(100.0), "RANDOM_TOKEN", 12345)
+            .unwrap();
         assert_eq!(decision, PolicyDecision::Allowed);
     }
 
@@ -737,7 +739,9 @@ daily_transfer_limit_usd: 1000.0
     fn test_infinity_amount() {
         let engine = PolicyEngine::new(test_policy());
         // Infinity should definitely exceed limits
-        let decision = engine.check_transfer(Some(f64::INFINITY), "USDC", 1).unwrap();
+        let decision = engine
+            .check_transfer(Some(f64::INFINITY), "USDC", 1)
+            .unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
     }
 }

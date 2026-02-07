@@ -4,6 +4,7 @@
 //! time-limited session tokens to AI agents. Agents never see the password.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use argon2::{
@@ -112,13 +113,29 @@ mod token_hash_serde {
     }
 }
 
-/// In-memory session store with optional persistence.
-#[derive(Debug, Default)]
+/// Session store with optional disk persistence.
+///
+/// When created with [`SessionStore::with_persistence`], sessions are
+/// automatically saved to a JSON file after every mutation (grant, revoke,
+/// etc.) so they survive daemon restarts.
+#[derive(Debug)]
 pub struct SessionStore {
     /// Active sessions keyed by agent ID.
     sessions: HashMap<String, Session>,
     /// Failed login attempts tracking for rate limiting.
     failed_attempts: HashMap<String, FailedAttempts>,
+    /// Path to the sessions JSON file for persistence (None = in-memory only).
+    persist_path: Option<PathBuf>,
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            failed_attempts: HashMap::new(),
+            persist_path: None,
+        }
+    }
 }
 
 /// Tracks failed authentication attempts for rate limiting.
@@ -155,9 +172,60 @@ pub enum AuthError {
 }
 
 impl SessionStore {
-    /// Create a new empty session store.
+    /// Create a new empty session store (in-memory only).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a session store that persists to disk.
+    ///
+    /// Loads existing (non-expired) sessions from `path` if the file exists.
+    /// After every mutation, sessions are atomically written back.
+    pub fn with_persistence(path: PathBuf) -> Self {
+        let sessions = Self::load_from_file(&path).unwrap_or_default();
+        Self {
+            sessions,
+            failed_attempts: HashMap::new(),
+            persist_path: Some(path),
+        }
+    }
+
+    /// Load sessions from a JSON file, filtering out expired entries.
+    fn load_from_file(path: &PathBuf) -> Option<HashMap<String, Session>> {
+        let data = std::fs::read_to_string(path).ok()?;
+        let sessions: HashMap<String, Session> = serde_json::from_str(&data).ok()?;
+        let now = Utc::now();
+        Some(
+            sessions
+                .into_iter()
+                .filter(|(_, s)| s.expires_at > now)
+                .collect(),
+        )
+    }
+
+    /// Atomically persist sessions to disk (write tmp + rename).
+    fn persist(&self) {
+        let Some(path) = &self.persist_path else {
+            return;
+        };
+        let tmp_path = path.with_extension("json.tmp");
+        match serde_json::to_string_pretty(&self.sessions) {
+            Ok(data) => {
+                if let Err(e) = std::fs::write(&tmp_path, &data) {
+                    eprintln!(
+                        "[clawlet] warn: failed to write sessions to {}: {e}",
+                        tmp_path.display()
+                    );
+                    return;
+                }
+                if let Err(e) = std::fs::rename(&tmp_path, path) {
+                    eprintln!("[clawlet] warn: failed to rename sessions file: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("[clawlet] warn: failed to serialize sessions: {e}");
+            }
+        }
     }
 
     /// Grant a new session to an agent.
@@ -196,6 +264,7 @@ impl SessionStore {
 
         // Replace any existing session for this agent
         self.sessions.insert(id.to_string(), session);
+        self.persist();
 
         token
     }
@@ -252,7 +321,11 @@ impl SessionStore {
     ///
     /// Returns true if a session was revoked, false if no session existed.
     pub fn revoke(&mut self, id: &str) -> bool {
-        self.sessions.remove(id).is_some()
+        let revoked = self.sessions.remove(id).is_some();
+        if revoked {
+            self.persist();
+        }
+        revoked
     }
 
     /// Revoke all sessions.
@@ -261,6 +334,9 @@ impl SessionStore {
     pub fn revoke_all(&mut self) -> usize {
         let count = self.sessions.len();
         self.sessions.clear();
+        if count > 0 {
+            self.persist();
+        }
         count
     }
 
@@ -272,7 +348,11 @@ impl SessionStore {
     /// Remove expired sessions.
     pub fn cleanup_expired(&mut self) {
         let now = Utc::now();
+        let before = self.sessions.len();
         self.sessions.retain(|_, session| session.expires_at > now);
+        if self.sessions.len() != before {
+            self.persist();
+        }
 
         // Also cleanup old failed attempt records (older than 1 hour)
         let one_hour_ago = Instant::now() - Duration::from_secs(3600);
@@ -587,5 +667,86 @@ mod tests {
         assert_eq!("admin".parse::<TokenScope>().unwrap(), TokenScope::Admin);
         assert_eq!("ADMIN".parse::<TokenScope>().unwrap(), TokenScope::Admin);
         assert!("invalid".parse::<TokenScope>().is_err());
+    }
+
+    #[test]
+    fn test_persistence_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+
+        // Grant sessions in a persistent store
+        let token1;
+        let token2;
+        {
+            let mut store = SessionStore::with_persistence(path.clone());
+            token1 =
+                store.grant("agent-1", TokenScope::Trade, Duration::from_secs(3600), 1000);
+            token2 =
+                store.grant("agent-2", TokenScope::Admin, Duration::from_secs(7200), 1001);
+            assert_eq!(store.list().len(), 2);
+        }
+
+        // File should exist
+        assert!(path.exists());
+
+        // Load into a new store — sessions should survive
+        {
+            let mut store = SessionStore::with_persistence(path.clone());
+            assert_eq!(store.list().len(), 2);
+
+            // Tokens should still verify
+            let s1 = store.verify(&token1).unwrap();
+            assert_eq!(s1.id, "agent-1");
+            assert_eq!(s1.scope, TokenScope::Trade);
+
+            let s2 = store.verify(&token2).unwrap();
+            assert_eq!(s2.id, "agent-2");
+            assert_eq!(s2.scope, TokenScope::Admin);
+        }
+    }
+
+    #[test]
+    fn test_persistence_revoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+
+        let token;
+        {
+            let mut store = SessionStore::with_persistence(path.clone());
+            token =
+                store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+            store.grant("agent-2", TokenScope::Trade, Duration::from_secs(3600), 1000);
+            store.revoke("agent-1");
+        }
+
+        // Reload — agent-1 should be gone, agent-2 should remain
+        {
+            let mut store = SessionStore::with_persistence(path.clone());
+            assert_eq!(store.list().len(), 1);
+            assert!(store.get("agent-2").is_some());
+            assert!(store.verify(&token).is_err());
+        }
+    }
+
+    #[test]
+    fn test_persistence_expired_sessions_filtered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+
+        {
+            let mut store = SessionStore::with_persistence(path.clone());
+            store.grant("expired", TokenScope::Read, Duration::from_secs(0), 1000);
+            store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Reload — expired session should be filtered out on load
+        {
+            let store = SessionStore::with_persistence(path.clone());
+            assert_eq!(store.list().len(), 1);
+            assert!(store.get("active").is_some());
+            assert!(store.get("expired").is_none());
+        }
     }
 }

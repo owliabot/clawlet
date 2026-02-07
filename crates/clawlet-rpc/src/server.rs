@@ -496,8 +496,13 @@ impl RpcServer {
             adapters.insert(*chain_id, adapter);
         }
 
-        // Initialize session store
-        let session_store = SessionStore::new();
+        // Initialize session store with disk persistence
+        let sessions_path = config
+            .keystore_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("sessions.json");
+        let session_store = SessionStore::with_persistence(sessions_path);
 
         let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
             .map(PathBuf::from)

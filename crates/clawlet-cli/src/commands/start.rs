@@ -202,8 +202,9 @@ pub async fn run(
     // Load config
     let config = Config::from_file(&config_path)?;
 
-    // Create session store and grant token
-    let mut session_store = SessionStore::new();
+    // Create session store with disk persistence
+    let sessions_path = data_dir.join("sessions.json");
+    let mut session_store = SessionStore::with_persistence(sessions_path);
 
     // Get current Unix UID
     #[cfg(unix)]

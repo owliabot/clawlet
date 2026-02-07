@@ -12,6 +12,7 @@
 #   --version VER      Install specific version (default: latest)
 #   --from-source      Build from source instead of downloading binary
 #   --isolated         Install in isolated mode with dedicated clawlet user
+#   --skip-service     Skip service installation (for Docker/testing)
 #   --help             Show this help message
 #
 
@@ -70,6 +71,7 @@ OPTIONS:
                        - Creates clawlet system user for key isolation
                        - Sets up systemd (Linux) or launchd (macOS) service
                        - Configures secure file permissions (700)
+    --skip-service     Skip systemd/launchd service installation (useful for Docker)
     --help             Show this help message
 
 EXAMPLES:
@@ -103,6 +105,7 @@ PREFIX="$DEFAULT_PREFIX"
 VERSION=""
 FROM_SOURCE=false
 ISOLATED=false
+SKIP_SERVICE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -126,6 +129,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --isolated)
             ISOLATED=true
+            shift
+            ;;
+        --skip-service)
+            SKIP_SERVICE=true
             shift
             ;;
         --help|-h)
@@ -773,10 +780,14 @@ main() {
         
         create_isolated_data_dir "$clawlet_home"
 
-        if [[ "$os" == "linux" ]]; then
-            install_systemd_service "$clawlet_home"
+        if [[ "$SKIP_SERVICE" != true ]]; then
+            if [[ "$os" == "linux" ]]; then
+                install_systemd_service "$clawlet_home"
+            else
+                install_launchd_plist "$clawlet_home"
+            fi
         else
-            install_launchd_plist "$clawlet_home"
+            info "Skipping service installation (--skip-service)"
         fi
 
         print_post_install_isolated "$installed_version" "$os" "$clawlet_home"

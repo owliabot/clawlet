@@ -159,6 +159,19 @@ pub fn run(
         std::fs::write(&config_path, default_config(&data_dir))?;
     }
 
+    // Store password in Keychain for auto-unlock (macOS only)
+    if let Err(e) = clawlet_signer::keychain::store_password(&password) {
+        eprintln!();
+        eprintln!("⚠️  Could not store password in Keychain: {e}");
+        eprintln!("   You'll need to enter the password manually when starting the service.");
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            eprintln!();
+            eprintln!("✅ Password stored in macOS Keychain");
+        }
+    }
+
     eprintln!();
     println!(
         "Initialized clawlet at {} — address: {address}",

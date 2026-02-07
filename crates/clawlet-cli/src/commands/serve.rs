@@ -31,9 +31,14 @@ pub async fn run(
     tracing::info!("loading config from {}", config_path.display());
     let config = Config::from_file(&config_path)?;
 
-    // Prompt for keystore password (used for future signing operations)
-    eprint!("Enter keystore password: ");
-    let password = rpassword::read_password()?;
+    // Try Keychain first, then prompt for password
+    let password = if let Some(pw) = clawlet_signer::keychain::retrieve_password() {
+        eprintln!("🔐 Using password from Keychain");
+        pw
+    } else {
+        eprint!("Enter keystore password: ");
+        rpassword::read_password()?
+    };
 
     // Verify that keystore directory exists and has at least one key
     let signing_key = if config.keystore_path.exists() {

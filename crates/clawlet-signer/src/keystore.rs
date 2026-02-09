@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use clawlet_core::types::Address;
+use alloy::primitives::Address;
 use k256::ecdsa::SigningKey;
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
@@ -119,7 +119,7 @@ pub fn public_key_to_address(key: &SigningKey) -> Address {
     let hash = Keccak256::digest(&pubkey_bytes.as_bytes()[1..]);
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&hash[12..]);
-    Address(addr)
+    Address::from(addr)
 }
 
 /// Tries to extract an Ethereum address from a keystore JSON file.
@@ -137,7 +137,7 @@ fn extract_address_from_keystore(path: &Path) -> Option<Address> {
     }
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&bytes);
-    Some(Address(addr))
+    Some(Address::from(addr))
 }
 
 #[cfg(test)]
@@ -152,7 +152,7 @@ mod tests {
 
         let (address, path) = Keystore::create(dir.path(), password).unwrap();
         assert!(path.exists());
-        assert_ne!(address.0, [0u8; 20]);
+        assert_ne!(address, Address::ZERO);
 
         // Unlock and verify the same address
         let key = Keystore::unlock(&path, password).unwrap();
@@ -203,6 +203,6 @@ mod tests {
         let addr1 = public_key_to_address(&key);
         let addr2 = public_key_to_address(&key);
         assert_eq!(addr1, addr2);
-        assert_ne!(addr1.0, [0u8; 20]);
+        assert_ne!(addr1, Address::ZERO);
     }
 }

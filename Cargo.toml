@@ -9,6 +9,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+alloy = { version = "1" }
+
 [workspace.package]
 version = "0.1.9"
 edition = "2021"

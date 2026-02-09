@@ -7,6 +7,7 @@ description = "Key management and signing for Clawlet"
 
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }
+alloy = { workspace = true }
 k256 = { version = "0.13", features = ["ecdsa"] }
 eth-keystore = { version = "0.5", features = ["geth-compat"] }
 bip32 = "0.5"

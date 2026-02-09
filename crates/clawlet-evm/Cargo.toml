@@ -8,7 +8,7 @@ description = "EVM chain adapter for Clawlet"
 [dependencies]
 clawlet-core = { path = "../clawlet-core" }
 clawlet-signer = { path = "../clawlet-signer" }
-alloy = { version = "1", features = [
+alloy = { workspace = true, features = [
     "sol-types",
     "dyn-abi",
     "json-abi",

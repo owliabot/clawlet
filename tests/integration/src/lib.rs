@@ -141,7 +141,7 @@ mod tests {
         let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
             .parse()
             .unwrap();
-        let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+        let owner = signer.address();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -241,7 +241,7 @@ mod tests {
             let (address, ks_path) =
                 Keystore::create_from_key(&keystore_dir, password, &anvil_key).unwrap();
             assert!(ks_path.exists());
-            assert_ne!(address.0, [0u8; 20]);
+            assert_ne!(address, Address::ZERO);
 
             // 2. Write config with Anvil RPC
             let config_yaml = format!(
@@ -276,7 +276,7 @@ allowed_chains: []
             // 5. Unlock keystore and create signer
             let signing_key = Keystore::unlock(&ks_path, password).unwrap();
             let signer = LocalSigner::new(signing_key);
-            let signer_addr = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let signer_addr = signer.address();
 
             // 6. Connect to Anvil and verify balance
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
@@ -337,7 +337,7 @@ allowed_chains: []
             let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
 
             // Get initial balances
-            let sender_addr = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let sender_addr = signer.address();
             let sender_before = adapter.get_eth_balance(sender_addr).await.unwrap();
             let recipient_before = adapter.get_eth_balance(recipient).await.unwrap();
 
@@ -388,7 +388,7 @@ allowed_chains: []
             let signer = LocalSigner::new(signing_key);
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
-            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let owner = signer.address();
             let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
 
             // Deploy a minimal ERC-20 contract (SimpleToken)
@@ -537,7 +537,7 @@ allowed_chains: []
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
             // Get sender's nonce before
-            let sender_addr = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let sender_addr = signer.address();
             let nonce_before = adapter
                 .provider()
                 .get_transaction_count(sender_addr)
@@ -713,7 +713,7 @@ allowed_chains: []
         for i in 0..5 {
             let key = hd::derive_key(&mnemonic, i).unwrap();
             let addr = clawlet_signer::keystore::public_key_to_address(&key);
-            addresses.insert(addr.0);
+            addresses.insert(addr);
         }
 
         assert_eq!(
@@ -949,7 +949,7 @@ per_tx_limit_usd: 1000000.0
         // Create keystore
         let (address, ks_path) = Keystore::create(&keystore_dir, "test-password").unwrap();
         assert!(ks_path.exists());
-        assert_ne!(address.0, [0u8; 20]);
+        assert_ne!(address, Address::ZERO);
 
         // Create policy
         let policy_yaml = r#"daily_transfer_limit_usd: 1000.0
@@ -1010,7 +1010,7 @@ audit_log_path: "{}"
         // Verify keystore can be unlocked and produces same address
         let unlocked = Keystore::unlock(&ks_path, "test").unwrap();
         let derived_addr = clawlet_signer::keystore::public_key_to_address(&unlocked);
-        assert_eq!(derived_addr.0, address.0);
+        assert_eq!(derived_addr, address);
     }
 
     /// Test 18: CLI help output contains expected commands
@@ -1114,7 +1114,7 @@ audit_log_path: "{}"
         let (address, ks_path) = Keystore::create(&keystore_dir, password).unwrap();
 
         assert!(ks_path.exists(), "keystore file should exist");
-        assert_ne!(address.0, [0u8; 20], "address should not be zero");
+        assert_ne!(address, Address::ZERO, "address should not be zero");
 
         // 2. Verify unlock round-trip
         let key = Keystore::unlock(&ks_path, password).unwrap();
@@ -1335,7 +1335,7 @@ allowed_chains: []
         rt.block_on(async {
             let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
             let signer = LocalSigner::from_bytes(&private_key).unwrap();
-            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let owner = signer.address();
 
             let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
                 .parse()
@@ -1366,7 +1366,7 @@ allowed_chains: []
         rt.block_on(async {
             let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
             let signer = LocalSigner::from_bytes(&private_key).unwrap();
-            let owner = clawlet_evm::adapter::core_address_to_alloy(&signer.address());
+            let owner = signer.address();
 
             let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
                 .parse()

@@ -125,6 +125,9 @@ pub fn run(
         let (address, _path) =
             Keystore::create_from_key(&keystore_dir, &password, &private_key_bytes)?;
 
+        #[cfg(unix)]
+        set_keystore_file_permissions(&keystore_dir)?;
+
         eprintln!();
         eprintln!("⚠️  Store your mnemonic in a safe place. It will NOT be saved.");
         address
@@ -143,6 +146,9 @@ pub fn run(
 
         let (address, _path) =
             Keystore::create_from_key(&keystore_dir, &password, &private_key_bytes)?;
+
+        #[cfg(unix)]
+        set_keystore_file_permissions(&keystore_dir)?;
 
         address
     };
@@ -171,5 +177,20 @@ pub fn run(
     eprintln!();
     eprintln!("   You'll be prompted for the keystore password to authorize the grant.");
 
+    Ok(())
+}
+
+/// Set keystore files to 0600.
+#[cfg(unix)]
+fn set_keystore_file_permissions(
+    keystore_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in std::fs::read_dir(keystore_dir)? {
+        let entry = entry?;
+        if entry.path().is_file() {
+            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
     Ok(())
 }

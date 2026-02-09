@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -75,9 +76,11 @@ pub async fn run(
     Ok(())
 }
 
-/// Verify that the keystore directory and all keystore files have permission 0600.
+/// Verify that the keystore directory and all keystore files have secure permissions.
 ///
 /// This prevents accidentally running with world-readable private keys.
+/// On non-Unix platforms the permission check is skipped with a warning.
+#[cfg(unix)]
 fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !keystore_path.exists() {
         return Err(format!(
@@ -122,6 +125,24 @@ fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::
 
     tracing::info!(
         "keystore permissions verified (dir=0700, files=0600): {}",
+        keystore_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !keystore_path.exists() {
+        return Err(format!(
+            "keystore directory does not exist: {} — run `clawlet init` first",
+            keystore_path.display(),
+        )
+        .into());
+    }
+
+    tracing::warn!(
+        "keystore permission check is not supported on this platform; \
+         please verify manually that {} is not world-readable",
         keystore_path.display()
     );
     Ok(())

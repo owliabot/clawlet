@@ -3,8 +3,10 @@
 //! Loads config, unlocks keystore, starts the HTTP JSON-RPC server,
 //! and handles graceful shutdown on Ctrl+C.
 
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use clawlet_core::config::Config;
 use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
@@ -34,6 +36,9 @@ pub async fn run(
     // Prompt for keystore password (used for future signing operations)
     eprint!("Enter keystore password: ");
     let password = rpassword::read_password()?;
+
+    // Verify keystore file permissions are 0600 (owner-only read/write)
+    verify_keystore_permissions(&config.keystore_path)?;
 
     // Verify that keystore directory exists and has at least one key
     let signing_key = if config.keystore_path.exists() {
@@ -67,5 +72,54 @@ pub async fn run(
     // Start the HTTP JSON-RPC server
     RpcServer::start_with_config(&config, LocalSigner::new(signing_key), Some(listen_addr)).await?;
 
+    Ok(())
+}
+
+/// Verify that the keystore directory and all keystore files have permission 0600.
+///
+/// This prevents accidentally running with world-readable private keys.
+fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !keystore_path.exists() {
+        // Directory doesn't exist yet — init hasn't been run; the later check will catch this.
+        return Ok(());
+    }
+
+    // Check directory permissions (should be 0700)
+    let dir_mode = fs::metadata(keystore_path)?.permissions().mode() & 0o777;
+    if dir_mode & 0o077 != 0 {
+        return Err(format!(
+            "keystore directory {} has insecure permissions {:04o} (expected 0700). \
+             Fix with: chmod 700 {}",
+            keystore_path.display(),
+            dir_mode,
+            keystore_path.display(),
+        )
+        .into());
+    }
+
+    // Check each keystore file (should be 0600)
+    for entry in fs::read_dir(keystore_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let mode = fs::metadata(&path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "keystore file {} has insecure permissions {:04o} (expected 0600). \
+                 Fix with: chmod 600 {}",
+                path.display(),
+                mode,
+                path.display(),
+            )
+            .into());
+        }
+    }
+
+    tracing::info!(
+        "keystore permissions verified (dir=0700, files=0600): {}",
+        keystore_path.display()
+    );
     Ok(())
 }

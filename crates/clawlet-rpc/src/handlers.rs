@@ -167,11 +167,6 @@ struct ValidatedTransfer {
     chain_id: u64,
 }
 
-/// Validate that a string is a valid hex address (0x + 40 hex chars).
-fn validate_hex_address(s: &str) -> bool {
-    s.len() == 42 && s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
-}
-
 /// Validate and parse all fields of a `TransferRequest` at the boundary.
 ///
 /// Returns a `ValidatedTransfer` with parsed addresses and raw amount,
@@ -185,27 +180,17 @@ async fn validate_transfer_request(
         return Err(HandlerError::InvalidChainId);
     }
 
-    // 2. Validate 'to' address format and parse
-    if !validate_hex_address(&req.to) {
-        return Err(HandlerError::InvalidAddress {
-            value: req.to.clone(),
-        });
-    }
+    // 2. Parse 'to' address directly
     let to: clawlet_evm::Address = req.to.parse().map_err(|_| HandlerError::InvalidAddress {
         value: req.to.clone(),
     })?;
 
-    // 3. Validate token: "ETH" or valid hex address
+    // 3. Validate token: "ETH" for native, or parse as address
     let is_native = req.token.eq_ignore_ascii_case("ETH");
     let token_address =
         if is_native {
             None
         } else {
-            if !validate_hex_address(&req.token) {
-                return Err(HandlerError::InvalidToken {
-                    value: req.token.clone(),
-                });
-            }
             Some(req.token.parse::<clawlet_evm::Address>().map_err(|_| {
                 HandlerError::InvalidToken {
                     value: req.token.clone(),
@@ -635,55 +620,50 @@ mod tests {
     use super::*;
     use clawlet_evm::U256;
 
-    // ---- validate_hex_address tests ----
+    // ---- Address parsing tests ----
 
     #[test]
     fn valid_hex_address() {
-        assert!(validate_hex_address(
-            "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
-        ));
+        assert!("0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+            .parse::<clawlet_evm::Address>()
+            .is_ok());
     }
 
     #[test]
     fn valid_hex_address_all_lowercase() {
-        assert!(validate_hex_address(
-            "0x0000000000000000000000000000000000000001"
-        ));
+        assert!("0x0000000000000000000000000000000000000001"
+            .parse::<clawlet_evm::Address>()
+            .is_ok());
     }
 
     #[test]
-    fn invalid_hex_address_no_prefix() {
-        assert!(!validate_hex_address(
-            "742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
-        ));
+    fn address_without_prefix_still_parses() {
+        // Alloy's Address accepts hex without 0x prefix
+        assert!("742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+            .parse::<clawlet_evm::Address>()
+            .is_ok());
     }
 
     #[test]
     fn invalid_hex_address_too_short() {
-        assert!(!validate_hex_address("0x742d35Cc6634C0532925a3b844Bc9e75"));
-    }
-
-    #[test]
-    fn invalid_hex_address_too_long() {
-        assert!(!validate_hex_address(
-            "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2aa"
-        ));
+        assert!("0x742d35Cc6634C0532925a3b844Bc9e75"
+            .parse::<clawlet_evm::Address>()
+            .is_err());
     }
 
     #[test]
     fn invalid_hex_address_non_hex_chars() {
-        assert!(!validate_hex_address(
-            "0xZZZd35Cc6634C0532925a3b844Bc9e7595f5b5e2"
-        ));
+        assert!("0xZZZd35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+            .parse::<clawlet_evm::Address>()
+            .is_err());
     }
 
     #[test]
     fn invalid_hex_address_empty() {
-        assert!(!validate_hex_address(""));
+        assert!("".parse::<clawlet_evm::Address>().is_err());
     }
 
     // ---- TransferRequest validation unit tests ----
-    // (These test the validation helpers without needing AppState)
 
     #[test]
     fn token_validation_eth_is_native() {
@@ -695,14 +675,14 @@ mod tests {
     #[test]
     fn token_validation_contract_address() {
         let token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-        assert!(validate_hex_address(token));
+        assert!(token.parse::<clawlet_evm::Address>().is_ok());
     }
 
     #[test]
     fn token_validation_invalid() {
-        assert!(!validate_hex_address("USDC")); // symbol, not address
-        assert!(!validate_hex_address("0xinvalid"));
-        assert!(!validate_hex_address(""));
+        assert!("USDC".parse::<clawlet_evm::Address>().is_err());
+        assert!("0xinvalid".parse::<clawlet_evm::Address>().is_err());
+        assert!("".parse::<clawlet_evm::Address>().is_err());
     }
 
     #[test]

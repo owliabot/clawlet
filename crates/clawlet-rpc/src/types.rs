@@ -1,8 +1,48 @@
-//! Shared IPC message types for JSON-RPC communication.
+//! Shared types for JSON-RPC communication.
 //!
-//! This module provides common types and constants used across the IPC layer.
+//! This module provides request/response types, typed wrappers, and RPC method definitions.
 
+use std::collections::HashMap;
+
+use std::fmt;
+use std::str::FromStr;
+
+use alloy::primitives::{Address, B256};
 use clawlet_core::auth::TokenScope;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
+
+/// A non-negative `Decimal` amount. Rejects negative values at deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DeserializeFromStr, SerializeDisplay)]
+pub struct Amount(Decimal);
+
+impl Amount {
+    /// Returns the inner `Decimal` value.
+    pub fn value(self) -> Decimal {
+        self.0
+    }
+}
+
+impl fmt::Display for Amount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for Amount {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let d: Decimal = s.parse().map_err(|e| format!("invalid amount: {e}"))?;
+        if d.is_sign_negative() {
+            return Err("amount must not be negative".to_string());
+        }
+        Ok(Amount(d))
+    }
+}
+
+// ---- RPC Method ----
 
 /// RPC method discriminant — maps to the endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +106,9 @@ impl RpcMethod {
     /// - `Auth*`: use password-based auth instead (handled in their handlers)
     pub fn required_scope(&self) -> Option<TokenScope> {
         match self {
-            RpcMethod::Health | RpcMethod::Address => None, // Public endpoints
+            RpcMethod::Health | RpcMethod::Address => None,
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
             RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
-            // Auth methods use password verification, not token auth
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
@@ -78,9 +117,187 @@ impl RpcMethod {
     }
 }
 
+// ---- Strongly-typed parameter wrappers ----
+
+/// Token specifier: native ETH or an ERC-20 contract address.
+#[derive(Debug, Clone, DeserializeFromStr, SerializeDisplay)]
+pub enum TokenSpec {
+    Native,
+    Erc20(Address),
+}
+
+impl TokenSpec {
+    /// Returns the string representation used for policy checks.
+    pub fn as_policy_str(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl fmt::Display for TokenSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenSpec::Native => f.write_str("ETH"),
+            TokenSpec::Erc20(addr) => write!(f, "{addr}"),
+        }
+    }
+}
+
+impl FromStr for TokenSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("ETH") {
+            return Ok(TokenSpec::Native);
+        }
+        let addr: Address = s
+            .parse()
+            .map_err(|e| format!("invalid token address: {e}"))?;
+        Ok(TokenSpec::Erc20(addr))
+    }
+}
+
+// ---- Request / Response types ----
+
+/// Query parameters for balance requests.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BalanceQuery {
+    /// The EVM address to query (hex, 0x-prefixed).
+    pub address: Address,
+    /// The chain ID to query against.
+    pub chain_id: u64,
+}
+
+/// A single token balance entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenBalance {
+    /// Token symbol (e.g. "USDC").
+    pub symbol: String,
+    /// Human-readable balance.
+    pub balance: Amount,
+    /// Token contract address.
+    pub address: Address,
+}
+
+/// Response for balance queries.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BalanceResponse {
+    /// Native ETH balance.
+    pub eth: Amount,
+    /// ERC-20 token balances (empty for now — no token registry yet).
+    pub tokens: Vec<TokenBalance>,
+}
+
+/// Request body for transfers.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TransferRequest {
+    /// Recipient address (hex, 0x-prefixed).
+    pub to: Address,
+    /// Amount as a non-negative decimal value (e.g. "1.5").
+    pub amount: Amount,
+    /// Token to transfer — "ETH" for native, or a contract address (hex, 0x-prefixed) for ERC-20.
+    pub token: TokenSpec,
+    /// Chain ID to execute on.
+    pub chain_id: u64,
+}
+
+/// Transfer outcome status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferStatus {
+    Success,
+    Denied,
+}
+
+/// Response for transfers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransferResponse {
+    /// Outcome of the transfer.
+    pub status: TransferStatus,
+    /// Transaction hash (present on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<B256>,
+    /// Audit event ID (present on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<String>,
+    /// Denial reason (present on denial).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// A single AIS skill summary.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkillSummary {
+    /// Skill name.
+    pub name: String,
+    /// Protocol name.
+    pub protocol: String,
+    /// Optional description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Chain ID.
+    pub chain_id: u64,
+}
+
+/// Response for skills listing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkillsResponse {
+    pub skills: Vec<SkillSummary>,
+}
+
+/// Request body for skill execution.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExecuteRequest {
+    /// Skill name (matches the AIS spec name or filename).
+    pub skill: String,
+    /// Parameter values for execution.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+}
+
+/// Execute outcome status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecuteStatus {
+    Success,
+    Error,
+}
+
+/// Response for skill execution.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecuteResponse {
+    /// Outcome of the execution.
+    pub status: ExecuteStatus,
+    /// Transaction hashes for executed actions.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tx_hashes: Vec<B256>,
+    /// Error message if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response for address query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddressResponse {
+    /// The wallet address managed by this clawlet instance (hex, 0x-prefixed).
+    pub address: Address,
+}
+
+/// Errors returned by handlers.
+#[derive(Debug, thiserror::Error)]
+pub enum HandlerError {
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- RpcMethod tests ----
 
     #[test]
     fn test_method_from_str() {
@@ -165,5 +382,134 @@ mod tests {
             let parsed = RpcMethod::parse_method(s);
             assert_eq!(parsed, Some(method), "roundtrip failed for {:?}", method);
         }
+    }
+
+    // ---- Address tests ----
+
+    #[test]
+    fn address_valid() {
+        let addr: Address =
+            serde_json::from_str(r#""0x742D35CC6634c0532925A3b844bc9E7595f5B5e2""#).unwrap();
+        assert_eq!(
+            format!("{addr}"),
+            "0x742D35CC6634c0532925A3b844bc9E7595f5B5e2"
+        );
+    }
+
+    #[test]
+    fn address_invalid() {
+        let res = serde_json::from_str::<Address>(r#""not_an_address""#);
+        assert!(res.is_err());
+    }
+
+    // ---- Amount tests ----
+
+    #[test]
+    fn amount_valid_integer() {
+        let a: Amount = serde_json::from_str(r#""100""#).unwrap();
+        assert_eq!(a.to_string(), "100");
+    }
+
+    #[test]
+    fn amount_valid_decimal() {
+        let a: Amount = serde_json::from_str(r#""1.5""#).unwrap();
+        assert_eq!(a.to_string(), "1.5");
+    }
+
+    #[test]
+    fn amount_zero() {
+        let a: Amount = serde_json::from_str(r#""0""#).unwrap();
+        assert_eq!(a.to_string(), "0");
+    }
+
+    #[test]
+    fn amount_negative_rejected() {
+        let res = serde_json::from_str::<Amount>(r#""-1.5""#);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn amount_invalid_letters() {
+        assert!(serde_json::from_str::<Amount>(r#""12abc""#).is_err());
+    }
+
+    #[test]
+    fn amount_empty() {
+        assert!(serde_json::from_str::<Amount>(r#""""#).is_err());
+    }
+
+    // ---- TokenSpec tests ----
+
+    #[test]
+    fn token_spec_native_eth() {
+        let spec: TokenSpec = serde_json::from_str(r#""ETH""#).unwrap();
+        assert!(matches!(spec, TokenSpec::Native));
+    }
+
+    #[test]
+    fn token_spec_native_lowercase() {
+        let spec: TokenSpec = serde_json::from_str(r#""eth""#).unwrap();
+        assert!(matches!(spec, TokenSpec::Native));
+    }
+
+    #[test]
+    fn token_spec_erc20() {
+        let spec: TokenSpec =
+            serde_json::from_str(r#""0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48""#).unwrap();
+        assert!(matches!(spec, TokenSpec::Erc20(_)));
+    }
+
+    #[test]
+    fn token_spec_invalid() {
+        let res = serde_json::from_str::<TokenSpec>(r#""USDC""#);
+        assert!(res.is_err());
+    }
+
+    // ---- BalanceQuery / TransferRequest deserialization ----
+
+    #[test]
+    fn balance_query_valid() {
+        let q: BalanceQuery = serde_json::from_str(
+            r#"{"address":"0x742D35CC6634c0532925A3b844bc9E7595f5B5e2","chain_id":8453}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            format!("{}", q.address),
+            "0x742D35CC6634c0532925A3b844bc9E7595f5B5e2"
+        );
+        assert_eq!(q.chain_id, 8453);
+    }
+
+    #[test]
+    fn balance_query_bad_address() {
+        let res =
+            serde_json::from_str::<BalanceQuery>(r#"{"address":"not_an_address","chain_id":1}"#);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn transfer_request_valid_native() {
+        let req: TransferRequest = serde_json::from_str(
+            r#"{"to":"0x742D35CC6634c0532925A3b844bc9E7595f5B5e2","amount":"1.5","token":"ETH","chain_id":8453}"#,
+        )
+        .unwrap();
+        assert!(matches!(req.token, TokenSpec::Native));
+        assert_eq!(req.amount.to_string(), "1.5");
+    }
+
+    #[test]
+    fn transfer_request_invalid_amount() {
+        let res = serde_json::from_str::<TransferRequest>(
+            r#"{"to":"0x742D35CC6634c0532925A3b844bc9E7595f5B5e2","amount":"not_a_number","token":"ETH","chain_id":1}"#,
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn transfer_request_negative_amount_rejected() {
+        let res = serde_json::from_str::<TransferRequest>(
+            r#"{"to":"0x742D35CC6634c0532925A3b844bc9E7595f5B5e2","amount":"-5","token":"ETH","chain_id":1}"#,
+        );
+        assert!(res.is_err());
     }
 }

@@ -14,8 +14,8 @@ use jsonrpsee::rpc_params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::handlers::{BalanceResponse, ExecuteResponse, SkillsResponse, TransferResponse};
 use crate::server::DEFAULT_ADDR;
+use crate::types::{BalanceResponse, ExecuteResponse, SkillsResponse, TransferResponse};
 
 /// Error type for RPC client operations.
 #[derive(Debug, thiserror::Error)]

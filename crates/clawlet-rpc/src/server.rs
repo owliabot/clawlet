@@ -49,6 +49,7 @@ use crate::dispatch::{
     AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
+use crate::types::{ChainId, EvmAddress, TokenAmount};
 
 // ---- Server Error Type ----
 
@@ -185,23 +186,23 @@ impl Default for ServerConfig {
 /// Balance query parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BalanceRequest {
-    /// The EVM address to query.
-    pub address: String,
-    /// The chain ID to query against.
-    pub chain_id: u64,
+    /// The EVM address to query (validated on deserialization).
+    pub address: EvmAddress,
+    /// The chain ID to query against (accepts number or string).
+    pub chain_id: ChainId,
 }
 
 /// Transfer request parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransferRequestWithAuth {
-    /// Recipient address.
-    pub to: String,
-    /// Amount as a decimal string.
-    pub amount: String,
-    /// Token to transfer.
+    /// Recipient address (validated on deserialization).
+    pub to: EvmAddress,
+    /// Amount as a validated decimal string.
+    pub amount: TokenAmount,
+    /// Token to transfer — "ETH" for native or a contract address.
     pub token_type: String,
-    /// Chain ID.
-    pub chain_id: u64,
+    /// Chain ID (accepts number or string).
+    pub chain_id: ChainId,
 }
 
 /// Skills request parameters (empty - auth from header).
@@ -309,7 +310,7 @@ impl ClawletApiServer for RpcServerImpl {
 
         let query = BalanceQuery {
             address: params.address,
-            chain_id: params.chain_id,
+            chain_id: params.chain_id.as_u64(),
         };
 
         match handlers::handle_balance(&self.state, query).await {
@@ -328,7 +329,7 @@ impl ClawletApiServer for RpcServerImpl {
             to: params.to,
             amount: params.amount,
             token: params.token_type,
-            chain_id: params.chain_id,
+            chain_id: params.chain_id.as_u64(),
         };
 
         match handlers::handle_transfer(&self.state, req).await {

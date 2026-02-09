@@ -18,14 +18,15 @@ use clawlet_evm::U256;
 use clawlet_signer::Signer;
 
 use crate::server::AppState;
+use crate::types::{EvmAddress, TokenAmount};
 
 // ---- Request / Response types ----
 
 /// Query parameters for balance requests.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BalanceQuery {
-    /// The EVM address to query (hex, 0x-prefixed).
-    pub address: String,
+    /// The EVM address to query (validated).
+    pub address: EvmAddress,
     /// The chain ID to query against.
     pub chain_id: u64,
 }
@@ -53,10 +54,10 @@ pub struct BalanceResponse {
 /// Request body for transfers.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransferRequest {
-    /// Recipient address (hex, 0x-prefixed).
-    pub to: String,
-    /// Amount as a decimal string (e.g. "1.0").
-    pub amount: String,
+    /// Recipient address (validated).
+    pub to: EvmAddress,
+    /// Amount as a validated decimal string.
+    pub amount: TokenAmount,
     /// Token to transfer — "ETH" for native, or a contract address (hex, 0x-prefixed) for ERC-20.
     pub token: String,
     /// Chain ID to execute on.
@@ -164,10 +165,7 @@ pub async fn handle_balance(
         HandlerError::BadRequest(format!("unsupported chain_id: {}", params.chain_id))
     })?;
 
-    let address: clawlet_evm::Address = params
-        .address
-        .parse()
-        .map_err(|e| HandlerError::BadRequest(format!("invalid address: {e}")))?;
+    let address = params.address.inner();
 
     let wei = adapter
         .get_eth_balance(address)
@@ -181,7 +179,7 @@ pub async fn handle_balance(
         let event = AuditEvent::new(
             "balance_query",
             json!({
-                "address": params.address,
+                "address": params.address.to_string(),
                 "chain_id": params.chain_id,
             }),
             "ok",
@@ -218,15 +216,13 @@ pub async fn handle_transfer(
                 HandlerError::BadRequest(format!("unsupported chain_id: {}", req.chain_id))
             })?;
 
-            let to: clawlet_evm::Address = req
-                .to
-                .parse()
-                .map_err(|e| HandlerError::BadRequest(format!("invalid 'to' address: {e}")))?;
+            let to = req.to.inner();
 
             let is_native = req.token.eq_ignore_ascii_case("ETH");
 
             let tx_req = if is_native {
-                let value = parse_units(&req.amount, 18).map_err(HandlerError::BadRequest)?;
+                let value =
+                    parse_units(req.amount.as_str(), 18).map_err(HandlerError::BadRequest)?;
                 build_eth_transfer(&EvmTransferRequest {
                     to,
                     value,
@@ -242,7 +238,7 @@ pub async fn handle_transfer(
                 let token_info = adapter.get_erc20_info(token_addr).await.map_err(|e| {
                     HandlerError::Internal(format!("failed to query token info: {e}"))
                 })?;
-                let amount = parse_units(&req.amount, token_info.decimals as u32)
+                let amount = parse_units(req.amount.as_str(), token_info.decimals as u32)
                     .map_err(HandlerError::BadRequest)?;
                 build_erc20_transfer(token_addr, to, amount, req.chain_id)
             };

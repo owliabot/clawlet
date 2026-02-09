@@ -108,7 +108,6 @@ curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/unins
 |----------|--------------|--------|
 | Linux    | x86_64       | ✅ Supported |
 | Linux    | aarch64      | ✅ Supported |
-| macOS    | x86_64       | ✅ Supported |
 | macOS    | aarch64 (Apple Silicon) | ✅ Supported |
 
 ## Quick Start

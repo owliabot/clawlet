@@ -687,6 +687,12 @@ fn handler_error_to_rpc(err: HandlerError) -> ErrorObjectOwned {
         HandlerError::Internal(msg) => {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, msg, None::<()>)
         }
+        HandlerError::InvalidAddress { .. }
+        | HandlerError::InvalidAmount { .. }
+        | HandlerError::InvalidToken { .. }
+        | HandlerError::InvalidChainId => {
+            ErrorObjectOwned::owned(error_code::INVALID_PARAMS, err.to_string(), None::<()>)
+        }
     }
 }
 

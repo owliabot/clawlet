@@ -165,32 +165,9 @@ impl EvmAdapter {
     }
 }
 
-/// Convert a `clawlet_core::types::Address` to an alloy `Address`.
-pub fn core_address_to_alloy(addr: &clawlet_core::types::Address) -> Address {
-    Address::from(addr.0)
-}
-
-/// Convert an alloy `Address` to a `clawlet_core::types::Address`.
-pub fn alloy_address_to_core(addr: &Address) -> clawlet_core::types::Address {
-    clawlet_core::types::Address(addr.0 .0)
-}
-
-/// Convert an alloy `B256` to a `clawlet_core::types::TxHash`.
-pub fn alloy_b256_to_tx_hash(hash: &alloy::primitives::B256) -> clawlet_core::types::TxHash {
-    clawlet_core::types::TxHash(hash.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn core_address_roundtrip() {
-        let core_addr = clawlet_core::types::Address([0xab; 20]);
-        let alloy_addr = core_address_to_alloy(&core_addr);
-        let back = alloy_address_to_core(&alloy_addr);
-        assert_eq!(core_addr, back);
-    }
 
     #[test]
     fn adapter_debug_display() {

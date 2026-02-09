@@ -3,7 +3,7 @@
 //! Provides the `Signer` trait and `LocalSigner` for signing hashes and
 //! EIP-191 personal messages using a secp256k1 private key.
 
-use clawlet_core::types::Address;
+use alloy::primitives::Address;
 use k256::ecdsa::{self, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
@@ -93,7 +93,7 @@ impl LocalSigner {
 
 impl Signer for LocalSigner {
     fn address(&self) -> Address {
-        self.address.clone()
+        self.address
     }
 
     fn sign_hash(&self, hash: &[u8; 32]) -> Result<Signature> {
@@ -132,7 +132,7 @@ pub fn recover_address(hash: &[u8; 32], sig: &Signature) -> std::result::Result<
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&pubkey_hash[12..]);
 
-    Ok(Address(addr))
+    Ok(Address::from(addr))
 }
 
 #[cfg(test)]
@@ -152,7 +152,7 @@ mod tests {
         let addr1 = signer.address();
         let addr2 = signer.address();
         assert_eq!(addr1, addr2);
-        assert_ne!(addr1.0, [0u8; 20]);
+        assert_ne!(addr1, Address::ZERO);
     }
 
     #[test]

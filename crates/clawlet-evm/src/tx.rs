@@ -87,8 +87,7 @@ pub async fn send_transaction(
     use alloy::providers::Provider;
 
     // Get the sender address from the signer
-    let sender_core_addr = signer.address();
-    let sender = crate::adapter::core_address_to_alloy(&sender_core_addr);
+    let sender = signer.address();
 
     let tx = tx.from(sender);
 

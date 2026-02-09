@@ -15,7 +15,7 @@ use thiserror::Error;
 use clawlet_core::ais::{AisAction, AisActionType, AisApproval, AisArg, AisSpec};
 use clawlet_signer::signer::Signer;
 
-use crate::adapter::{core_address_to_alloy, EvmAdapter};
+use crate::adapter::EvmAdapter;
 use crate::token;
 use crate::tx;
 
@@ -242,7 +242,7 @@ async fn smart_approve(
     let amount: U256 = U256::from_str(&amount_str)
         .map_err(|e| AisExecError::InvalidAction(format!("invalid approval amount: {e}")))?;
 
-    let owner = core_address_to_alloy(&signer.address());
+    let owner = signer.address();
     let allowance = token::check_allowance(adapter, owner, spender, token_addr).await?;
 
     if allowance < amount {

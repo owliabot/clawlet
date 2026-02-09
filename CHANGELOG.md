@@ -5,11 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-02-09
+## [0.1.10] - 2026-02-09
 
 ### Changed
-- **Breaking**: Remove custom `Address`/`TxHash` types, use alloy primitives directly (#31)
-- Refactor RPC to use strongly-typed serde deserialization for RPC params (#33)
+- Refactor(core): remove custom `Address`/`TxHash` types, use alloy primitives directly (#31)
+- Refactor(rpc): use strongly-typed serde deserialization for RPC params (#33)
 
 ### Added
 - CLI: verify keystore file permissions (0600) before starting serve (#34)

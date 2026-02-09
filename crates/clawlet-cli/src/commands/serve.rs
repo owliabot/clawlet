@@ -87,20 +87,7 @@ fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::
         .into());
     }
 
-    // Check directory permissions (should be 0700)
-    let dir_mode = fs::metadata(keystore_path)?.permissions().mode() & 0o777;
-    if dir_mode & 0o077 != 0 {
-        return Err(format!(
-            "keystore directory {} has insecure permissions {:04o} (expected 0700). \
-             Fix with: chmod 700 {}",
-            keystore_path.display(),
-            dir_mode,
-            keystore_path.display(),
-        )
-        .into());
-    }
-
-    // Check each keystore file (should be 0600)
+    // Check each keystore file (must be 0600)
     for entry in fs::read_dir(keystore_path)? {
         let entry = entry?;
         let path = entry.path();
@@ -120,9 +107,6 @@ fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::
         }
     }
 
-    tracing::info!(
-        "keystore permissions verified (dir=0700, files=0600): {}",
-        keystore_path.display()
-    );
+    tracing::info!("keystore permissions verified: {}", keystore_path.display());
     Ok(())
 }

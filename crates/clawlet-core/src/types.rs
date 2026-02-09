@@ -22,37 +22,6 @@ impl From<[u8; 20]> for Address {
     }
 }
 
-/// Wrapper around a chain ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChainId(pub u64);
-
-impl fmt::Display for ChainId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<u64> for ChainId {
-    fn from(id: u64) -> Self {
-        Self(id)
-    }
-}
-
-/// Represents a token amount with decimals.
-#[derive(Debug, Clone)]
-pub struct TokenAmount {
-    /// Raw amount as a string to avoid precision loss.
-    pub raw: String,
-    /// Number of decimals for this token.
-    pub decimals: u8,
-}
-
-impl fmt::Display for TokenAmount {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({}d)", self.raw, self.decimals)
-    }
-}
-
 /// A 32-byte transaction hash.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TxHash(pub [u8; 32]);
@@ -92,24 +61,9 @@ mod tests {
     }
 
     #[test]
-    fn chain_id_display() {
-        let chain = ChainId(8453);
-        assert_eq!(chain.to_string(), "8453");
-    }
-
-    #[test]
     fn tx_hash_display() {
         let hash = TxHash([0xff; 32]);
         assert!(hash.to_string().starts_with("0x"));
         assert_eq!(hash.to_string().len(), 66);
-    }
-
-    #[test]
-    fn token_amount_display() {
-        let amt = TokenAmount {
-            raw: "1000000".to_string(),
-            decimals: 6,
-        };
-        assert_eq!(amt.to_string(), "1000000 (6d)");
     }
 }

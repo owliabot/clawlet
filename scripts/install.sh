@@ -728,8 +728,6 @@ main() {
         ensure_root
     fi
 
-    fi
-
     ensure_curl
 
     local tmp_dir=""

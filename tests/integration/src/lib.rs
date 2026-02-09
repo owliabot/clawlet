@@ -509,6 +509,7 @@ allowed_chains: []
                 allowed_tokens: vec!["USDC".to_string()],
                 allowed_chains: vec![1],
                 require_approval_above_usd: None,
+                per_tx_limit_raw: None,
             };
             let engine = PolicyEngine::new(policy);
 
@@ -569,6 +570,7 @@ allowed_chains: []
             allowed_tokens: vec![],
             allowed_chains: vec![],
             require_approval_above_usd: Some(100.0),
+            per_tx_limit_raw: None,
         };
         let engine = PolicyEngine::new(policy);
 
@@ -769,6 +771,7 @@ allowed_chains: []
             allowed_tokens: vec![],
             allowed_chains: vec![],
             require_approval_above_usd: None,
+            per_tx_limit_raw: None,
         };
         let engine = PolicyEngine::new(policy);
 
@@ -1195,6 +1198,7 @@ allowed_chains: []
                 allowed_tokens: vec!["ETH".to_string()],
                 allowed_chains: vec![31337],
                 require_approval_above_usd: None,
+                per_tx_limit_raw: None,
             };
             let engine = PolicyEngine::new(policy);
 
@@ -1241,6 +1245,7 @@ allowed_chains: []
             allowed_tokens: vec![],
             allowed_chains: vec![],
             require_approval_above_usd: None,
+            per_tx_limit_raw: None,
         };
         let engine = PolicyEngine::new(policy);
         let decision = engine.check_transfer(Some(200.0), "ETH", 1).unwrap();
@@ -1256,6 +1261,7 @@ allowed_chains: []
             allowed_tokens: vec![],
             allowed_chains: vec![],
             require_approval_above_usd: None,
+            per_tx_limit_raw: None,
         });
         assert_eq!(
             engine2.check_transfer(Some(90.0), "ETH", 1).unwrap(),

@@ -138,6 +138,135 @@ pub enum HandlerError {
     NotFound(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("invalid address '{value}': must be 0x-prefixed followed by 40 hex characters")]
+    InvalidAddress { value: String },
+    #[error("invalid amount '{value}': {reason}")]
+    InvalidAmount { value: String, reason: String },
+    #[error("invalid token '{value}': must be \"ETH\" or a valid hex contract address")]
+    InvalidToken { value: String },
+    #[error("invalid chain_id: must be greater than 0")]
+    InvalidChainId,
+}
+
+/// Validated transfer parameters with parsed types ready for use.
+#[derive(Debug)]
+struct ValidatedTransfer {
+    /// Parsed recipient address.
+    to: clawlet_evm::Address,
+    /// Raw amount in smallest unit (wei for ETH).
+    raw_amount: U256,
+    /// Number of decimals used for the amount conversion.
+    decimals: u8,
+    /// Whether this is a native ETH transfer.
+    is_native: bool,
+    /// Token contract address (only set for ERC-20).
+    token_address: Option<clawlet_evm::Address>,
+    /// Original token string for policy/audit.
+    token: String,
+    /// Chain ID.
+    chain_id: u64,
+}
+
+/// Validate that a string is a valid hex address (0x + 40 hex chars).
+fn validate_hex_address(s: &str) -> bool {
+    s.len() == 42 && s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Validate and parse all fields of a `TransferRequest` at the boundary.
+///
+/// Returns a `ValidatedTransfer` with parsed addresses and raw amount,
+/// or a `HandlerError` describing what's wrong.
+async fn validate_transfer_request(
+    state: &AppState,
+    req: &TransferRequest,
+) -> Result<ValidatedTransfer, HandlerError> {
+    // 1. Validate chain_id > 0
+    if req.chain_id == 0 {
+        return Err(HandlerError::InvalidChainId);
+    }
+
+    // 2. Validate 'to' address format and parse
+    if !validate_hex_address(&req.to) {
+        return Err(HandlerError::InvalidAddress {
+            value: req.to.clone(),
+        });
+    }
+    let to: clawlet_evm::Address = req.to.parse().map_err(|_| HandlerError::InvalidAddress {
+        value: req.to.clone(),
+    })?;
+
+    // 3. Validate token: "ETH" or valid hex address
+    let is_native = req.token.eq_ignore_ascii_case("ETH");
+    let token_address =
+        if is_native {
+            None
+        } else {
+            if !validate_hex_address(&req.token) {
+                return Err(HandlerError::InvalidToken {
+                    value: req.token.clone(),
+                });
+            }
+            Some(req.token.parse::<clawlet_evm::Address>().map_err(|_| {
+                HandlerError::InvalidToken {
+                    value: req.token.clone(),
+                }
+            })?)
+        };
+
+    // 4. Validate amount is non-empty and a valid positive decimal
+    let amount_trimmed = req.amount.trim();
+    if amount_trimmed.is_empty() {
+        return Err(HandlerError::InvalidAmount {
+            value: req.amount.clone(),
+            reason: "amount cannot be empty".to_string(),
+        });
+    }
+    // Reject negative amounts
+    if amount_trimmed.starts_with('-') {
+        return Err(HandlerError::InvalidAmount {
+            value: req.amount.clone(),
+            reason: "amount must be positive".to_string(),
+        });
+    }
+
+    // 5. Determine decimals and parse to raw amount
+    let decimals: u8 = if is_native {
+        18
+    } else {
+        let adapter = state.adapters.get(&req.chain_id).ok_or_else(|| {
+            HandlerError::BadRequest(format!("unsupported chain_id: {}", req.chain_id))
+        })?;
+        let token_info = adapter
+            .get_erc20_info(token_address.unwrap())
+            .await
+            .map_err(|e| HandlerError::Internal(format!("failed to query token info: {e}")))?;
+        token_info.decimals
+    };
+
+    let raw_amount = parse_units(&req.amount, decimals as u32).map_err(|reason| {
+        HandlerError::InvalidAmount {
+            value: req.amount.clone(),
+            reason,
+        }
+    })?;
+
+    // 6. Reject zero amount
+    if raw_amount.is_zero() {
+        return Err(HandlerError::InvalidAmount {
+            value: req.amount.clone(),
+            reason: "amount must be greater than zero".to_string(),
+        });
+    }
+
+    Ok(ValidatedTransfer {
+        to,
+        raw_amount,
+        decimals,
+        is_native,
+        token_address,
+        token: req.token.clone(),
+        chain_id: req.chain_id,
+    })
 }
 
 // ---- Handlers ----
@@ -200,51 +329,47 @@ pub async fn handle_balance(
 /// Execute a transfer within policy limits.
 ///
 /// The `amount` field is in token units (e.g., "1.5" means 1.5 ETH or 1.5 USDC).
-/// USD-based policy checks are skipped until a price oracle is integrated.
+/// All fields are validated and the amount is converted to raw units (wei) upfront,
+/// before any policy checks or transaction building.
 pub async fn handle_transfer(
     state: &AppState,
     req: TransferRequest,
 ) -> Result<TransferResponse, HandlerError> {
-    // Policy check — USD amount is None (no price oracle yet), so only
-    // allowed_tokens and allowed_chains are enforced.
+    // Step 1: Validate and parse all request fields at the boundary.
+    let validated = validate_transfer_request(state, &req).await?;
+
+    // Step 2: Policy check using raw amount (no USD oracle needed).
+    let raw_amount_str = validated.raw_amount.to_string();
     let decision = state
         .policy
-        .check_transfer(None, &req.token, req.chain_id)
+        .check_transfer_raw(
+            &raw_amount_str,
+            validated.decimals,
+            &validated.token,
+            validated.chain_id,
+        )
         .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {
         PolicyDecision::Allowed => {
-            let adapter = state.adapters.get(&req.chain_id).ok_or_else(|| {
-                HandlerError::BadRequest(format!("unsupported chain_id: {}", req.chain_id))
+            let adapter = state.adapters.get(&validated.chain_id).ok_or_else(|| {
+                HandlerError::BadRequest(format!("unsupported chain_id: {}", validated.chain_id))
             })?;
 
-            let to: clawlet_evm::Address = req
-                .to
-                .parse()
-                .map_err(|e| HandlerError::BadRequest(format!("invalid 'to' address: {e}")))?;
-
-            let is_native = req.token.eq_ignore_ascii_case("ETH");
-
-            let tx_req = if is_native {
-                let value = parse_units(&req.amount, 18).map_err(HandlerError::BadRequest)?;
+            let tx_req = if validated.is_native {
                 build_eth_transfer(&EvmTransferRequest {
-                    to,
-                    value,
-                    chain_id: req.chain_id,
+                    to: validated.to,
+                    value: validated.raw_amount,
+                    chain_id: validated.chain_id,
                     gas_limit: None,
                 })
             } else {
-                // ERC-20: token field is a contract address
-                let token_addr: clawlet_evm::Address = req
-                    .token
-                    .parse()
-                    .map_err(|e| HandlerError::BadRequest(format!("invalid token address: {e}")))?;
-                let token_info = adapter.get_erc20_info(token_addr).await.map_err(|e| {
-                    HandlerError::Internal(format!("failed to query token info: {e}"))
-                })?;
-                let amount = parse_units(&req.amount, token_info.decimals as u32)
-                    .map_err(HandlerError::BadRequest)?;
-                build_erc20_transfer(token_addr, to, amount, req.chain_id)
+                build_erc20_transfer(
+                    validated.token_address.unwrap(),
+                    validated.to,
+                    validated.raw_amount,
+                    validated.chain_id,
+                )
             };
 
             let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx_req)
@@ -268,6 +393,8 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
+                        "raw_amount": raw_amount_str,
+                        "decimals": validated.decimals,
                         "token": req.token,
                         "chain_id": req.chain_id,
                         "tx_hash": tx_hash_hex,
@@ -294,6 +421,7 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
+                        "raw_amount": raw_amount_str,
                         "token": req.token,
                         "chain_id": req.chain_id,
                     }),
@@ -318,6 +446,7 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
+                        "raw_amount": raw_amount_str,
                         "token": req.token,
                         "chain_id": req.chain_id,
                     }),
@@ -501,6 +630,136 @@ fn format_units(value: clawlet_evm::U256, decimals: u32) -> String {
 mod tests {
     use super::*;
     use clawlet_evm::U256;
+
+    // ---- validate_hex_address tests ----
+
+    #[test]
+    fn valid_hex_address() {
+        assert!(validate_hex_address(
+            "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+        ));
+    }
+
+    #[test]
+    fn valid_hex_address_all_lowercase() {
+        assert!(validate_hex_address(
+            "0x0000000000000000000000000000000000000001"
+        ));
+    }
+
+    #[test]
+    fn invalid_hex_address_no_prefix() {
+        assert!(!validate_hex_address(
+            "742d35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+        ));
+    }
+
+    #[test]
+    fn invalid_hex_address_too_short() {
+        assert!(!validate_hex_address("0x742d35Cc6634C0532925a3b844Bc9e75"));
+    }
+
+    #[test]
+    fn invalid_hex_address_too_long() {
+        assert!(!validate_hex_address(
+            "0x742d35Cc6634C0532925a3b844Bc9e7595f5b5e2aa"
+        ));
+    }
+
+    #[test]
+    fn invalid_hex_address_non_hex_chars() {
+        assert!(!validate_hex_address(
+            "0xZZZd35Cc6634C0532925a3b844Bc9e7595f5b5e2"
+        ));
+    }
+
+    #[test]
+    fn invalid_hex_address_empty() {
+        assert!(!validate_hex_address(""));
+    }
+
+    // ---- TransferRequest validation unit tests ----
+    // (These test the validation helpers without needing AppState)
+
+    #[test]
+    fn token_validation_eth_is_native() {
+        assert!("ETH".eq_ignore_ascii_case("ETH"));
+        assert!("eth".eq_ignore_ascii_case("ETH"));
+        assert!("Eth".eq_ignore_ascii_case("ETH"));
+    }
+
+    #[test]
+    fn token_validation_contract_address() {
+        let token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+        assert!(validate_hex_address(token));
+    }
+
+    #[test]
+    fn token_validation_invalid() {
+        assert!(!validate_hex_address("USDC")); // symbol, not address
+        assert!(!validate_hex_address("0xinvalid"));
+        assert!(!validate_hex_address(""));
+    }
+
+    #[test]
+    fn amount_validation_negative() {
+        let result = parse_units("-1.0", 18);
+        // parse_units doesn't handle negative; the validation layer checks for '-' prefix
+        // but parse_units itself will fail on the '-' char
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn amount_validation_zero_rejected_at_boundary() {
+        let result = parse_units("0", 18).unwrap();
+        assert!(result.is_zero());
+        // The validate_transfer_request function rejects zero after parsing
+    }
+
+    #[test]
+    fn amount_validation_valid_decimals() {
+        let result = parse_units("1.5", 18).unwrap();
+        assert!(!result.is_zero());
+    }
+
+    // ---- HandlerError display tests ----
+
+    #[test]
+    fn handler_error_invalid_address_display() {
+        let err = HandlerError::InvalidAddress {
+            value: "bad".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("bad"));
+        assert!(msg.contains("0x-prefixed"));
+    }
+
+    #[test]
+    fn handler_error_invalid_amount_display() {
+        let err = HandlerError::InvalidAmount {
+            value: "abc".to_string(),
+            reason: "not a number".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("abc"));
+        assert!(msg.contains("not a number"));
+    }
+
+    #[test]
+    fn handler_error_invalid_token_display() {
+        let err = HandlerError::InvalidToken {
+            value: "SHIB".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("SHIB"));
+    }
+
+    #[test]
+    fn handler_error_invalid_chain_id_display() {
+        let err = HandlerError::InvalidChainId;
+        let msg = format!("{err}");
+        assert!(msg.contains("chain_id"));
+    }
 
     // ---- parse_units tests ----
 

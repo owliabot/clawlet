@@ -368,6 +368,15 @@ impl ClawletApiServer for RpcServerImpl {
     }
 
     async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned> {
+        // Keystore must exist before granting tokens
+        if !self.state.keystore_path.exists() {
+            return Err(ErrorObjectOwned::owned(
+                error_code::INVALID_REQUEST,
+                "keystore directory does not exist — run `clawlet init` first",
+                None::<()>,
+            ));
+        }
+
         // Verify password
         if let Err(e) = verify_admin_password(&self.state, &params.password) {
             return Err(auth_error_to_rpc(e));
@@ -581,9 +590,9 @@ impl RpcServer {
 
 /// Check authentication for token-based methods.
 fn check_auth(state: &AppState, token: &str, required_scope: TokenScope) -> Result<(), AuthError> {
-    // If no keystore exists, allow all requests (unauthenticated mode)
+    // If no keystore exists, deny — clawlet must be initialized first
     if !state.keystore_path.exists() {
-        return Ok(());
+        return Err(AuthError::InvalidToken);
     }
 
     // If token is empty, deny

@@ -338,16 +338,20 @@ pub async fn handle_transfer(
     // Step 1: Validate and parse all request fields at the boundary.
     let validated = validate_transfer_request(state, &req).await?;
 
-    // Step 2: Policy check using raw amount (no USD oracle needed).
-    let raw_amount_str = validated.raw_amount.to_string();
+    // Step 2: Parse the decimal amount as f64 for USD-based policy checks.
+    let amount_f64: f64 = req
+        .amount
+        .trim()
+        .parse()
+        .map_err(|_| HandlerError::InvalidAmount {
+            value: req.amount.clone(),
+            reason: "not a valid number".to_string(),
+        })?;
+
+    // Step 3: Policy check using the parsed amount (treated as USD value).
     let decision = state
         .policy
-        .check_transfer_raw(
-            &raw_amount_str,
-            validated.decimals,
-            &validated.token,
-            validated.chain_id,
-        )
+        .check_transfer(Some(amount_f64), &validated.token, validated.chain_id)
         .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {
@@ -393,7 +397,7 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
-                        "raw_amount": raw_amount_str,
+                        "raw_amount": validated.raw_amount.to_string(),
                         "decimals": validated.decimals,
                         "token": req.token,
                         "chain_id": req.chain_id,
@@ -421,7 +425,7 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
-                        "raw_amount": raw_amount_str,
+                        "raw_amount": validated.raw_amount.to_string(),
                         "token": req.token,
                         "chain_id": req.chain_id,
                     }),
@@ -446,7 +450,7 @@ pub async fn handle_transfer(
                     json!({
                         "to": req.to,
                         "amount": req.amount,
-                        "raw_amount": raw_amount_str,
+                        "raw_amount": validated.raw_amount.to_string(),
                         "token": req.token,
                         "chain_id": req.chain_id,
                     }),

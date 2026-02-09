@@ -18,7 +18,6 @@ fn make_policy(daily: f64, per_tx: f64, approval: Option<f64>) -> Policy {
         allowed_tokens: vec!["USDC".to_string(), "ETH".to_string()],
         allowed_chains: vec![1, 8453],
         require_approval_above_usd: approval,
-        per_tx_limit_raw: None,
     }
 }
 
@@ -327,7 +326,6 @@ fn test_multi_chain_multi_token_scenario() {
         ],
         allowed_chains: vec![1, 10, 8453, 42161], // Ethereum, Optimism, Base, Arbitrum
         require_approval_above_usd: None,
-        per_tx_limit_raw: None,
     };
     let engine = PolicyEngine::new(policy);
 

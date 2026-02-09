@@ -44,11 +44,6 @@ pub struct Policy {
     pub allowed_chains: Vec<u64>,
     /// If set, transfers above this USD value require human approval.
     pub require_approval_above_usd: Option<f64>,
-    /// Per-transaction raw amount limit per token (in smallest unit, e.g. wei).
-    /// Maps token symbol/address (lowercase) to a decimal string limit.
-    /// This is an alternative to USD limits when no price oracle is available.
-    #[serde(default)]
-    pub per_tx_limit_raw: Option<std::collections::HashMap<String, String>>,
 }
 
 impl Policy {
@@ -170,72 +165,6 @@ impl PolicyEngine {
         Ok(PolicyDecision::Allowed)
     }
 
-    /// Check a transfer using raw token amounts (no USD oracle needed).
-    ///
-    /// Validates that the raw amount is non-zero, within reasonable bounds,
-    /// and under any configured per-token raw limits. Also enforces token and
-    /// chain allowlists.
-    ///
-    /// `amount_raw` is the decimal string representation of the raw amount
-    /// (e.g. "1500000000000000000" for 1.5 ETH).
-    /// `decimals` is the token's decimal count (e.g. 18 for ETH, 6 for USDC).
-    pub fn check_transfer_raw(
-        &self,
-        amount_raw: &str,
-        _decimals: u8,
-        token: &str,
-        chain_id: u64,
-    ) -> Result<PolicyDecision, PolicyError> {
-        // Check allowed tokens
-        if !self.policy.allowed_tokens.is_empty()
-            && !self
-                .policy
-                .allowed_tokens
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(token))
-        {
-            return Ok(PolicyDecision::Denied(format!(
-                "token '{token}' is not in the allowed list"
-            )));
-        }
-
-        // Check allowed chains
-        if !self.policy.allowed_chains.is_empty() && !self.policy.allowed_chains.contains(&chain_id)
-        {
-            return Ok(PolicyDecision::Denied(format!(
-                "chain {chain_id} is not in the allowed list"
-            )));
-        }
-
-        // Validate non-zero
-        let is_zero = amount_raw.chars().all(|c| c == '0');
-        if is_zero {
-            return Ok(PolicyDecision::Denied(
-                "transfer amount must be non-zero".to_string(),
-            ));
-        }
-
-        // Check per-token raw limit if configured
-        if let Some(ref limits) = self.policy.per_tx_limit_raw {
-            let token_key = token.to_lowercase();
-            if let Some(limit_str) = limits.get(&token_key) {
-                // Compare as decimal strings by padding to equal length
-                let raw = amount_raw.trim_start_matches('0');
-                let limit = limit_str.trim_start_matches('0');
-                let raw = if raw.is_empty() { "0" } else { raw };
-                let limit = if limit.is_empty() { "0" } else { limit };
-
-                if raw.len() > limit.len() || (raw.len() == limit.len() && raw > limit) {
-                    return Ok(PolicyDecision::Denied(format!(
-                        "raw amount exceeds per-tx limit of {limit_str} for token '{token}'"
-                    )));
-                }
-            }
-        }
-
-        Ok(PolicyDecision::Allowed)
-    }
-
     /// Get a reference to the loaded policy.
     pub fn policy(&self) -> &Policy {
         &self.policy
@@ -257,7 +186,6 @@ mod tests {
             allowed_tokens: vec!["USDC".to_string(), "ETH".to_string()],
             allowed_chains: vec![1, 8453],
             require_approval_above_usd: Some(200.0),
-            per_tx_limit_raw: None,
         }
     }
 
@@ -483,7 +411,6 @@ per_tx_limit_usd: 50.0
             allowed_tokens: vec![],
             allowed_chains: vec![],
             require_approval_above_usd: None,
-            per_tx_limit_raw: None,
         };
         let engine = PolicyEngine::new(policy);
 
@@ -816,118 +743,5 @@ daily_transfer_limit_usd: 1000.0
             .check_transfer(Some(f64::INFINITY), "USDC", 1)
             .unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    // ========== check_transfer_raw tests ==========
-
-    #[test]
-    fn raw_check_allows_valid_transfer() {
-        let engine = PolicyEngine::new(test_policy());
-        let decision = engine
-            .check_transfer_raw("1000000000000000000", 18, "ETH", 1)
-            .unwrap();
-        assert_eq!(decision, PolicyDecision::Allowed);
-    }
-
-    #[test]
-    fn raw_check_denies_zero_amount() {
-        let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer_raw("0", 18, "ETH", 1).unwrap();
-        assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    #[test]
-    fn raw_check_denies_all_zeros() {
-        let engine = PolicyEngine::new(test_policy());
-        let decision = engine.check_transfer_raw("0000", 18, "ETH", 1).unwrap();
-        assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    #[test]
-    fn raw_check_denies_disallowed_token() {
-        let engine = PolicyEngine::new(test_policy());
-        let decision = engine
-            .check_transfer_raw("1000000000000000000", 18, "SHIB", 1)
-            .unwrap();
-        assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    #[test]
-    fn raw_check_denies_disallowed_chain() {
-        let engine = PolicyEngine::new(test_policy());
-        let decision = engine
-            .check_transfer_raw("1000000000000000000", 18, "ETH", 999)
-            .unwrap();
-        assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    #[test]
-    fn raw_check_enforces_per_tx_raw_limit() {
-        let mut policy = test_policy();
-        let mut limits = std::collections::HashMap::new();
-        // Limit ETH to 2 ETH (2 * 10^18)
-        limits.insert("eth".to_string(), "2000000000000000000".to_string());
-        policy.per_tx_limit_raw = Some(limits);
-        let engine = PolicyEngine::new(policy);
-
-        // 1 ETH - allowed
-        let decision = engine
-            .check_transfer_raw("1000000000000000000", 18, "ETH", 1)
-            .unwrap();
-        assert_eq!(decision, PolicyDecision::Allowed);
-
-        // 3 ETH - denied
-        let decision = engine
-            .check_transfer_raw("3000000000000000000", 18, "ETH", 1)
-            .unwrap();
-        assert!(matches!(decision, PolicyDecision::Denied(_)));
-    }
-
-    #[test]
-    fn raw_check_exact_limit_allowed() {
-        let mut policy = test_policy();
-        let mut limits = std::collections::HashMap::new();
-        limits.insert("eth".to_string(), "1000000000000000000".to_string());
-        policy.per_tx_limit_raw = Some(limits);
-        let engine = PolicyEngine::new(policy);
-
-        // Exactly at limit - allowed (uses > not >=)
-        let decision = engine
-            .check_transfer_raw("1000000000000000000", 18, "ETH", 1)
-            .unwrap();
-        assert_eq!(decision, PolicyDecision::Allowed);
-    }
-
-    #[test]
-    fn raw_check_no_limit_for_unconfigured_token() {
-        let mut policy = test_policy();
-        let mut limits = std::collections::HashMap::new();
-        limits.insert("usdc".to_string(), "1000000".to_string());
-        policy.per_tx_limit_raw = Some(limits);
-        let engine = PolicyEngine::new(policy);
-
-        // ETH has no raw limit configured, should pass
-        let decision = engine
-            .check_transfer_raw("99999999999999999999", 18, "ETH", 1)
-            .unwrap();
-        assert_eq!(decision, PolicyDecision::Allowed);
-    }
-
-    #[test]
-    fn raw_check_parses_policy_with_raw_limits() {
-        let yaml = r#"
-daily_transfer_limit_usd: 1000.0
-per_tx_limit_usd: 500.0
-allowed_tokens:
-  - ETH
-allowed_chains:
-  - 1
-per_tx_limit_raw:
-  eth: "5000000000000000000"
-"#;
-        let policy = Policy::from_yaml(yaml).unwrap();
-        assert!(policy.per_tx_limit_raw.is_some());
-        let limits = policy.per_tx_limit_raw.as_ref().unwrap();
-        assert_eq!(limits.get("eth").unwrap(), "5000000000000000000");
     }
 }

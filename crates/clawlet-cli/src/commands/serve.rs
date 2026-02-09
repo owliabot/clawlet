@@ -80,8 +80,11 @@ pub async fn run(
 /// This prevents accidentally running with world-readable private keys.
 fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !keystore_path.exists() {
-        // Directory doesn't exist yet — init hasn't been run; the later check will catch this.
-        return Ok(());
+        return Err(format!(
+            "keystore directory does not exist: {} — run `clawlet init` first",
+            keystore_path.display(),
+        )
+        .into());
     }
 
     // Check directory permissions (should be 0700)

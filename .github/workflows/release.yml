@@ -28,9 +28,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14  # M1 runner for aarch64
             archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
+          - target: x86_64-apple-darwin
+            os: macos-13  # Intel runner for x86_64
+            archive: tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +51,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Prepare artifacts (Unix)
-        if: runner.os != 'Windows'
+      - name: Prepare artifacts
         run: |
           cd target/${{ matrix.target }}/release
           # Find the binary (could be 'clawlet' or 'clawlet-cli')
@@ -64,19 +63,7 @@ jobs:
           fi
           chmod +x clawlet
 
-      - name: Prepare artifacts (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          if (Test-Path clawlet.exe) {
-            # Already named correctly
-          } elseif (Test-Path clawlet-cli.exe) {
-            Move-Item clawlet-cli.exe clawlet.exe
-          }
-
-      - name: Create archive (tar.gz)
-        if: matrix.archive == 'tar.gz'
+      - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
           # Extract OS and arch from target
@@ -90,16 +77,6 @@ jobs:
           tar -czvf "../../../${ARCHIVE_NAME}" clawlet
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
           echo "ARCHIVE_PATH=$(pwd)/../../../${ARCHIVE_NAME}" >> $GITHUB_ENV
-
-      - name: Create archive (zip)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          $archiveName = "clawlet-${{ github.ref_name }}-x86_64-windows.zip"
-          Compress-Archive -Path clawlet.exe -DestinationPath "../../../$archiveName"
-          echo "ARCHIVE_NAME=$archiveName" >> $env:GITHUB_ENV
-          echo "ARCHIVE_PATH=$((Get-Location).Path)/../../../$archiveName" >> $env:GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

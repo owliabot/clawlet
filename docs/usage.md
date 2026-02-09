@@ -58,7 +58,6 @@ curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/insta
 支持的平台：
 - Linux x86_64 / aarch64
 - macOS x86_64 / Apple Silicon (M1/M2/M3)
-- Windows x86_64
 
 ### 从源码编译
 

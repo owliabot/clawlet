@@ -16,4 +16,8 @@ pub use client::{ClientError, RpcClient};
 pub use server::{
     AppState, ClawletApiServer, RpcServer, RpcServerImpl, ServerConfig, ServerError, DEFAULT_ADDR,
 };
-pub use types::RpcMethod;
+pub use types::{
+    AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
+    ExecuteStatus, HandlerError, RpcMethod, SkillSummary, SkillsResponse, TokenSpec,
+    TransferRequest, TransferResponse, TransferStatus,
+};

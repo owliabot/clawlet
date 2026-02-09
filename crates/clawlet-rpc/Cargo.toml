@@ -6,11 +6,14 @@ license.workspace = true
 description = "HTTP JSON-RPC server for Clawlet"
 
 [dependencies]
+alloy = { workspace = true }
 clawlet-core = { path = "../clawlet-core" }
 clawlet-evm = { path = "../clawlet-evm" }
 clawlet-signer = { path = "../clawlet-signer" }
 jsonrpsee = { version = "0.24", features = ["server", "client", "macros"] }
 tokio = { version = "1", features = ["full"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+serde_with = { version = "3", features = ["macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"

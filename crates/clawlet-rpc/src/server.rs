@@ -48,7 +48,8 @@ use crate::dispatch::{
     AuthGrantRequest, AuthGrantResponse, AuthListRequest, AuthListResponse, AuthRevokeAllRequest,
     AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
-use crate::handlers::{self, BalanceQuery, ExecuteRequest, HandlerError, TransferRequest};
+use crate::handlers;
+use crate::types::{BalanceQuery, ExecuteRequest, HandlerError, TokenSpec, TransferRequest};
 
 // ---- Server Error Type ----
 
@@ -186,7 +187,7 @@ impl Default for ServerConfig {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BalanceRequest {
     /// The EVM address to query.
-    pub address: String,
+    pub address: alloy::primitives::Address,
     /// The chain ID to query against.
     pub chain_id: u64,
 }
@@ -195,11 +196,11 @@ pub struct BalanceRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransferRequestWithAuth {
     /// Recipient address.
-    pub to: String,
-    /// Amount as a decimal string.
-    pub amount: String,
+    pub to: alloy::primitives::Address,
+    /// Amount as a non-negative decimal string.
+    pub amount: crate::types::Amount,
     /// Token to transfer.
-    pub token_type: String,
+    pub token_type: TokenSpec,
     /// Chain ID.
     pub chain_id: u64,
 }

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use clawlet_core::config::Config;
 use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
+use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
@@ -48,7 +49,8 @@ pub async fn run(
         }
         tracing::info!("found {} keystore file(s)", keys.len());
         let (_addr, key_path) = &keys[0];
-        Some(Keystore::unlock(key_path, &password)?)
+        let mnemonic = Keystore::unlock(key_path, &password)?;
+        Some(hd::derive_key(&mnemonic, 0)?)
     } else {
         None
     };

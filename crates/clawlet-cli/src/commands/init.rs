@@ -117,19 +117,12 @@ pub fn run(
         std::io::stdin().read_line(&mut mnemonic)?;
         let mnemonic = mnemonic.trim();
 
-        // Derive key from mnemonic at index 0
-        let signing_key = hd::derive_key(mnemonic, 0)?;
-        let private_key_bytes = signing_key.to_bytes();
-
-        // Create keystore from the derived key
-        let (address, _path) =
-            Keystore::create_from_key(&keystore_dir, &password, &private_key_bytes)?;
+        // Store the mnemonic in the keystore
+        let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, mnemonic)?;
 
         #[cfg(unix)]
         set_keystore_file_permissions(&keystore_dir)?;
 
-        eprintln!();
-        eprintln!("⚠️  Store your mnemonic in a safe place. It will NOT be saved.");
         address
     } else {
         // Generate a new mnemonic
@@ -140,12 +133,8 @@ pub fn run(
         eprintln!("  {mnemonic}");
         eprintln!();
 
-        // Derive key at index 0 and store
-        let signing_key = hd::derive_key(&mnemonic, 0)?;
-        let private_key_bytes = signing_key.to_bytes();
-
-        let (address, _path) =
-            Keystore::create_from_key(&keystore_dir, &password, &private_key_bytes)?;
+        // Store the mnemonic in the keystore
+        let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 
         #[cfg(unix)]
         set_keystore_file_permissions(&keystore_dir)?;

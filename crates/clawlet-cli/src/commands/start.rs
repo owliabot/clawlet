@@ -146,7 +146,8 @@ pub async fn run(
 
         let keys = Keystore::list(&keystore_dir)?;
         let (_addr, key_path) = &keys[0];
-        let key = Keystore::unlock(key_path, &password)?;
+        let mnemonic = Keystore::unlock(key_path, &password)?;
+        let key = hd::derive_key(&mnemonic, 0)?;
         let addr = clawlet_signer::keystore::public_key_to_address(&key);
 
         eprintln!();
@@ -176,11 +177,9 @@ pub async fn run(
         eprintln!("  {mnemonic}");
         eprintln!();
 
-        let key = hd::derive_key(&mnemonic, 0)?;
-        let private_key_bytes = key.to_bytes();
+        let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 
-        let (address, _path) =
-            Keystore::create_from_key(&keystore_dir, &password, &private_key_bytes)?;
+        let key = hd::derive_key(&mnemonic, 0)?;
 
         // Write default policy.yaml
         let policy_path = data_dir.join("policy.yaml");

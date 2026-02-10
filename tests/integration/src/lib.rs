@@ -209,6 +209,21 @@ mod tests {
     /// Expected address for test mnemonic at m/44'/60'/0'/0/0
     const TEST_MNEMONIC_ADDR: &str = "9858effd232b4033e47d90003d41ec34ecaeda94";
 
+    /// Anvil default mnemonic (derives ANVIL_ACCOUNT_0_KEY at index 0)
+    const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+    /// Helper: create keystore from Anvil mnemonic, unlock, derive signing key, return LocalSigner
+    fn anvil_keystore_signer(
+        dir: &std::path::Path,
+        password: &str,
+    ) -> (Address, std::path::PathBuf, LocalSigner) {
+        let (address, ks_path) =
+            Keystore::create_from_mnemonic(dir, password, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Keystore::unlock(&ks_path, password).unwrap();
+        let key = hd::derive_key(&mnemonic, 0).unwrap();
+        (address, ks_path, LocalSigner::new(key))
+    }
+
     /// Cargo binary path for the CLI
     #[allow(dead_code)]
     fn clawlet_bin() -> PathBuf {
@@ -237,9 +252,8 @@ mod tests {
 
             // 1. Create keystore
             let password = "test-password";
-            let anvil_key = hex::decode(ANVIL_ACCOUNT_0_KEY).unwrap();
             let (address, ks_path) =
-                Keystore::create_from_key(&keystore_dir, password, &anvil_key).unwrap();
+                Keystore::create_from_mnemonic(&keystore_dir, password, ANVIL_MNEMONIC).unwrap();
             assert!(ks_path.exists());
             assert_ne!(address, Address::ZERO);
 
@@ -274,7 +288,8 @@ allowed_chains: []
             assert!(config.chain_rpc_urls.contains_key(&31337));
 
             // 5. Unlock keystore and create signer
-            let signing_key = Keystore::unlock(&ks_path, password).unwrap();
+            let mnemonic = Keystore::unlock(&ks_path, password).unwrap();
+            let signing_key = hd::derive_key(&mnemonic, 0).unwrap();
             let signer = LocalSigner::new(signing_key);
             let signer_addr = signer.address();
 
@@ -326,12 +341,7 @@ allowed_chains: []
         rt.block_on(async {
             // Import Anvil's default key
             let tmp = tempfile::tempdir().unwrap();
-            let private_key = hex::decode(ANVIL_ACCOUNT_0_KEY).unwrap();
-            let (_address, ks_path) =
-                Keystore::create_from_key(tmp.path(), "test", &private_key).unwrap();
-
-            let signing_key = Keystore::unlock(&ks_path, "test").unwrap();
-            let signer = LocalSigner::new(signing_key);
+            let (_address, _ks_path, signer) = anvil_keystore_signer(tmp.path(), "test");
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
             let recipient: Address = ANVIL_ACCOUNT_1_ADDR.parse().unwrap();
@@ -380,12 +390,7 @@ allowed_chains: []
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let tmp = tempfile::tempdir().unwrap();
-            let private_key = hex::decode(ANVIL_ACCOUNT_0_KEY).unwrap();
-            let (_address, ks_path) =
-                Keystore::create_from_key(tmp.path(), "test", &private_key).unwrap();
-
-            let signing_key = Keystore::unlock(&ks_path, "test").unwrap();
-            let signer = LocalSigner::new(signing_key);
+            let (_address, _ks_path, signer) = anvil_keystore_signer(tmp.path(), "test");
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
             let owner = signer.address();
@@ -528,12 +533,7 @@ allowed_chains: []
 
             // Import key to verify we can still connect
             let tmp = tempfile::tempdir().unwrap();
-            let private_key = hex::decode(ANVIL_ACCOUNT_0_KEY).unwrap();
-            let (_address, ks_path) =
-                Keystore::create_from_key(tmp.path(), "test", &private_key).unwrap();
-
-            let signing_key = Keystore::unlock(&ks_path, "test").unwrap();
-            let signer = LocalSigner::new(signing_key);
+            let (_address, _ks_path, signer) = anvil_keystore_signer(tmp.path(), "test");
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 
             // Get sender's nonce before
@@ -695,7 +695,10 @@ allowed_chains: []
         let err = result.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("crypto") || err_msg.contains("keystore") || err_msg.contains("Mac"),
+            err_msg.contains("crypto")
+                || err_msg.contains("keystore")
+                || err_msg.contains("decrypt")
+                || err_msg.contains("Mac"),
             "Error should indicate crypto/keystore failure: {err_msg}"
         );
 
@@ -995,21 +998,19 @@ audit_log_path: "{}"
         let keystore_dir = tmp.path().join("keystore");
         std::fs::create_dir_all(&keystore_dir).unwrap();
 
-        // Derive key from known mnemonic
-        let signing_key = hd::derive_key(TEST_MNEMONIC, 0).unwrap();
-        let private_key_bytes = signing_key.to_bytes();
-
-        // Create keystore from derived key
+        // Create keystore from known mnemonic
         let (address, ks_path) =
-            Keystore::create_from_key(&keystore_dir, "test", &private_key_bytes).unwrap();
+            Keystore::create_from_mnemonic(&keystore_dir, "test", TEST_MNEMONIC).unwrap();
 
         // Verify address matches expected
         let addr_hex = hex::encode(address.0);
         assert_eq!(addr_hex, TEST_MNEMONIC_ADDR);
 
-        // Verify keystore can be unlocked and produces same address
-        let unlocked = Keystore::unlock(&ks_path, "test").unwrap();
-        let derived_addr = clawlet_signer::keystore::public_key_to_address(&unlocked);
+        // Verify keystore can be unlocked and mnemonic round-trips
+        let unlocked_mnemonic = Keystore::unlock(&ks_path, "test").unwrap();
+        assert_eq!(unlocked_mnemonic, TEST_MNEMONIC);
+        let key = hd::derive_key(&unlocked_mnemonic, 0).unwrap();
+        let derived_addr = clawlet_signer::keystore::public_key_to_address(&key);
         assert_eq!(derived_addr, address);
     }
 
@@ -1117,7 +1118,8 @@ audit_log_path: "{}"
         assert_ne!(address, Address::ZERO, "address should not be zero");
 
         // 2. Verify unlock round-trip
-        let key = Keystore::unlock(&ks_path, password).unwrap();
+        let mnemonic = Keystore::unlock(&ks_path, password).unwrap();
+        let key = hd::derive_key(&mnemonic, 0).unwrap();
         let derived = clawlet_signer::keystore::public_key_to_address(&key);
         assert_eq!(address, derived);
 
@@ -1201,15 +1203,9 @@ allowed_chains: []
             let decision = engine.check_transfer(Some(10.0), "ETH", 31337).unwrap();
             assert_eq!(decision, PolicyDecision::Allowed);
 
-            // 2. Import Anvil's default key
+            // 2. Import Anvil's default mnemonic
             let tmp = tempfile::tempdir().unwrap();
-            let private_key = hex::decode(ANVIL_ACCOUNT_0_KEY).unwrap();
-            let (_address, ks_path) =
-                Keystore::create_from_key(tmp.path(), "test", &private_key).unwrap();
-
-            // 3. Sign and send
-            let signing_key = Keystore::unlock(&ks_path, "test").unwrap();
-            let signer = LocalSigner::new(signing_key);
+            let (_address, _ks_path, signer) = anvil_keystore_signer(tmp.path(), "test");
 
             let adapter = EvmAdapter::new(&anvil_url).unwrap();
 

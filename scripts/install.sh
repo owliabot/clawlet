@@ -246,6 +246,21 @@ install_standard() {
 create_system_user_linux() {
     if id "$CLAWLET_USER" &>/dev/null; then
         info "User '$CLAWLET_USER' already exists"
+        if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
+            info "Creating system group '$CLAWLET_GROUP'..."
+            if groupadd --system "$CLAWLET_GROUP" 2>/dev/null; then
+                :
+            else
+                sudo groupadd --system "$CLAWLET_GROUP" || die "Failed to create group '$CLAWLET_GROUP'"
+            fi
+        fi
+        info "Ensuring '$CLAWLET_USER' is a member of '$CLAWLET_GROUP'..."
+        if usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
+            :
+        else
+            sudo usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" \
+                || die "Failed to add user '$CLAWLET_USER' to group '$CLAWLET_GROUP'"
+        fi
         return 0
     fi
 

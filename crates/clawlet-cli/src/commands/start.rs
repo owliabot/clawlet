@@ -316,7 +316,12 @@ async fn start_server_with_session(
     use jsonrpsee::server::Server;
 
     // Load policy
-    let policy = PolicyEngine::from_file(&config.policy_path)?;
+    let spending_path = config
+        .policy_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("spending.json");
+    let policy = PolicyEngine::from_file_with_spending(&config.policy_path, spending_path)?;
 
     // Create audit logger (ensure parent dir exists)
     if let Some(parent) = config.audit_log_path.parent() {

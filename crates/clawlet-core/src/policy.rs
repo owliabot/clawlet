@@ -247,8 +247,13 @@ impl PolicyEngine {
             }
 
             // All checks passed — record spending
-            tracker.total_usd += amount_usd;
-            self.persist_tracker(&tracker)?;
+            let new_total = tracker.total_usd + amount_usd;
+            let updated = DailyTracker {
+                date: tracker.date.clone(),
+                total_usd: new_total,
+            };
+            self.persist_tracker(&updated)?;
+            tracker.total_usd = new_total;
         }
 
         Ok(PolicyDecision::Allowed)

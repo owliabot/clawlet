@@ -49,7 +49,9 @@ use crate::dispatch::{
     AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers;
-use crate::types::{BalanceQuery, ExecuteRequest, HandlerError, TokenSpec, TransferRequest};
+use crate::types::{
+    BalanceQuery, ExecuteRequest, HandlerError, SendRawRequest, TokenSpec, TransferRequest,
+};
 
 // ---- Server Error Type ----
 
@@ -248,6 +250,10 @@ pub trait ClawletApi {
     #[method(name = "execute")]
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
 
+    /// Send a raw transaction (bypasses policy engine).
+    #[method(name = "send_raw")]
+    async fn send_raw(&self, params: SendRawRequest) -> Result<Value, ErrorObjectOwned>;
+
     /// Grant a new session token.
     #[method(name = "auth.grant")]
     async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned>;
@@ -362,6 +368,18 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_execute(&self.state, req).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn send_raw(&self, params: SendRawRequest) -> Result<Value, ErrorObjectOwned> {
+        let token = Self::get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        match handlers::handle_send_raw(&self.state, params).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }

@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 hex = "0.4"
+alloy = { workspace = true }
 rust_decimal = "1"
 chrono = { version = "0.4", features = ["serde"] }
 jsonrpsee = { version = "0.24", features = ["server"] }

@@ -18,7 +18,7 @@ pub mod tx;
 
 // Re-export key types for convenience.
 pub use adapter::{EvmAdapter, EvmAdapterError, TokenInfo};
-pub use tx::{TransferRequest, TxError};
+pub use tx::{RawTxRequest, TransferRequest, TxError};
 
 // Re-export alloy primitives used in the public API.
 pub use alloy::primitives::{Address, U256};

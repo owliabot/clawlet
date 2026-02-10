@@ -84,6 +84,37 @@ enum Commands {
         addr: Option<String>,
     },
 
+    /// Send an arbitrary transaction with custom calldata via the running RPC server.
+    SendTx {
+        /// Recipient address (0x...).
+        #[arg(long)]
+        to: String,
+
+        /// ETH value in human units (e.g. "0.1"). Default: 0.
+        #[arg(long)]
+        value: Option<String>,
+
+        /// Calldata hex (0x-prefixed). Default: empty.
+        #[arg(long)]
+        data: Option<String>,
+
+        /// Chain ID override (default: 1).
+        #[arg(long)]
+        chain_id: Option<u64>,
+
+        /// Gas limit override.
+        #[arg(long)]
+        gas_limit: Option<u64>,
+
+        /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
+        #[arg(long, env = "CLAWLET_AUTH_TOKEN")]
+        auth_token: String,
+
+        /// RPC server address (default: 127.0.0.1:9100).
+        #[arg(long)]
+        addr: Option<String>,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -128,6 +159,15 @@ async fn main() {
             chain_id,
             addr,
         } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token).await,
+        Commands::SendTx {
+            to,
+            value,
+            data,
+            chain_id,
+            gas_limit,
+            auth_token,
+            addr,
+        } => commands::send_tx::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::Start {
             agent,

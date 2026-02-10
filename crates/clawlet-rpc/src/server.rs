@@ -49,7 +49,9 @@ use crate::dispatch::{
     AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers;
-use crate::types::{BalanceQuery, ExecuteRequest, HandlerError, TokenSpec, TransferRequest};
+use crate::types::{
+    BalanceQuery, ExecuteRequest, HandlerError, SendTxRequest, TokenSpec, TransferRequest,
+};
 
 // ---- Server Error Type ----
 
@@ -219,6 +221,25 @@ pub struct ExecuteRequestWithAuth {
     pub params: HashMap<String, String>,
 }
 
+/// Send transaction request parameters.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendTxRequestWithAuth {
+    /// Recipient address (0x...).
+    pub to: String,
+    /// ETH value in human units (e.g. "0.1"), default "0".
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Calldata hex (0x...), default empty.
+    #[serde(default)]
+    pub data: Option<String>,
+    /// Chain ID (default from config or 1).
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    /// Optional gas limit override.
+    #[serde(default)]
+    pub gas_limit: Option<u64>,
+}
+
 // ---- JSON-RPC API Definition ----
 
 /// JSON-RPC API trait using jsonrpsee macros.
@@ -247,6 +268,13 @@ pub trait ClawletApi {
     /// Execute a skill.
     #[method(name = "execute")]
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
+
+    /// Send an arbitrary transaction with custom calldata.
+    #[method(name = "send_transaction")]
+    async fn send_transaction(
+        &self,
+        params: SendTxRequestWithAuth,
+    ) -> Result<Value, ErrorObjectOwned>;
 
     /// Grant a new session token.
     #[method(name = "auth.grant")]
@@ -333,6 +361,29 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_transfer(&self.state, req).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn send_transaction(
+        &self,
+        params: SendTxRequestWithAuth,
+    ) -> Result<Value, ErrorObjectOwned> {
+        let token = Self::get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let req = SendTxRequest {
+            to: params.to,
+            value: params.value,
+            data: params.data,
+            chain_id: params.chain_id,
+            gas_limit: params.gas_limit,
+        };
+
+        match handlers::handle_send_transaction(&self.state, req).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }

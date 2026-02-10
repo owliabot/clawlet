@@ -5,6 +5,7 @@
 
 use serde_json::json;
 
+use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
@@ -18,8 +19,8 @@ use clawlet_signer::Signer;
 use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
-    ExecuteStatus, HandlerError, SkillSummary, SkillsResponse, TokenSpec, TransferRequest,
-    TransferResponse, TransferStatus,
+    ExecuteStatus, HandlerError, SendTxRequest, SendTxResponse, SendTxStatus, SkillSummary,
+    SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -209,6 +210,125 @@ pub async fn handle_transfer(
                 tx_hash: None,
                 audit_id: None,
                 reason: Some(format!("requires approval: {reason}")),
+            })
+        }
+    }
+}
+
+/// Send an arbitrary transaction with custom calldata.
+pub async fn handle_send_transaction(
+    state: &AppState,
+    req: SendTxRequest,
+) -> Result<SendTxResponse, HandlerError> {
+    use alloy::primitives::{Address, Bytes};
+    use alloy::rpc::types::TransactionRequest;
+
+    let chain_id = req.chain_id.unwrap_or(1);
+
+    // Parse recipient address
+    let to: Address = req
+        .to
+        .parse()
+        .map_err(|e| HandlerError::BadRequest(format!("invalid to address: {e}")))?;
+
+    // Parse value (default "0")
+    let value_str = req.value.as_deref().unwrap_or("0");
+    let value_amount: Amount = value_str
+        .parse()
+        .map_err(|e| HandlerError::BadRequest(format!("invalid value: {e}")))?;
+    let value = to_raw(value_amount, 18).map_err(HandlerError::BadRequest)?;
+
+    // Parse calldata (default empty)
+    let data = if let Some(ref hex_str) = req.data {
+        let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| HandlerError::BadRequest(format!("invalid data hex: {e}")))?;
+        Bytes::from(bytes)
+    } else {
+        Bytes::new()
+    };
+
+    // Policy check — use check_transfer with ETH value (no USD oracle)
+    let decision = state
+        .policy
+        .check_transfer(None, "ETH", chain_id)
+        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
+
+    match decision {
+        PolicyDecision::Allowed => {
+            let adapter = state.adapters.get(&chain_id).ok_or_else(|| {
+                HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}"))
+            })?;
+
+            let mut tx = TransactionRequest::default().to(to).value(value);
+            tx.set_chain_id(chain_id);
+            if !data.is_empty() {
+                tx = tx.input(data.into());
+            }
+            if let Some(gas) = req.gas_limit {
+                tx = tx.gas_limit(gas);
+            }
+
+            let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx)
+                .await
+                .map_err(|e| HandlerError::Internal(format!("send tx error: {e}")))?;
+
+            let audit_id = format!(
+                "{:016x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    & 0xFFFF_FFFF_FFFF_FFFF
+            );
+
+            {
+                let event = AuditEvent::new(
+                    "send_transaction",
+                    json!({
+                        "to": format!("{to}"),
+                        "value": value_str,
+                        "data": req.data.as_deref().unwrap_or(""),
+                        "chain_id": chain_id,
+                        "tx_hash": format!("{tx_hash}"),
+                        "audit_id": audit_id,
+                    }),
+                    "allowed",
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+
+            Ok(SendTxResponse {
+                status: SendTxStatus::Success,
+                tx_hash: Some(tx_hash),
+                reason: None,
+                audit_id: Some(audit_id),
+            })
+        }
+        PolicyDecision::Denied(reason) | PolicyDecision::RequiresApproval(reason) => {
+            {
+                let event = AuditEvent::new(
+                    "send_transaction",
+                    json!({
+                        "to": format!("{to}"),
+                        "value": value_str,
+                        "data": req.data.as_deref().unwrap_or(""),
+                        "chain_id": chain_id,
+                    }),
+                    format!("denied: {reason}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+
+            Ok(SendTxResponse {
+                status: SendTxStatus::Denied,
+                tx_hash: None,
+                reason: Some(reason),
+                audit_id: None,
             })
         }
     }

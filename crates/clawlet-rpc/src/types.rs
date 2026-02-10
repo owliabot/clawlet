@@ -62,6 +62,8 @@ pub enum RpcMethod {
     AuthRevoke,
     /// Revoke all sessions (Admin only).
     AuthRevokeAll,
+    /// Send an arbitrary transaction with custom calldata.
+    SendTransaction,
 }
 
 impl RpcMethod {
@@ -78,6 +80,7 @@ impl RpcMethod {
             "auth.list" => Some(Self::AuthList),
             "auth.revoke" => Some(Self::AuthRevoke),
             "auth.revoke_all" => Some(Self::AuthRevokeAll),
+            "send_transaction" => Some(Self::SendTransaction),
             _ => None,
         }
     }
@@ -95,6 +98,7 @@ impl RpcMethod {
             Self::AuthList => "auth.list",
             Self::AuthRevoke => "auth.revoke",
             Self::AuthRevokeAll => "auth.revoke_all",
+            Self::SendTransaction => "send_transaction",
         }
     }
 
@@ -113,6 +117,7 @@ impl RpcMethod {
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
             | RpcMethod::AuthRevokeAll => None,
+            RpcMethod::SendTransaction => Some(TokenScope::Trade),
         }
     }
 }
@@ -280,6 +285,51 @@ pub struct ExecuteResponse {
 pub struct AddressResponse {
     /// The wallet address managed by this clawlet instance (hex, 0x-prefixed).
     pub address: Address,
+}
+
+// ---- SendTransaction types ----
+
+/// Request body for sending an arbitrary transaction.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendTxRequest {
+    /// Recipient address (hex, 0x-prefixed).
+    pub to: String,
+    /// ETH value in human units (e.g. "0.1"), default "0".
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Calldata hex (0x-prefixed), default empty.
+    #[serde(default)]
+    pub data: Option<String>,
+    /// Chain ID (default from config or 1).
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    /// Optional gas limit override.
+    #[serde(default)]
+    pub gas_limit: Option<u64>,
+}
+
+/// Send transaction outcome status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendTxStatus {
+    Success,
+    Denied,
+}
+
+/// Response for send_transaction.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendTxResponse {
+    /// Outcome of the transaction.
+    pub status: SendTxStatus,
+    /// Transaction hash (present on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<B256>,
+    /// Denial reason (present on denial).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Audit event ID (present on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<String>,
 }
 
 /// Errors returned by handlers.

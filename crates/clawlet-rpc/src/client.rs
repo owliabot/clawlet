@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::server::DEFAULT_ADDR;
-use crate::types::{BalanceResponse, ExecuteResponse, SkillsResponse, TransferResponse};
+use crate::types::{
+    BalanceResponse, ExecuteResponse, SendTxResponse, SkillsResponse, TransferResponse,
+};
 
 /// Error type for RPC client operations.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +68,25 @@ pub struct ExecuteRequest {
     /// Parameter values.
     #[serde(default)]
     pub params: HashMap<String, String>,
+}
+
+/// Send transaction request parameters (client-side).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendTxClientRequest {
+    /// Recipient address (0x...).
+    pub to: String,
+    /// ETH value in human units.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Calldata hex (0x...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// Chain ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<u64>,
+    /// Gas limit override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_limit: Option<u64>,
 }
 
 /// Client for the clawlet-rpc HTTP JSON-RPC server.
@@ -216,6 +237,27 @@ impl RpcClient {
             params,
         };
         let result: ExecuteResponse = client.request("execute", rpc_params![req]).await?;
+        Ok(result)
+    }
+
+    /// Send an arbitrary transaction with custom calldata.
+    pub async fn send_transaction(
+        &self,
+        to: &str,
+        value: Option<&str>,
+        data: Option<&str>,
+        chain_id: Option<u64>,
+        gas_limit: Option<u64>,
+    ) -> Result<SendTxResponse, ClientError> {
+        let client = self.build_client()?;
+        let req = SendTxClientRequest {
+            to: to.to_string(),
+            value: value.map(|s| s.to_string()),
+            data: data.map(|s| s.to_string()),
+            chain_id,
+            gas_limit,
+        };
+        let result: SendTxResponse = client.request("send_transaction", rpc_params![req]).await?;
         Ok(result)
     }
 

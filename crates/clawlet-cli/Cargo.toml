@@ -14,7 +14,7 @@ clawlet-core = { path = "../clawlet-core" }
 clawlet-signer = { path = "../clawlet-signer" }
 clawlet-rpc = { path = "../clawlet-rpc" }
 clawlet-evm = { path = "../clawlet-evm" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 rpassword = "5"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -24,6 +24,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = "1"
 chrono = { version = "0.4", features = ["serde"] }
 jsonrpsee = { version = "0.24", features = ["server"] }
 libc = "0.2"

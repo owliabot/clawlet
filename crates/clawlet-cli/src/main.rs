@@ -57,6 +57,37 @@ enum Commands {
         command: commands::auth::AuthCommand,
     },
 
+    /// Send ETH or ERC-20 tokens via the running clawlet RPC server.
+    Transfer {
+        /// Recipient address (0x...).
+        #[arg(long)]
+        to: String,
+
+        /// Human-readable amount (e.g. "0.1" for 0.1 ETH).
+        #[arg(long)]
+        amount: String,
+
+        /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
+        #[arg(long, env = "CLAWLET_AUTH_TOKEN")]
+        auth_token: String,
+
+        /// Asset to transfer: "ETH" or ERC-20 contract address (default: ETH).
+        #[arg(long, default_value = "ETH")]
+        asset: String,
+
+        /// Chain ID override (default: 1).
+        #[arg(long)]
+        chain_id: Option<u64>,
+
+        /// RPC server address (default: 127.0.0.1:9100).
+        #[arg(long)]
+        addr: Option<String>,
+
+        /// Skip confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -93,6 +124,15 @@ async fn main() {
             data_dir,
         } => commands::init::run(from_mnemonic, data_dir),
         Commands::Serve { config, addr } => commands::serve::run(config, addr).await,
+        Commands::Transfer {
+            to,
+            amount,
+            auth_token,
+            asset,
+            chain_id,
+            addr,
+            yes,
+        } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token, yes).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::Start {
             agent,

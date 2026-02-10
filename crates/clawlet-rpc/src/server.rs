@@ -635,7 +635,7 @@ fn verify_admin_password(state: &AppState, password: &str) -> Result<(), AuthErr
         return Err(AuthError::PasswordIncorrect);
     }
 
-    let (_, keystore_path) = &keystores[0];
+    let keystore_path = &keystores[0];
     match Keystore::unlock(keystore_path, password) {
         Ok(_mnemonic) => {
             if let Ok(mut store) = state.session_store.write() {

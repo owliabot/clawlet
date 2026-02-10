@@ -145,7 +145,7 @@ pub async fn run(
         let password = rpassword::read_password()?;
 
         let keys = Keystore::list(&keystore_dir)?;
-        let (_addr, key_path) = &keys[0];
+        let key_path = &keys[0];
         let mnemonic = Keystore::unlock(key_path, &password)?;
         let key = hd::derive_key(&mnemonic, 0)?;
         let addr = clawlet_signer::keystore::public_key_to_address(&key);

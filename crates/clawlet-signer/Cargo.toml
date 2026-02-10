@@ -20,6 +20,7 @@ hex = "0.4"
 scrypt = "0.11"
 aes-gcm = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

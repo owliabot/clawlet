@@ -1,8 +1,8 @@
 //! Encrypted keystore management.
 //!
 //! Encrypts and stores BIP-39 mnemonic phrases using scrypt + AES-256-GCM.
-//! The keystore JSON format stores the encrypted mnemonic along with the
-//! default (index 0) Ethereum address for listing purposes.
+//! The keystore JSON format is chain-agnostic — it stores only the encrypted
+//! mnemonic without any derived address.
 
 use std::path::{Path, PathBuf};
 
@@ -72,7 +72,6 @@ struct CryptoSection {
 struct KeystoreJson {
     version: u32,
     crypto: CryptoSection,
-    address: String,
     created_at: String,
 }
 
@@ -103,11 +102,11 @@ impl Keystore {
         let address = public_key_to_address(&signing_key);
 
         // Encrypt the mnemonic
-        let json = encrypt_mnemonic(mnemonic, password, &address)?;
+        let json = encrypt_mnemonic(mnemonic, password)?;
         let json_str = serde_json::to_string_pretty(&json)?;
 
-        // Write to file named by address
-        let filename = format!("{}.json", hex::encode(address.0));
+        // Write to file named by UUID (chain-agnostic)
+        let filename = format!("{}.json", uuid::Uuid::new_v4());
         let path = dir.join(&filename);
         std::fs::write(&path, json_str)?;
 
@@ -123,10 +122,12 @@ impl Keystore {
         decrypt_mnemonic(&json, password)
     }
 
-    /// Lists all keystore files in a directory, returning their addresses and paths.
+    /// Lists all keystore JSON files in a directory.
     ///
-    /// Skips files that cannot be parsed or whose address cannot be determined.
-    pub fn list(dir: &Path) -> Result<Vec<(Address, PathBuf)>> {
+    /// Returns paths only — the keystore format is chain-agnostic and does not
+    /// store derived addresses. Callers that need an address must unlock the
+    /// keystore and derive it themselves.
+    pub fn list(dir: &Path) -> Result<Vec<PathBuf>> {
         let mut results = Vec::new();
 
         if !dir.exists() {
@@ -141,8 +142,8 @@ impl Keystore {
                 continue;
             }
 
-            if let Some(addr) = extract_address_from_keystore(&path) {
-                results.push((addr, path));
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                results.push(path);
             }
         }
 
@@ -163,7 +164,7 @@ pub fn public_key_to_address(key: &SigningKey) -> Address {
 }
 
 /// Encrypt a mnemonic string using scrypt + AES-256-GCM.
-fn encrypt_mnemonic(mnemonic: &str, password: &str, address: &Address) -> Result<KeystoreJson> {
+fn encrypt_mnemonic(mnemonic: &str, password: &str) -> Result<KeystoreJson> {
     let mut rng = rand::thread_rng();
 
     // Generate random salt (32 bytes) and nonce (12 bytes for GCM)
@@ -212,7 +213,6 @@ fn encrypt_mnemonic(mnemonic: &str, password: &str, address: &Address) -> Result
             ciphertext: hex::encode(ciphertext),
             tag: hex::encode(tag),
         },
-        address: hex::encode(address.0),
         created_at: now,
     })
 }
@@ -261,23 +261,6 @@ fn decrypt_mnemonic(json: &KeystoreJson, password: &str) -> Result<String> {
 
     String::from_utf8(plaintext)
         .map_err(|e| KeystoreError::Crypto(format!("invalid UTF-8 in decrypted mnemonic: {e}")))
-}
-
-/// Tries to extract an Ethereum address from a keystore JSON file.
-fn extract_address_from_keystore(path: &Path) -> Option<Address> {
-    let data = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    let addr_val = json.get("address")?;
-
-    let addr_str = addr_val.as_str()?;
-    let stripped = addr_str.strip_prefix("0x").unwrap_or(addr_str);
-    let bytes = hex::decode(stripped).ok()?;
-    if bytes.len() != 20 {
-        return None;
-    }
-    let mut addr = [0u8; 20];
-    addr.copy_from_slice(&bytes);
-    Some(Address::from(addr))
 }
 
 #[cfg(test)]
@@ -332,15 +315,11 @@ mod tests {
     fn list_keystores() {
         let dir = TempDir::new().unwrap();
 
-        let (addr1, _) = Keystore::create(dir.path(), "pw1").unwrap();
-        let (addr2, _) = Keystore::create(dir.path(), "pw2").unwrap();
+        let (_addr1, _) = Keystore::create(dir.path(), "pw1").unwrap();
+        let (_addr2, _) = Keystore::create(dir.path(), "pw2").unwrap();
 
         let list = Keystore::list(dir.path()).unwrap();
         assert_eq!(list.len(), 2);
-
-        let addrs: Vec<_> = list.iter().map(|(a, _)| *a).collect();
-        assert!(addrs.contains(&addr1));
-        assert!(addrs.contains(&addr2));
     }
 
     #[test]

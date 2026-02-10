@@ -48,7 +48,7 @@ pub async fn run(
             return Err("no keystore files found — run `clawlet init` first".into());
         }
         tracing::info!("found {} keystore file(s)", keys.len());
-        let (_addr, key_path) = &keys[0];
+        let key_path = &keys[0];
         let mnemonic = Keystore::unlock(key_path, &password)?;
         Some(hd::derive_key(&mnemonic, 0)?)
     } else {

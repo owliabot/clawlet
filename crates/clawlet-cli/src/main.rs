@@ -175,20 +175,41 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
             .map_err(|e| format!("failed to set log file permissions: {e}"))?;
     }
 
+    // Create a pipe so the child can signal startup success/failure to the parent.
+    let mut pipe_fds = [0i32; 2];
+    if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+        return Err("pipe() failed".into());
+    }
+    let (pipe_read, pipe_write) = (pipe_fds[0], pipe_fds[1]);
+
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err("fork() failed".into());
     }
     if pid > 0 {
-        // Parent — report and exit.
-        eprintln!("Daemon started (PID {pid}), log: {}", log_path.display(),);
-        std::process::exit(0);
+        // Parent — wait for the child to signal readiness.
+        unsafe { libc::close(pipe_write) };
+        let mut buf = [0u8; 1];
+        let n = unsafe { libc::read(pipe_read, buf.as_mut_ptr().cast(), 1) };
+        unsafe { libc::close(pipe_read) };
+        if n == 1 && buf[0] == b'!' {
+            eprintln!("Daemon started (PID {pid}), log: {}", log_path.display());
+            std::process::exit(0);
+        } else {
+            eprintln!(
+                "Daemon child failed to start; check log: {}",
+                log_path.display()
+            );
+            std::process::exit(1);
+        }
     }
 
     // --- child ---
+    unsafe { libc::close(pipe_read) };
 
     // New session so we detach from the controlling terminal.
     if unsafe { libc::setsid() } < 0 {
+        unsafe { libc::close(pipe_write) };
         return Err("setsid() failed".into());
     }
 
@@ -205,6 +226,12 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
         libc::dup2(fd, libc::STDOUT_FILENO);
         libc::dup2(fd, libc::STDERR_FILENO);
         libc::close(libc::STDIN_FILENO);
+    }
+
+    // Signal the parent that child startup succeeded.
+    unsafe {
+        libc::write(pipe_write, b"!".as_ptr().cast(), 1);
+        libc::close(pipe_write);
     }
 
     Ok(())

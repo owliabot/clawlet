@@ -333,6 +333,16 @@ remove_isolated_data() {
         darwin) clawlet_home="/var/$CLAWLET_USER" ;;
     esac
 
+    # Also clean up legacy macOS path (/Users/$CLAWLET_USER) from older installs.
+    if [[ "$os" == "darwin" ]]; then
+        local legacy_home="/Users/$CLAWLET_USER"
+        local legacy_data="$legacy_home/.clawlet"
+        if [[ -d "$legacy_data" ]]; then
+            warn "Found legacy data at $legacy_data — removing"
+            rm -rf "$legacy_data" || warn "Failed to remove legacy data directory"
+        fi
+    fi
+
     local data_dir="$clawlet_home/.clawlet"
     
     if [[ ! -d "$data_dir" ]]; then

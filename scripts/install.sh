@@ -205,16 +205,16 @@ build_binary() {
         return 0
     fi
 
-    # Try downloading pre-built binary first (works with curl | bash flow)
-    if ! download_binary 2>/dev/null; then
-        # Fallback to building from source if download fails and Cargo.toml exists
-        if [[ -f "Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
-            info "Download failed, building from source..."
-            cargo build --release -p clawlet-cli || die "Build failed"
-            success "Build complete"
-        else
-            die "Failed to download pre-built binary and cannot build from source (Cargo.toml or cargo not found)"
-        fi
+    # Prefer building from local source when in a repo checkout
+    if [[ -f "Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
+        info "Building from local source..."
+        cargo build --release -p clawlet-cli || die "Build failed"
+        success "Build complete"
+    elif download_binary 2>/dev/null; then
+        # Fallback to downloading pre-built binary (works with curl | bash flow)
+        :
+    else
+        die "Cannot build from source (Cargo.toml or cargo not found) and failed to download pre-built binary"
     fi
 }
 

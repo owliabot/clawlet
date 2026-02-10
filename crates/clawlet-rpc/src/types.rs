@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use alloy::primitives::{Address, Bytes, TxHash, B256};
+use alloy::primitives::{Address, Bytes, TxHash, B256, U256};
 use clawlet_core::auth::TokenScope;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -293,9 +293,9 @@ pub struct AddressResponse {
 pub struct SendRawRequest {
     /// Recipient address (hex, 0x-prefixed).
     pub to: Address,
-    /// ETH value to send (default 0).
+    /// ETH value in wei.
     #[serde(default)]
-    pub value: Option<Amount>,
+    pub value: Option<U256>,
     /// Raw calldata bytes.
     #[serde(default)]
     pub data: Option<Bytes>,

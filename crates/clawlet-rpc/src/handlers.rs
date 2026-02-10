@@ -229,11 +229,8 @@ pub async fn handle_send_raw(
         .get(&chain_id)
         .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
 
-    // Parse value (default 0)
-    let value = match req.value {
-        Some(amount) => to_raw(amount, 18).map_err(HandlerError::BadRequest)?,
-        None => U256::ZERO,
-    };
+    // Value in wei (default 0)
+    let value = req.value.unwrap_or(U256::ZERO);
 
     // Use calldata directly (already Bytes)
     let data = req.data.clone().unwrap_or_default();

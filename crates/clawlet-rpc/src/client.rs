@@ -233,7 +233,7 @@ impl RpcClient {
         let client = self.build_client()?;
         let req = serde_json::json!({
             "to": to.to_string(),
-            "value": value.map(|v| v.to_string()),
+            "value": value,
             "data": data,
             "chain_id": chain_id,
             "gas_limit": gas_limit,

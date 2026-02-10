@@ -244,6 +244,11 @@ fn decrypt_mnemonic(json: &KeystoreJson, password: &str) -> Result<String> {
     // Decrypt with AES-256-GCM
     let cipher = Aes256Gcm::new_from_slice(&derived_key)
         .map_err(|e| KeystoreError::Crypto(e.to_string()))?;
+    if nonce_bytes.len() != 12 {
+        return Err(KeystoreError::Crypto(
+            "invalid nonce length (expected 12 bytes)".into(),
+        ));
+    }
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Reconstruct ciphertext + tag

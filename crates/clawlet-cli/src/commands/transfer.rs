@@ -1,12 +1,12 @@
 //! `clawlet transfer` — send ETH or ERC-20 tokens via the running RPC server.
 //!
-//! Builds a JSON-RPC request and POSTs it to the clawlet server.
-//! All keystore unlocking, policy checking, signing, and broadcasting
-//! happen server-side.
+//! Delegates to [`clawlet_rpc::client::RpcClient`] which handles auth,
+//! HTTP transport, and JSON-RPC framing.
 
 use clawlet_evm::Address;
+use clawlet_rpc::client::RpcClient;
+use clawlet_rpc::types::TransferStatus;
 use rust_decimal::Decimal;
-use serde_json::json;
 
 /// Re-export [`clawlet_rpc::types::TokenSpec`] as `Asset` so the CLI arg
 /// type in `main.rs` stays unchanged.
@@ -26,18 +26,12 @@ pub async fn run(
     skip_confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = addr.as_deref().unwrap_or(DEFAULT_ADDR);
-    let rpc_url = format!("http://{server_addr}/rpc");
-
-    // Build the token spec for the RPC call
     let token_spec = asset.to_string();
-
-    // Resolve chain_id (default to 1 if not specified)
     let chain_id = chain_id.unwrap_or(1);
-
-    // Convert human-readable amount to string for the RPC call
     let amount_str = amount.to_string();
 
     // Show summary and ask for confirmation
+    let rpc_url = format!("http://{server_addr}/rpc");
     println!("\n=== Transfer Summary ===");
     println!("  To:       {to}");
     println!("  Amount:   {amount_str} {token_spec}");
@@ -55,81 +49,27 @@ pub async fn run(
         }
     }
 
-    // Build JSON-RPC request
-    // Server expects `token_type` field (not `token`) per TransferRequestWithAuth
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "transfer",
-        "params": {
-            "to": to.to_string(),
-            "amount": amount_str,
-            "token_type": token_spec,
-            "chain_id": chain_id,
-        }
-    });
-
-    // Send request
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&rpc_url)
-        .header("Authorization", format!("Bearer {auth_token}"))
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
+    // Use RpcClient for the actual call
+    let client = RpcClient::with_addr(server_addr).with_token(auth_token);
+    let resp = client
+        .transfer(&to.to_string(), &amount_str, &token_spec, chain_id)
         .await
-        .map_err(|e| format!("failed to connect to clawlet server at {rpc_url}: {e}"))?;
+        .map_err(|e| format!("RPC call failed: {e}"))?;
 
-    let status = response.status();
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("failed to parse server response: {e}"))?;
-
-    // Handle JSON-RPC error
-    if let Some(error) = body.get("error") {
-        let message = error
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown error");
-        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-        return Err(format!("RPC error {code}: {message}").into());
-    }
-
-    if !status.is_success() {
-        return Err(format!("HTTP {status}: {body}").into());
-    }
-
-    // Extract result
-    let result = body
-        .get("result")
-        .ok_or("missing 'result' field in response")?;
-
-    let tx_status = result
-        .get("status")
-        .and_then(|s| s.as_str())
-        .unwrap_or("unknown");
-
-    match tx_status {
-        "success" => {
-            if let Some(tx_hash) = result.get("tx_hash").and_then(|h| h.as_str()) {
+    match resp.status {
+        TransferStatus::Success => {
+            if let Some(tx_hash) = resp.tx_hash {
                 println!("✅ Transaction sent! Hash: {tx_hash}");
             } else {
-                println!("✅ Transfer successful: {result}");
+                println!("✅ Transfer successful.");
             }
-            if let Some(audit_id) = result.get("audit_id").and_then(|a| a.as_str()) {
+            if let Some(audit_id) = &resp.audit_id {
                 println!("   Audit ID: {audit_id}");
             }
         }
-        "denied" => {
-            let reason = result
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .unwrap_or("no reason given");
+        TransferStatus::Denied => {
+            let reason = resp.reason.as_deref().unwrap_or("no reason given");
             return Err(format!("Transfer denied: {reason}").into());
-        }
-        _ => {
-            println!("Transfer result: {result}");
         }
     }
 

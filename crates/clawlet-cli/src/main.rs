@@ -84,6 +84,37 @@ enum Commands {
         addr: Option<String>,
     },
 
+    /// Send a raw transaction (bypasses policy engine).
+    Send {
+        /// Recipient address (0x...).
+        #[arg(long)]
+        to: alloy::primitives::Address,
+
+        /// ETH value to send as raw wei (U256). Default: 0.
+        #[arg(long)]
+        value: Option<alloy::primitives::U256>,
+
+        /// Hex-encoded calldata (with or without 0x prefix).
+        #[arg(long)]
+        data: Option<String>,
+
+        /// Chain ID (default: 1).
+        #[arg(long)]
+        chain_id: Option<u64>,
+
+        /// Gas limit override.
+        #[arg(long)]
+        gas_limit: Option<u64>,
+
+        /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
+        #[arg(long, env = "CLAWLET_AUTH_TOKEN")]
+        auth_token: String,
+
+        /// RPC server address (default: 127.0.0.1:9100).
+        #[arg(long)]
+        addr: Option<String>,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -128,6 +159,15 @@ async fn main() {
             chain_id,
             addr,
         } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token).await,
+        Commands::Send {
+            to,
+            value,
+            data,
+            chain_id,
+            gas_limit,
+            auth_token,
+            addr,
+        } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::Start {
             agent,

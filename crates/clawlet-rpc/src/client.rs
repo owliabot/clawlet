@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::server::DEFAULT_ADDR;
-use crate::types::{BalanceResponse, ExecuteResponse, SkillsResponse, TransferResponse};
+use crate::types::{
+    BalanceResponse, ExecuteResponse, SendRawResponse, SkillsResponse, TransferResponse,
+};
 
 /// Error type for RPC client operations.
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +218,27 @@ impl RpcClient {
             params,
         };
         let result: ExecuteResponse = client.request("execute", rpc_params![req]).await?;
+        Ok(result)
+    }
+
+    /// Send a raw transaction (bypasses policy engine).
+    pub async fn send_raw(
+        &self,
+        to: alloy::primitives::Address,
+        value: Option<alloy::primitives::U256>,
+        data: Option<alloy::primitives::Bytes>,
+        chain_id: u64,
+        gas_limit: Option<u64>,
+    ) -> Result<SendRawResponse, ClientError> {
+        let client = self.build_client()?;
+        let req = serde_json::json!({
+            "to": to.to_string(),
+            "value": value,
+            "data": data,
+            "chain_id": chain_id,
+            "gas_limit": gas_limit,
+        });
+        let result: SendRawResponse = client.request("send_raw", rpc_params![req]).await?;
         Ok(result)
     }
 

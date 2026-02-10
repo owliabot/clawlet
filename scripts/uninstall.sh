@@ -337,15 +337,14 @@ remove_isolated_data() {
     if [[ "$os" == "darwin" ]]; then
         local legacy_home="/Users/$CLAWLET_USER"
         local legacy_data="$legacy_home/.clawlet"
+        if [[ -d "$legacy_data" ]]; then
+            warn "Found legacy data at $legacy_data — removing"
+            rm -rf "$legacy_data" || warn "Failed to remove legacy data directory"
+        fi
         if [[ -d "$legacy_home" ]]; then
             # Older isolated installs used a dedicated macOS user home at /Users/clawlet.
-            if [[ "$CLAWLET_USER" == "clawlet" ]]; then
-                warn "Found legacy macOS home at $legacy_home — removing"
-                rm -rf "$legacy_home" || warn "Failed to remove legacy home directory"
-            elif [[ -d "$legacy_data" ]]; then
-                warn "Found legacy data at $legacy_data — removing"
-                rm -rf "$legacy_data" || warn "Failed to remove legacy data directory"
-            fi
+            warn "Found legacy macOS home at $legacy_home — removing"
+            rm -rf "$legacy_home" || warn "Failed to remove legacy home directory"
         fi
     fi
 

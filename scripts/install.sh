@@ -205,13 +205,16 @@ build_binary() {
         return 0
     fi
 
-    if [[ -f "Cargo.toml" ]]; then
-        info "Building $BINARY_NAME from source (release)..."
-        cargo build --release -p clawlet-cli || die "Build failed"
-        success "Build complete"
-    else
-        info "No Cargo.toml found — downloading pre-built binary..."
-        download_binary
+    # Try downloading pre-built binary first (works with curl | bash flow)
+    if ! download_binary 2>/dev/null; then
+        # Fallback to building from source if download fails and Cargo.toml exists
+        if [[ -f "Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
+            info "Download failed, building from source..."
+            cargo build --release -p clawlet-cli || die "Build failed"
+            success "Build complete"
+        else
+            die "Failed to download pre-built binary and cannot build from source (Cargo.toml or cargo not found)"
+        fi
     fi
 }
 
@@ -244,24 +247,10 @@ install_standard() {
 # === Isolated Mode Install ===
 
 create_system_user_linux() {
+    local user_exists=false
     if id "$CLAWLET_USER" &>/dev/null; then
+        user_exists=true
         info "User '$CLAWLET_USER' already exists"
-        if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
-            info "Creating system group '$CLAWLET_GROUP'..."
-            if groupadd --system "$CLAWLET_GROUP" 2>/dev/null; then
-                :
-            else
-                sudo groupadd --system "$CLAWLET_GROUP" || die "Failed to create group '$CLAWLET_GROUP'"
-            fi
-        fi
-        info "Ensuring '$CLAWLET_USER' is a member of '$CLAWLET_GROUP'..."
-        if usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
-            :
-        else
-            sudo usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" \
-                || die "Failed to add user '$CLAWLET_USER' to group '$CLAWLET_GROUP'"
-        fi
-        return 0
     fi
 
     if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
@@ -271,6 +260,18 @@ create_system_user_linux() {
         else
             sudo groupadd --system "$CLAWLET_GROUP" || die "Failed to create group '$CLAWLET_GROUP'"
         fi
+    fi
+
+    if [[ "$user_exists" == "true" ]]; then
+        info "Ensuring '$CLAWLET_USER' is a member of '$CLAWLET_GROUP'..."
+        if usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
+            :
+        else
+            sudo usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" \
+                || die "Failed to add user '$CLAWLET_USER' to group '$CLAWLET_GROUP'"
+        fi
+        success "User '$CLAWLET_USER' group membership verified"
+        return 0
     fi
 
     info "Creating system user '$CLAWLET_USER'..."

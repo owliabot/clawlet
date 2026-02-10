@@ -57,6 +57,11 @@ impl AuditLogger {
     /// Create or open an audit log file for appending.
     pub fn new(path: &Path) -> Result<Self, AuditError> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(Self {
             path: path.to_path_buf(),
             writer: BufWriter::new(file),

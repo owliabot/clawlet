@@ -156,7 +156,7 @@ pub fn prepare(
 
     let (signing_key, _address) = if already_initialized {
         // Already initialized - just ask for password once
-        eprintln!("🔐 Enter password: ");
+        eprintln!("🔐 Enter wallet password: ");
         let password = rpassword::read_password()?;
 
         let keys = Keystore::list(&keystore_dir)?;
@@ -172,9 +172,9 @@ pub fn prepare(
         (key, addr)
     } else {
         // New init - ask for password with confirmation
-        eprintln!("🔐 Enter password: ");
+        eprintln!("🔐 Enter wallet password: ");
         let password = rpassword::read_password()?;
-        eprintln!("🔐 Confirm password: ");
+        eprintln!("🔐 Confirm wallet password: ");
         let confirm = rpassword::read_password()?;
 
         if password != confirm {
@@ -200,11 +200,27 @@ pub fn prepare(
         let policy_path = data_dir.join("policy.yaml");
         if !policy_path.exists() {
             std::fs::write(&policy_path, DEFAULT_POLICY)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &policy_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )?;
+            }
         }
 
         // Write default config.yaml
         if !config_path.exists() {
             std::fs::write(&config_path, default_config(&data_dir))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &config_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )?;
+            }
         }
 
         eprintln!("✅ Initialized {}", data_dir.display());

@@ -197,12 +197,22 @@ pub fn run(
     let policy_path = data_dir.join("policy.yaml");
     if !policy_path.exists() {
         std::fs::write(&policy_path, DEFAULT_POLICY)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
 
     // Write default config.yaml
     let config_path = data_dir.join("config.yaml");
     if !config_path.exists() {
         std::fs::write(&config_path, default_config(&data_dir))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
 
     eprintln!();

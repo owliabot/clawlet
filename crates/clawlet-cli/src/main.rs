@@ -130,8 +130,8 @@ enum Commands {
         #[arg(long, default_value = "trade")]
         scope: String,
 
-        /// Token expiry duration (default: 1y).
-        #[arg(long, default_value = "1y")]
+        /// Token expiry duration (default: 24h).
+        #[arg(long, default_value = "24h")]
         expires: String,
 
         /// Data directory (default: ~/.clawlet).
@@ -165,6 +165,12 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
         .append(true)
         .open(log_path)
         .map_err(|e| format!("failed to open log file {}: {e}", log_path.display()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        log_file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("failed to set log file permissions: {e}"))?;
+    }
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -185,6 +191,10 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
 
     // Write PID file.
     std::fs::write(pid_path, format!("{}", std::process::id()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600))?;
+    }
 
     // Redirect stdout & stderr to the log file; close stdin.
     let fd = log_file.as_raw_fd();

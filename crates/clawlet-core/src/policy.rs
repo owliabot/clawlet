@@ -3,7 +3,8 @@
 //! Loads policy from YAML and enforces daily limits, per-tx limits,
 //! token/chain allowlists, and approval thresholds.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
@@ -59,7 +60,8 @@ impl Policy {
     }
 }
 
-/// In-memory daily spending tracker.
+/// Daily spending tracker state, serializable for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DailyTracker {
     /// The date string (YYYY-MM-DD) for the current tracking period.
     date: String,
@@ -71,10 +73,12 @@ struct DailyTracker {
 pub struct PolicyEngine {
     policy: Policy,
     tracker: Mutex<DailyTracker>,
+    /// Optional path for persisting spending state.
+    spending_path: Option<PathBuf>,
 }
 
 impl PolicyEngine {
-    /// Create a new engine with the given policy.
+    /// Create a new engine with the given policy (no persistence).
     pub fn new(policy: Policy) -> Self {
         Self {
             policy,
@@ -82,13 +86,68 @@ impl PolicyEngine {
                 date: today(),
                 total_usd: 0.0,
             }),
+            spending_path: None,
         }
     }
 
-    /// Load policy from a YAML file and create the engine.
-    pub fn from_file(path: &std::path::Path) -> Result<Self, PolicyError> {
+    /// Create a new engine with spending persistence at the given path.
+    ///
+    /// If the file exists and contains valid state for today, the tracker
+    /// is restored. Otherwise the tracker starts fresh.
+    pub fn with_spending_persistence(
+        policy: Policy,
+        spending_path: PathBuf,
+    ) -> Result<Self, PolicyError> {
+        let tracker = Self::load_tracker(&spending_path);
+        Ok(Self {
+            policy,
+            tracker: Mutex::new(tracker),
+            spending_path: Some(spending_path),
+        })
+    }
+
+    /// Load policy from a YAML file and create the engine (no persistence).
+    pub fn from_file(path: &Path) -> Result<Self, PolicyError> {
         let policy = Policy::from_file(path)?;
         Ok(Self::new(policy))
+    }
+
+    /// Load policy from a YAML file with spending persistence.
+    pub fn from_file_with_spending(
+        policy_path: &Path,
+        spending_path: PathBuf,
+    ) -> Result<Self, PolicyError> {
+        let policy = Policy::from_file(policy_path)?;
+        Self::with_spending_persistence(policy, spending_path)
+    }
+
+    /// Load tracker state from disk, returning a fresh tracker if file is
+    /// missing, unreadable, or belongs to a different day.
+    fn load_tracker(path: &Path) -> DailyTracker {
+        let current_date = today();
+        if let Ok(data) = std::fs::read_to_string(path) {
+            if let Ok(tracker) = serde_json::from_str::<DailyTracker>(&data) {
+                if tracker.date == current_date {
+                    return tracker;
+                }
+            }
+        }
+        DailyTracker {
+            date: current_date,
+            total_usd: 0.0,
+        }
+    }
+
+    /// Persist the current tracker state atomically (write-to-temp + rename).
+    fn persist_tracker(&self, tracker: &DailyTracker) {
+        if let Some(ref path) = self.spending_path {
+            let tmp_path = path.with_extension("json.tmp");
+            if let Ok(data) = serde_json::to_string_pretty(tracker) {
+                if std::fs::write(&tmp_path, data).is_ok() {
+                    let _ = std::fs::rename(&tmp_path, path);
+                }
+            }
+        }
     }
 
     /// Check whether a transfer is allowed by the policy.
@@ -160,6 +219,7 @@ impl PolicyEngine {
 
             // All checks passed — record spending
             tracker.total_usd += amount_usd;
+            self.persist_tracker(&tracker);
         }
 
         Ok(PolicyDecision::Allowed)

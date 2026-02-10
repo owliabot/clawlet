@@ -101,13 +101,30 @@ pub fn run(
     eprintln!("This password encrypts your private key AND authenticates API requests.");
     eprintln!("When granting session tokens to AI agents, you'll use this same password.");
     eprintln!();
-    eprint!("Enter password: ");
-    let password = rpassword::read_password()?;
-    eprint!("Confirm password: ");
-    let confirm = rpassword::read_password()?;
-    if password != confirm {
-        return Err("passwords do not match".into());
-    }
+    let password = loop {
+        eprint!("Enter password: ");
+        let password = rpassword::read_password()?;
+
+        let issues = validate_password_strength(&password);
+        if !issues.is_empty() {
+            eprintln!("Password does not meet requirements:");
+            for issue in &issues {
+                eprintln!("  - {issue}");
+            }
+            eprintln!();
+            continue;
+        }
+
+        eprint!("Confirm password: ");
+        let confirm = rpassword::read_password()?;
+        if password != confirm {
+            eprintln!("Passwords do not match. Please try again.");
+            eprintln!();
+            continue;
+        }
+
+        break password;
+    };
 
     let address = if from_mnemonic {
         // Prompt for existing mnemonic
@@ -167,6 +184,27 @@ pub fn run(
     eprintln!("   You'll be prompted for the keystore password to authorize the grant.");
 
     Ok(())
+}
+
+/// Validate password strength, returning a list of unmet requirements.
+fn validate_password_strength(password: &str) -> Vec<&'static str> {
+    let mut issues = Vec::new();
+    if password.len() < 8 {
+        issues.push("must be at least 8 characters");
+    }
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        issues.push("must contain at least 1 uppercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_lowercase()) {
+        issues.push("must contain at least 1 lowercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        issues.push("must contain at least 1 digit");
+    }
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        issues.push("must contain at least 1 symbol (non-alphanumeric character)");
+    }
+    issues
 }
 
 /// Set keystore files to 0600.

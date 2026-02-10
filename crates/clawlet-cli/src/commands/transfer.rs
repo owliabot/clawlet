@@ -4,9 +4,43 @@
 //! All keystore unlocking, policy checking, signing, and broadcasting
 //! happen server-side.
 
+use std::fmt;
+use std::str::FromStr;
+
 use clawlet_evm::Address;
 use rust_decimal::Decimal;
 use serde_json::json;
+
+/// Asset to transfer: native ETH or an ERC-20 token.
+#[derive(Clone, Debug)]
+pub enum Asset {
+    /// Native chain currency (e.g. ETH).
+    Native,
+    /// ERC-20 token identified by contract address.
+    Erc20(Address),
+}
+
+impl FromStr for Asset {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("ETH") {
+            Ok(Self::Native)
+        } else {
+            let addr: Address = s.parse().map_err(|e| format!("invalid address: {e}"))?;
+            Ok(Self::Erc20(addr))
+        }
+    }
+}
+
+impl fmt::Display for Asset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Native => f.write_str("ETH"),
+            Self::Erc20(addr) => write!(f, "{addr}"),
+        }
+    }
+}
 
 /// Default RPC server address.
 const DEFAULT_ADDR: &str = "127.0.0.1:9100";
@@ -15,7 +49,7 @@ const DEFAULT_ADDR: &str = "127.0.0.1:9100";
 pub async fn run(
     to: Address,
     amount: Decimal,
-    asset: String,
+    asset: Asset,
     chain_id: Option<u64>,
     addr: Option<String>,
     auth_token: String,
@@ -24,12 +58,8 @@ pub async fn run(
     let server_addr = addr.as_deref().unwrap_or(DEFAULT_ADDR);
     let rpc_url = format!("http://{server_addr}/rpc");
 
-    // Build the token spec: "ETH" for native, or the contract address as-is
-    let token_spec = if asset.eq_ignore_ascii_case("ETH") {
-        "ETH".to_string()
-    } else {
-        asset.clone()
-    };
+    // Build the token spec for the RPC call
+    let token_spec = asset.to_string();
 
     // Resolve chain_id (default to 1 if not specified)
     let chain_id = chain_id.unwrap_or(1);

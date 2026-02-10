@@ -73,7 +73,7 @@ enum Commands {
 
         /// Asset to transfer: "ETH" or ERC-20 contract address (default: ETH).
         #[arg(long, default_value = "ETH")]
-        asset: String,
+        asset: commands::transfer::Asset,
 
         /// Chain ID override (default: 1).
         #[arg(long)]

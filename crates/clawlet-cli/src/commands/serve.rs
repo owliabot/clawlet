@@ -112,7 +112,10 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prepared = prepare(config_path, addr)?;
 
-    println!("Clawlet RPC server listening on http://{}", prepared.listen_addr);
+    println!(
+        "Clawlet RPC server listening on http://{}",
+        prepared.listen_addr
+    );
 
     start(prepared).await
 }

@@ -280,7 +280,10 @@ pub async fn run(
     let prepared = prepare(agent, scope, expires, data_dir, addr)?;
 
     eprintln!();
-    eprintln!("🚀 Clawlet server running on http://{}", prepared.listen_addr);
+    eprintln!(
+        "🚀 Clawlet server running on http://{}",
+        prepared.listen_addr
+    );
     eprintln!("   Press Ctrl+C to stop");
 
     start(prepared).await

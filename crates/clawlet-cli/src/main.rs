@@ -172,10 +172,7 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
     }
     if pid > 0 {
         // Parent — report and exit.
-        eprintln!(
-            "Daemon started (PID {pid}), log: {}",
-            log_path.display(),
-        );
+        eprintln!("Daemon started (PID {pid}), log: {}", log_path.display(),);
         std::process::exit(0);
     }
 
@@ -205,10 +202,7 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
 /// `config.keystore_path` is typically `{data_dir}/keystore`, so its parent
 /// is the data directory.
 fn data_dir_from_config(config: &clawlet_core::config::Config) -> &Path {
-    config
-        .keystore_path
-        .parent()
-        .unwrap_or(Path::new("."))
+    config.keystore_path.parent().unwrap_or(Path::new("."))
 }
 
 /// Daemon path for `serve --daemon`.

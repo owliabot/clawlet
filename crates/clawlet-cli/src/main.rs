@@ -266,6 +266,24 @@ fn daemonize(
         return Err("setsid() failed".into());
     }
 
+    // Check for an existing PID file — if another daemon is still running, bail out
+    // before clobbering the file (avoids losing track of the original process).
+    if let Ok(contents) = std::fs::read_to_string(pid_path) {
+        if let Ok(existing_pid) = contents.trim().parse::<i32>() {
+            // kill(pid, 0) checks if process exists without sending a signal
+            if unsafe { libc::kill(existing_pid, 0) } == 0 {
+                let msg = format!(
+                    "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
+                    pid_path.display()
+                );
+                write_pipe_all(pipe_write, msg.as_bytes());
+                unsafe { libc::close(pipe_write) };
+                return Err(format!("another daemon already running (PID {existing_pid})").into());
+            }
+            // Stale PID file — previous daemon exited without cleanup; safe to overwrite.
+        }
+    }
+
     // Write PID file.
     if let Err(e) = std::fs::write(pid_path, format!("{}", std::process::id())) {
         write_pipe_all(

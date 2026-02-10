@@ -268,15 +268,36 @@ pub fn prepare(
 
 /// Start the server with previously prepared state (async).
 pub async fn start(prepared: PreparedStart) -> Result<(), Box<dyn std::error::Error>> {
+    start_notify(prepared, None).await
+}
+
+/// Start the server with previously prepared state and optional ready notification fd.
+///
+/// If `ready_fd` is provided, "ok\n" will be written to it after the RPC server
+/// successfully binds, signaling daemon readiness to the parent process.
+#[cfg(unix)]
+pub async fn start_notify(
+    prepared: PreparedStart,
+    ready_fd: impl Into<Option<i32>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
 
-    start_server_with_session(
+    start_server_with_session_notify(
         &prepared.config,
         prepared.signer,
         prepared.listen_addr,
         prepared.session_store,
+        ready_fd.into(),
     )
     .await
+}
+
+#[cfg(not(unix))]
+pub async fn start_notify(
+    prepared: PreparedStart,
+    _ready_fd: impl Into<Option<i32>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    start(prepared).await
 }
 
 /// Run the `start` subcommand (non-daemon mode).
@@ -299,12 +320,13 @@ pub async fn run(
     start(prepared).await
 }
 
-/// Start the RPC server with a pre-populated session store.
-async fn start_server_with_session(
+/// Start the RPC server with a pre-populated session store and optional ready notification fd.
+async fn start_server_with_session_notify(
     config: &Config,
     signer: LocalSigner,
     addr: SocketAddr,
     session_store: SessionStore,
+    ready_fd: Option<i32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -352,6 +374,12 @@ async fn start_server_with_session(
     });
 
     let server = Server::builder().build(addr).await?;
+
+    // Signal readiness after successful bind
+    #[cfg(unix)]
+    if let Some(fd) = ready_fd {
+        crate::signal_daemon_ready(fd);
+    }
 
     let rpc_impl = RpcServerImpl::new(Arc::clone(&state));
     let handle = server.start(rpc_impl.into_rpc());

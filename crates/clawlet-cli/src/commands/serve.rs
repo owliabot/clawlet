@@ -92,17 +92,38 @@ pub fn prepare(
 
 /// Start the RPC server with previously prepared state (async).
 pub async fn start(prepared: PreparedServer) -> Result<(), Box<dyn std::error::Error>> {
+    start_notify(prepared, None).await
+}
+
+/// Start the RPC server with previously prepared state and optional ready notification fd.
+///
+/// If `ready_fd` is provided, "ok\n" will be written to it after the RPC server
+/// successfully binds, signaling daemon readiness to the parent process.
+#[cfg(unix)]
+pub async fn start_notify(
+    prepared: PreparedServer,
+    ready_fd: impl Into<Option<i32>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
 
     // Start the HTTP JSON-RPC server
-    RpcServer::start_with_config(
+    RpcServer::start_with_config_notify(
         &prepared.config,
         prepared.signer,
         Some(prepared.listen_addr),
+        ready_fd.into(),
     )
     .await?;
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub async fn start_notify(
+    prepared: PreparedServer,
+    _ready_fd: impl Into<Option<i32>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    start(prepared).await
 }
 
 /// Run the `serve` subcommand (non-daemon mode).

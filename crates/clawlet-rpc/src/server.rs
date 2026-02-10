@@ -53,6 +53,35 @@ use crate::types::{
     BalanceQuery, ExecuteRequest, HandlerError, SendRawRequest, TokenSpec, TransferRequest,
 };
 
+// ---- Daemon Readiness Signal ----
+
+/// Signal daemon readiness by writing "ok\n" to the pipe fd and closing it.
+///
+/// This unblocks the parent process, which then exits successfully.
+#[cfg(unix)]
+fn signal_daemon_ready(fd: i32) {
+    let msg = b"ok\n";
+    let mut off = 0usize;
+    while off < msg.len() {
+        let n = unsafe {
+            libc::write(
+                fd,
+                msg[off..].as_ptr().cast(),
+                (msg.len() - off) as libc::size_t,
+            )
+        };
+        if n > 0 {
+            off += n as usize;
+            continue;
+        }
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
+    unsafe { libc::close(fd) };
+}
+
 // ---- Server Error Type ----
 
 /// Errors that can occur when running the RPC server.
@@ -507,6 +536,19 @@ impl RpcServer {
         signer: LocalSigner,
         addr: Option<SocketAddr>,
     ) -> Result<(), ServerError> {
+        Self::start_with_config_notify(config, signer, addr, None).await
+    }
+
+    /// Start the RPC server with optional ready notification fd.
+    ///
+    /// If `ready_fd` is provided, "ok\n" will be written to it after the server
+    /// successfully binds, signaling daemon readiness to the parent process.
+    pub async fn start_with_config_notify(
+        config: &Config,
+        signer: LocalSigner,
+        addr: Option<SocketAddr>,
+        ready_fd: Option<i32>,
+    ) -> Result<(), ServerError> {
         // Load policy with spending persistence
         let spending_path = config
             .policy_path
@@ -557,11 +599,20 @@ impl RpcServer {
         };
 
         let server = RpcServer::new(server_config, state);
-        server.run().await
+        server.run_notify(ready_fd).await
     }
 
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
+        self.run_notify(None).await
+    }
+
+    /// Run the HTTP server with optional ready notification fd.
+    ///
+    /// If `ready_fd` is provided, "ok\n" will be written to it after the server
+    /// successfully binds (after `.build()` succeeds), signaling daemon readiness
+    /// to the parent process.
+    pub async fn run_notify(&self, ready_fd: Option<i32>) -> Result<(), ServerError> {
         // Build HTTP middleware that extracts Authorization header into per-request extensions
         let http_middleware =
             tower::ServiceBuilder::new().map_request(move |mut req: http::Request<_>| {
@@ -590,6 +641,12 @@ impl RpcServer {
             .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
+
+        // Signal readiness after successful bind
+        #[cfg(unix)]
+        if let Some(fd) = ready_fd {
+            signal_daemon_ready(fd);
+        }
 
         // Create the RPC implementation (token accessed via task-local set by RPC middleware)
         let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));

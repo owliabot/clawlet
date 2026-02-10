@@ -154,14 +154,32 @@ enum Commands {
 // Daemon helpers
 // ---------------------------------------------------------------------------
 
+/// Guard that removes the PID file when dropped.
+///
+/// This ensures the PID file is cleaned up when the daemon exits,
+/// whether normally or via panic/crash.
+#[cfg(unix)]
+struct PidFileGuard(PathBuf);
+
+#[cfg(unix)]
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Fork the current process into a background daemon.
 ///
 /// - Opens `log_path` for append (stdout/stderr are redirected there).
-/// - The **parent** prints a status message and exits successfully.
-/// - The **child** calls `setsid`, writes its PID to `pid_path`, closes
-///   stdin, and returns so the caller can continue with server startup.
+/// - The **parent** waits for the child to signal readiness, then exits.
+/// - The **child** returns the pipe_write fd and PidFileGuard. The caller
+///   must signal readiness (write "ok\n" to the fd) after critical init
+///   (e.g., after RPC server bind succeeds) to unblock the parent.
 #[cfg(unix)]
-fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn daemonize(
+    log_path: &Path,
+    pid_path: &Path,
+) -> Result<(i32, PidFileGuard), Box<dyn std::error::Error>> {
     fn write_pipe_all(fd: i32, bytes: &[u8]) {
         let mut off = 0usize;
         while off < bytes.len() {
@@ -293,17 +311,45 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
         libc::close(libc::STDIN_FILENO);
     }
 
-    // Signal the parent that child startup succeeded.
-    unsafe {
-        write_pipe_all(pipe_write, b"ok\n");
-        libc::close(pipe_write);
-    }
+    // Return the pipe_write fd and PidFileGuard. The caller must signal
+    // readiness by writing "ok\n" to pipe_write after critical initialization
+    // (e.g., after RPC server bind succeeds).
+    let guard = PidFileGuard(pid_path.to_path_buf());
+    Ok((pipe_write, guard))
+}
 
-    Ok(())
+/// Signal daemon readiness by writing "ok\n" to the pipe fd and closing it.
+///
+/// This unblocks the parent process, which then exits successfully.
+#[cfg(unix)]
+pub(crate) fn signal_daemon_ready(fd: i32) {
+    let msg = b"ok\n";
+    let mut off = 0usize;
+    while off < msg.len() {
+        let n = unsafe {
+            libc::write(
+                fd,
+                msg[off..].as_ptr().cast(),
+                (msg.len() - off) as libc::size_t,
+            )
+        };
+        if n > 0 {
+            off += n as usize;
+            continue;
+        }
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
+    unsafe { libc::close(fd) };
 }
 
 #[cfg(not(unix))]
-fn daemonize(_log_path: &Path, _pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn daemonize(
+    _log_path: &Path,
+    _pid_path: &Path,
+) -> Result<(i32, PidFileGuard), Box<dyn std::error::Error>> {
     Err("--daemon is only supported on Unix targets".into())
 }
 
@@ -316,6 +362,7 @@ fn data_dir_from_config(config: &clawlet_core::config::Config) -> &Path {
 }
 
 /// Daemon path for `serve --daemon`.
+#[cfg(unix)]
 fn run_serve_daemon(
     config: Option<PathBuf>,
     addr: Option<SocketAddr>,
@@ -330,16 +377,25 @@ fn run_serve_daemon(
         "Clawlet RPC server listening on http://{}",
         prepared.listen_addr
     );
-    daemonize(&log_path, &pid_path)?;
+    let (ready_fd, _pid_guard) = daemonize(&log_path, &pid_path)?;
 
     // Child: init tracing (writes to redirected stderr → log file).
     tracing_subscriber::fmt::init();
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(commands::serve::start(prepared))
+    rt.block_on(commands::serve::start_notify(prepared, ready_fd))
+}
+
+#[cfg(not(unix))]
+fn run_serve_daemon(
+    _config: Option<PathBuf>,
+    _addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("--daemon is only supported on Unix targets".into())
 }
 
 /// Daemon path for `start --daemon`.
+#[cfg(unix)]
 fn run_start_daemon(
     agent: String,
     scope: String,
@@ -357,12 +413,23 @@ fn run_start_daemon(
         "Clawlet RPC server listening on http://{}",
         prepared.listen_addr
     );
-    daemonize(&log_path, &pid_path)?;
+    let (ready_fd, _pid_guard) = daemonize(&log_path, &pid_path)?;
 
     tracing_subscriber::fmt::init();
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(commands::start::start(prepared))
+    rt.block_on(commands::start::start_notify(prepared, ready_fd))
+}
+
+#[cfg(not(unix))]
+fn run_start_daemon(
+    _agent: String,
+    _scope: String,
+    _expires: String,
+    _data_dir: Option<PathBuf>,
+    _addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("--daemon is only supported on Unix targets".into())
 }
 
 // ---------------------------------------------------------------------------

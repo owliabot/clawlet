@@ -88,23 +88,23 @@ enum Commands {
     SendTx {
         /// Recipient address (0x...).
         #[arg(long)]
-        to: String,
+        to: alloy::primitives::Address,
 
         /// ETH value in human units (e.g. "0.1"). Default: 0.
         #[arg(long)]
-        value: Option<String>,
+        value: Option<rust_decimal::Decimal>,
 
         /// Calldata hex (0x-prefixed). Default: empty.
         #[arg(long)]
-        data: Option<String>,
+        data: Option<alloy::primitives::Bytes>,
 
         /// Chain ID override (default: 1).
         #[arg(long)]
         chain_id: Option<u64>,
 
-        /// Gas limit override (decimal or hex with 0x prefix).
+        /// Gas limit override.
         #[arg(long)]
-        gas_limit: Option<String>,
+        gas_limit: Option<u64>,
 
         /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
         #[arg(long, env = "CLAWLET_AUTH_TOKEN")]

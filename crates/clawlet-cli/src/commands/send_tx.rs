@@ -1,18 +1,20 @@
 //! `clawlet send-tx` — send an arbitrary transaction via the running RPC server.
 
+use alloy::primitives::{Address, Bytes};
 use clawlet_rpc::client::RpcClient;
 use clawlet_rpc::types::SendTxStatus;
+use rust_decimal::Decimal;
 
 /// Default RPC server address.
 const DEFAULT_ADDR: &str = "127.0.0.1:9100";
 
 /// Run the `send-tx` subcommand.
 pub async fn run(
-    to: String,
-    value: Option<String>,
-    data: Option<String>,
+    to: Address,
+    value: Option<Decimal>,
+    data: Option<Bytes>,
     chain_id: Option<u64>,
-    gas_limit: Option<String>,
+    gas_limit: Option<u64>,
     addr: Option<String>,
     auth_token: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -21,14 +23,14 @@ pub async fn run(
 
     println!("\n=== Send Transaction ===");
     println!("  To:       {to}");
-    if let Some(ref v) = value {
+    if let Some(v) = value {
         println!("  Value:    {v} ETH");
     }
     if let Some(ref d) = data {
         println!("  Data:     {d}");
     }
     println!("  Chain ID: {}", chain_id.unwrap_or(1));
-    if let Some(ref g) = gas_limit {
+    if let Some(g) = gas_limit {
         println!("  Gas Limit: {g}");
     }
     println!("  Server:   {rpc_url}");
@@ -36,13 +38,7 @@ pub async fn run(
 
     let client = RpcClient::with_addr(server_addr).with_token(auth_token);
     let resp = client
-        .send_transaction(
-            &to,
-            value.as_deref(),
-            data.as_deref(),
-            chain_id,
-            gas_limit.as_deref(),
-        )
+        .send_transaction(to, value, data, chain_id, gas_limit)
         .await
         .map_err(|e| format!("RPC call failed: {e}"))?;
 

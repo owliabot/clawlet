@@ -243,19 +243,39 @@ impl RpcClient {
     /// Send an arbitrary transaction with custom calldata.
     pub async fn send_transaction(
         &self,
-        to: &str,
-        value: Option<&str>,
-        data: Option<&str>,
+        to: alloy::primitives::Address,
+        value: Option<rust_decimal::Decimal>,
+        data: Option<alloy::primitives::Bytes>,
         chain_id: Option<u64>,
-        gas_limit: Option<&str>,
+        gas_limit: Option<u64>,
     ) -> Result<SendTxResponse, ClientError> {
+        use alloy::primitives::U256;
+
         let client = self.build_client()?;
+
+        // Convert Decimal ETH to U256 wei (1 ETH = 10^18 wei)
+        let value_wei = if let Some(eth_amount) = value {
+            let wei_per_eth = rust_decimal::Decimal::from(1_000_000_000_000_000_000u128);
+            let wei_decimal = eth_amount * wei_per_eth;
+            let wei_str = wei_decimal.to_string();
+            // Parse as U256 from the decimal string representation
+            Some(
+                wei_str
+                    .parse::<U256>()
+                    .map_err(|e| ClientError::Connection(format!("Invalid value amount: {e}")))?,
+            )
+        } else {
+            None
+        };
+
+        let gas_limit_u256 = gas_limit.map(U256::from);
+
         let req = SendTxClientRequest {
             to: to.to_string(),
-            value: value.map(|s| s.to_string()),
-            data: data.map(|s| s.to_string()),
+            value: value_wei.map(|v| v.to_string()),
+            data: data.map(|d| format!("{d}")),
             chain_id,
-            gas_limit: gas_limit.map(|s| s.to_string()),
+            gas_limit: gas_limit_u256.map(|g| g.to_string()),
         };
         let result: SendTxResponse = client.request("send_transaction", rpc_params![req]).await?;
         Ok(result)

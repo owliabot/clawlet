@@ -3,23 +3,18 @@
 //! Delegates to [`clawlet_rpc::client::RpcClient`] which handles auth,
 //! HTTP transport, and JSON-RPC framing.
 
-use clawlet_evm::Address;
 use clawlet_rpc::client::RpcClient;
-use clawlet_rpc::types::TransferStatus;
+use clawlet_rpc::types::{TokenSpec, TransferStatus};
 use rust_decimal::Decimal;
-
-/// Re-export [`clawlet_rpc::types::TokenSpec`] as `Asset` so the CLI arg
-/// type in `main.rs` stays unchanged.
-pub type Asset = clawlet_rpc::types::TokenSpec;
 
 /// Default RPC server address.
 const DEFAULT_ADDR: &str = "127.0.0.1:9100";
 
 /// Run the `transfer` subcommand.
 pub async fn run(
-    to: Address,
+    to: String,
     amount: Decimal,
-    asset: Asset,
+    asset: TokenSpec,
     chain_id: Option<u64>,
     addr: Option<String>,
     auth_token: String,
@@ -52,7 +47,7 @@ pub async fn run(
     // Use RpcClient for the actual call
     let client = RpcClient::with_addr(server_addr).with_token(auth_token);
     let resp = client
-        .transfer(&to.to_string(), &amount_str, &token_spec, chain_id)
+        .transfer(&to, &amount_str, &token_spec, chain_id)
         .await
         .map_err(|e| format!("RPC call failed: {e}"))?;
 

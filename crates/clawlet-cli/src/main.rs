@@ -61,7 +61,7 @@ enum Commands {
     Transfer {
         /// Recipient address (0x...).
         #[arg(long)]
-        to: clawlet_evm::Address,
+        to: String,
 
         /// Human-readable amount (e.g. "0.1" for 0.1 ETH).
         #[arg(long)]
@@ -73,7 +73,7 @@ enum Commands {
 
         /// Asset to transfer: "ETH" or ERC-20 contract address (default: ETH).
         #[arg(long, default_value = "ETH")]
-        asset: commands::transfer::Asset,
+        asset: clawlet_rpc::types::TokenSpec,
 
         /// Chain ID override (default: 1).
         #[arg(long)]

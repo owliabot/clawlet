@@ -162,6 +162,27 @@ enum Commands {
 ///   stdin, and returns so the caller can continue with server startup.
 #[cfg(unix)]
 fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn write_pipe_all(fd: i32, bytes: &[u8]) {
+        let mut off = 0usize;
+        while off < bytes.len() {
+            let n = unsafe {
+                libc::write(
+                    fd,
+                    bytes[off..].as_ptr().cast(),
+                    (bytes.len() - off) as libc::size_t,
+                )
+            };
+            if n > 0 {
+                off += n as usize;
+                continue;
+            }
+            if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+    }
+
     // Open log file *before* forking so both parent and child see any error.
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -189,13 +210,26 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
     if pid > 0 {
         // Parent — wait for the child to signal readiness.
         unsafe { libc::close(pipe_write) };
-        let mut buf = [0u8; 1];
-        let n = unsafe { libc::read(pipe_read, buf.as_mut_ptr().cast(), 1) };
+        let mut msg = Vec::<u8>::new();
+        let mut buf = [0u8; 256];
+        loop {
+            let n = unsafe { libc::read(pipe_read, buf.as_mut_ptr().cast(), buf.len()) };
+            if n > 0 {
+                msg.extend_from_slice(&buf[..(n as usize)]);
+                continue;
+            }
+            break;
+        }
         unsafe { libc::close(pipe_read) };
-        if n == 1 && buf[0] == b'!' {
+        let msg = String::from_utf8_lossy(&msg);
+        let msg = msg.trim();
+        if msg == "ok" {
             eprintln!("Daemon started (PID {pid}), log: {}", log_path.display());
             std::process::exit(0);
         } else {
+            if let Some(rest) = msg.strip_prefix("err:") {
+                eprintln!("Daemon failed to start: {}", rest.trim());
+            }
             eprintln!(
                 "Daemon child failed to start; check log: {}",
                 log_path.display()
@@ -209,28 +243,59 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
 
     // New session so we detach from the controlling terminal.
     if unsafe { libc::setsid() } < 0 {
+        write_pipe_all(pipe_write, b"err: setsid() failed\n");
         unsafe { libc::close(pipe_write) };
         return Err("setsid() failed".into());
     }
 
     // Write PID file.
-    std::fs::write(pid_path, format!("{}", std::process::id()))?;
+    if let Err(e) = std::fs::write(pid_path, format!("{}", std::process::id())) {
+        write_pipe_all(
+            pipe_write,
+            format!(
+                "err: failed to write pid file {}: {e}\n",
+                pid_path.display()
+            )
+            .as_bytes(),
+        );
+        unsafe { libc::close(pipe_write) };
+        return Err(e.into());
+    }
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600))?;
+        if let Err(e) = std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600)) {
+            write_pipe_all(
+                pipe_write,
+                format!(
+                    "err: failed to set pid file permissions {}: {e}\n",
+                    pid_path.display()
+                )
+                .as_bytes(),
+            );
+            unsafe { libc::close(pipe_write) };
+            return Err(e.into());
+        }
     }
 
     // Redirect stdout & stderr to the log file; close stdin.
     let fd = log_file.as_raw_fd();
     unsafe {
-        libc::dup2(fd, libc::STDOUT_FILENO);
-        libc::dup2(fd, libc::STDERR_FILENO);
+        if libc::dup2(fd, libc::STDOUT_FILENO) < 0 {
+            write_pipe_all(pipe_write, b"err: dup2(stdout) failed\n");
+            libc::close(pipe_write);
+            return Err("dup2(stdout) failed".into());
+        }
+        if libc::dup2(fd, libc::STDERR_FILENO) < 0 {
+            write_pipe_all(pipe_write, b"err: dup2(stderr) failed\n");
+            libc::close(pipe_write);
+            return Err("dup2(stderr) failed".into());
+        }
         libc::close(libc::STDIN_FILENO);
     }
 
     // Signal the parent that child startup succeeded.
     unsafe {
-        libc::write(pipe_write, b"!".as_ptr().cast(), 1);
+        write_pipe_all(pipe_write, b"ok\n");
         libc::close(pipe_write);
     }
 

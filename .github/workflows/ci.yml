@@ -44,6 +44,8 @@ jobs:
             ${{ runner.os }}-cargo-test-
             ${{ runner.os }}-cargo-
       - run: cargo test --workspace
+        env:
+          CLAWLET_INTEGRATION_TESTS: "1"
 
   clippy:
     name: cargo clippy

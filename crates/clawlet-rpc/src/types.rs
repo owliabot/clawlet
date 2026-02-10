@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, TxHash, B256};
 use clawlet_core::auth::TokenScope;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,8 @@ pub enum RpcMethod {
     Transfer,
     Skills,
     Execute,
+    /// Send a raw transaction bypassing the policy engine.
+    SendRaw,
     /// Grant a new session token (Admin only).
     AuthGrant,
     /// List all active sessions (Admin only).
@@ -74,6 +76,7 @@ impl RpcMethod {
             "transfer" => Some(Self::Transfer),
             "skills" => Some(Self::Skills),
             "execute" => Some(Self::Execute),
+            "send_raw" => Some(Self::SendRaw),
             "auth.grant" => Some(Self::AuthGrant),
             "auth.list" => Some(Self::AuthList),
             "auth.revoke" => Some(Self::AuthRevoke),
@@ -91,6 +94,7 @@ impl RpcMethod {
             Self::Transfer => "transfer",
             Self::Skills => "skills",
             Self::Execute => "execute",
+            Self::SendRaw => "send_raw",
             Self::AuthGrant => "auth.grant",
             Self::AuthList => "auth.list",
             Self::AuthRevoke => "auth.revoke",
@@ -108,7 +112,9 @@ impl RpcMethod {
         match self {
             RpcMethod::Health | RpcMethod::Address => None,
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
-            RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
+            RpcMethod::Transfer | RpcMethod::Execute | RpcMethod::SendRaw => {
+                Some(TokenScope::Trade)
+            }
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
@@ -282,6 +288,33 @@ pub struct AddressResponse {
     pub address: Address,
 }
 
+/// Request body for raw transaction sends (bypasses policy engine).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendRawRequest {
+    /// Recipient address (hex, 0x-prefixed).
+    pub to: Address,
+    /// ETH value to send (default 0).
+    #[serde(default)]
+    pub value: Option<Amount>,
+    /// Hex-encoded calldata (with or without 0x prefix).
+    #[serde(default)]
+    pub data: Option<String>,
+    /// Chain ID to execute on.
+    pub chain_id: u64,
+    /// Optional gas limit override.
+    #[serde(default)]
+    pub gas_limit: Option<u64>,
+}
+
+/// Response for raw transaction sends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendRawResponse {
+    /// Transaction hash.
+    pub tx_hash: TxHash,
+    /// Audit event ID.
+    pub audit_id: String,
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -311,6 +344,10 @@ mod tests {
         assert_eq!(RpcMethod::parse_method("skills"), Some(RpcMethod::Skills));
         assert_eq!(RpcMethod::parse_method("execute"), Some(RpcMethod::Execute));
         assert_eq!(
+            RpcMethod::parse_method("send_raw"),
+            Some(RpcMethod::SendRaw)
+        );
+        assert_eq!(
             RpcMethod::parse_method("auth.grant"),
             Some(RpcMethod::AuthGrant)
         );
@@ -337,6 +374,7 @@ mod tests {
         assert_eq!(RpcMethod::Transfer.as_str(), "transfer");
         assert_eq!(RpcMethod::Skills.as_str(), "skills");
         assert_eq!(RpcMethod::Execute.as_str(), "execute");
+        assert_eq!(RpcMethod::SendRaw.as_str(), "send_raw");
         assert_eq!(RpcMethod::AuthGrant.as_str(), "auth.grant");
         assert_eq!(RpcMethod::AuthList.as_str(), "auth.list");
         assert_eq!(RpcMethod::AuthRevoke.as_str(), "auth.revoke");
@@ -356,6 +394,7 @@ mod tests {
             Some(TokenScope::Trade)
         );
         assert_eq!(RpcMethod::Execute.required_scope(), Some(TokenScope::Trade));
+        assert_eq!(RpcMethod::SendRaw.required_scope(), Some(TokenScope::Trade));
         assert_eq!(RpcMethod::AuthGrant.required_scope(), None);
         assert_eq!(RpcMethod::AuthList.required_scope(), None);
         assert_eq!(RpcMethod::AuthRevoke.required_scope(), None);
@@ -371,6 +410,7 @@ mod tests {
             RpcMethod::Transfer,
             RpcMethod::Skills,
             RpcMethod::Execute,
+            RpcMethod::SendRaw,
             RpcMethod::AuthGrant,
             RpcMethod::AuthList,
             RpcMethod::AuthRevoke,

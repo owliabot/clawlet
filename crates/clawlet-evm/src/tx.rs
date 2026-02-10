@@ -27,6 +27,37 @@ pub enum TxError {
 /// Result alias for transaction operations.
 pub type Result<T> = std::result::Result<T, TxError>;
 
+/// A request to build a raw transaction with arbitrary calldata.
+#[derive(Debug, Clone)]
+pub struct RawTxRequest {
+    /// Recipient address.
+    pub to: Address,
+    /// Value in wei.
+    pub value: U256,
+    /// Arbitrary calldata.
+    pub data: Bytes,
+    /// Chain ID.
+    pub chain_id: u64,
+    /// Optional gas limit override.
+    pub gas_limit: Option<u64>,
+}
+
+/// Builds a generic transaction request from a raw tx request.
+pub fn build_raw_tx(req: &RawTxRequest) -> TransactionRequest {
+    let mut tx = TransactionRequest::default()
+        .to(req.to)
+        .value(req.value)
+        .input(req.data.clone().into());
+
+    tx.set_chain_id(req.chain_id);
+
+    if let Some(gas) = req.gas_limit {
+        tx = tx.gas_limit(gas);
+    }
+
+    tx
+}
+
 /// A request to transfer ETH.
 #[derive(Debug, Clone)]
 pub struct TransferRequest {

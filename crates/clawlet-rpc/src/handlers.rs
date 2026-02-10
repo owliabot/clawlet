@@ -5,12 +5,13 @@
 
 use serde_json::json;
 
+use alloy::primitives::Bytes;
 use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::tx::{
-    build_erc20_transfer, build_eth_transfer, send_transaction,
+    build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
 };
 use clawlet_signer::Signer;
@@ -18,8 +19,8 @@ use clawlet_signer::Signer;
 use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
-    ExecuteStatus, HandlerError, SkillSummary, SkillsResponse, TokenSpec, TransferRequest,
-    TransferResponse, TransferStatus,
+    ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse, SkillSummary, SkillsResponse,
+    TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -212,6 +213,81 @@ pub async fn handle_transfer(
             })
         }
     }
+}
+
+/// Send a raw transaction bypassing the policy engine.
+///
+/// This is for advanced use cases where the caller wants to send arbitrary
+/// calldata to any address. Still audited, just not policy-gated.
+pub async fn handle_send_raw(
+    state: &AppState,
+    req: SendRawRequest,
+) -> Result<SendRawResponse, HandlerError> {
+    let chain_id = req.chain_id;
+
+    let adapter = state
+        .adapters
+        .get(&chain_id)
+        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
+
+    // Parse value (default 0)
+    let value = match req.value {
+        Some(amount) => to_raw(amount, 18).map_err(HandlerError::BadRequest)?,
+        None => U256::ZERO,
+    };
+
+    // Parse calldata (default empty)
+    let data = match req.data {
+        Some(ref hex_str) => {
+            let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+            let bytes = hex::decode(hex_str)
+                .map_err(|e| HandlerError::BadRequest(format!("invalid hex data: {e}")))?;
+            Bytes::from(bytes)
+        }
+        None => Bytes::new(),
+    };
+
+    let tx_req = build_raw_tx(&RawTxRequest {
+        to: req.to,
+        value,
+        data,
+        chain_id,
+        gas_limit: req.gas_limit,
+    });
+
+    let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx_req)
+        .await
+        .map_err(|e| HandlerError::Internal(format!("send tx error: {e}")))?;
+
+    let audit_id = format!(
+        "{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            & 0xFFFF_FFFF_FFFF_FFFF
+    );
+
+    {
+        let event = AuditEvent::new(
+            "send_raw",
+            json!({
+                "to": format!("{}", req.to),
+                "value": req.value.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
+                "data": req.data.as_deref().unwrap_or(""),
+                "chain_id": chain_id,
+                "gas_limit": req.gas_limit,
+                "tx_hash": format!("{tx_hash}"),
+                "audit_id": audit_id,
+            }),
+            "ok",
+        );
+        if let Ok(mut audit) = state.audit.lock() {
+            let _ = audit.log_event(event);
+        }
+    }
+
+    Ok(SendRawResponse { tx_hash, audit_id })
 }
 
 /// List available AIS specs from the skills directory.

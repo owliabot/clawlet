@@ -157,12 +157,13 @@ pub async fn send_transaction(
     let value = tx.value.unwrap_or(U256::ZERO);
     let input = tx.input.input().cloned().unwrap_or_default();
 
-    // Get gas price
-    let gas_price: u128 = adapter
+    // Get gas price and apply 1.2x multiplier for faster inclusion
+    let base_gas_price: u128 = adapter
         .provider()
         .get_gas_price()
         .await
         .map_err(|e| TxError::Send(e.to_string()))?;
+    let gas_price: u128 = base_gas_price * 120 / 100;
 
     // RLP-encode the unsigned transaction for signing (EIP-155)
     let unsigned_rlp = rlp_encode_unsigned_tx(

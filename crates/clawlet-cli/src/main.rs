@@ -9,12 +9,14 @@
 //! - `clawlet start` — Quick start: init + auth grant + serve
 
 use std::net::SocketAddr;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
 mod commands;
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 
 /// Clawlet — lightweight EVM wallet daemon with policy guardrails.
 #[derive(Parser)]
@@ -158,6 +160,7 @@ enum Commands {
 /// - The **parent** prints a status message and exits successfully.
 /// - The **child** calls `setsid`, writes its PID to `pid_path`, closes
 ///   stdin, and returns so the caller can continue with server startup.
+#[cfg(unix)]
 fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Open log file *before* forking so both parent and child see any error.
     let log_file = std::fs::OpenOptions::new()
@@ -205,6 +208,11 @@ fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error:
     }
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn daemonize(_log_path: &Path, _pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    Err("--daemon is only supported on Unix targets".into())
 }
 
 /// Derive the data directory from the config's keystore path.

@@ -219,6 +219,11 @@ build_binary() {
 
 install_standard() {
     info "Installing to $BINARY_PATH..."
+    if mkdir -p "$BIN_DIR" 2>/dev/null; then
+        :
+    else
+        sudo mkdir -p "$BIN_DIR"
+    fi
     if cp "target/release/$BINARY_NAME" "$BINARY_PATH" 2>/dev/null; then
         chmod 755 "$BINARY_PATH"
     else
@@ -244,9 +249,22 @@ create_system_user_linux() {
         return 0
     fi
 
+    if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
+        info "Creating system group '$CLAWLET_GROUP'..."
+        if groupadd --system "$CLAWLET_GROUP" 2>/dev/null; then
+            :
+        else
+            sudo groupadd --system "$CLAWLET_GROUP" || die "Failed to create group '$CLAWLET_GROUP'"
+        fi
+    fi
+
     info "Creating system user '$CLAWLET_USER'..."
-    useradd --system --create-home --shell /usr/sbin/nologin "$CLAWLET_USER" \
-        || die "Failed to create user '$CLAWLET_USER'"
+    if useradd --system --create-home --shell /usr/sbin/nologin --gid "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
+        :
+    else
+        sudo useradd --system --create-home --shell /usr/sbin/nologin --gid "$CLAWLET_GROUP" "$CLAWLET_USER" \
+            || die "Failed to create user '$CLAWLET_USER'"
+    fi
     success "System user '$CLAWLET_USER' created"
 }
 
@@ -299,6 +317,12 @@ create_system_user_macos() {
 
 install_binary_isolated() {
     info "Installing binary to $BINARY_PATH (root:$CLAWLET_GROUP 750)..."
+
+    if mkdir -p "$BIN_DIR" 2>/dev/null; then
+        :
+    else
+        sudo mkdir -p "$BIN_DIR"
+    fi
 
     # Ensure group exists (Linux)
     if [[ "$(detect_os)" == "linux" ]]; then

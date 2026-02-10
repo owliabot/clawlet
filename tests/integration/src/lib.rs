@@ -7,8 +7,8 @@
 //! # Run non-Anvil tests only (default):
 //! cargo test -p clawlet-integration-tests
 //!
-//! # Run all tests including Anvil tests (Docker must be available):
-//! cargo test -p clawlet-integration-tests -- --include-ignored
+//! # Run all tests including Anvil/integration tests (Docker must be available):
+//! CLAWLET_INTEGRATION_TESTS=1 cargo test -p clawlet-integration-tests
 //! ```
 
 #[cfg(test)]
@@ -43,6 +43,19 @@ mod tests {
     // =========================================================================
     // Helper Functions
     // =========================================================================
+
+    /// Skip integration tests unless `CLAWLET_INTEGRATION_TESTS=1` is set.
+    fn require_integration_tests() {
+        if std::env::var("CLAWLET_INTEGRATION_TESTS").as_deref() != Ok("1") {
+            eprintln!("Skipping integration test (set CLAWLET_INTEGRATION_TESTS=1 to enable)");
+            return; // test passes without running the expensive body
+        }
+    }
+
+    /// Returns true if integration tests are enabled.
+    fn integration_tests_enabled() -> bool {
+        std::env::var("CLAWLET_INTEGRATION_TESTS").as_deref() == Ok("1")
+    }
 
     /// Spins up a Docker Anvil container and returns `(container, rpc_url)`.
     /// The container is dropped (and removed) when it goes out of scope.
@@ -240,8 +253,12 @@ mod tests {
 
     /// Test 1: Initialize keystore, start serve (simulated), health check, shutdown
     #[test]
-    #[ignore]
+
     fn test_init_and_serve_roundtrip() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -307,8 +324,12 @@ allowed_chains: []
 
     /// Test 2: Query ETH balance of Anvil default account (should have 10000 ETH)
     #[test]
-    #[ignore]
+
     fn test_eth_balance_query_on_anvil() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -336,8 +357,12 @@ allowed_chains: []
 
     /// Test 3: Transfer ETH between two Anvil accounts
     #[test]
-    #[ignore]
+
     fn test_eth_transfer_on_anvil() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -387,8 +412,12 @@ allowed_chains: []
     /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens (10^24) to deployer,
     /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
-    #[ignore]
+
     fn test_erc20_transfer_on_anvil() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -506,8 +535,12 @@ allowed_chains: []
 
     /// Test 5: Policy denies transfer, verify no transaction sent
     #[test]
-    #[ignore]
+
     fn test_transfer_blocked_by_policy() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1165,8 +1198,12 @@ allowed_chains: []
 
     /// test_balance_query — Anvil via testcontainers
     #[test]
-    #[ignore]
+
     fn test_balance_query() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1191,8 +1228,12 @@ allowed_chains: []
 
     /// test_transfer_with_policy — full flow on Anvil via testcontainers
     #[test]
-    #[ignore]
+
     fn test_transfer_with_policy() {
+        if !integration_tests_enabled() {
+            eprintln!("Skipping (set CLAWLET_INTEGRATION_TESTS=1)");
+            return;
+        }
         let (_anvil, anvil_url) = start_anvil();
 
         let rt = tokio::runtime::Runtime::new().unwrap();

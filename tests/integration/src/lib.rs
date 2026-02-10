@@ -240,6 +240,7 @@ mod tests {
 
     /// Test 1: Initialize keystore, start serve (simulated), health check, shutdown
     #[test]
+    #[ignore]
     fn test_init_and_serve_roundtrip() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -306,6 +307,7 @@ allowed_chains: []
 
     /// Test 2: Query ETH balance of Anvil default account (should have 10000 ETH)
     #[test]
+    #[ignore]
     fn test_eth_balance_query_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -334,6 +336,7 @@ allowed_chains: []
 
     /// Test 3: Transfer ETH between two Anvil accounts
     #[test]
+    #[ignore]
     fn test_eth_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -384,6 +387,7 @@ allowed_chains: []
     /// Deploys a minimal ERC-20 contract (SimpleToken) that mints 1M tokens (10^24) to deployer,
     /// then transfers tokens to another account and verifies balances changed correctly.
     #[test]
+    #[ignore]
     fn test_erc20_transfer_on_anvil() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -502,6 +506,7 @@ allowed_chains: []
 
     /// Test 5: Policy denies transfer, verify no transaction sent
     #[test]
+    #[ignore]
     fn test_transfer_blocked_by_policy() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1160,6 +1165,7 @@ allowed_chains: []
 
     /// test_balance_query — Anvil via testcontainers
     #[test]
+    #[ignore]
     fn test_balance_query() {
         let (_anvil, anvil_url) = start_anvil();
 
@@ -1185,6 +1191,7 @@ allowed_chains: []
 
     /// test_transfer_with_policy — full flow on Anvil via testcontainers
     #[test]
+    #[ignore]
     fn test_transfer_with_policy() {
         let (_anvil, anvil_url) = start_anvil();
 

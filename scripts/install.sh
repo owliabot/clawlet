@@ -167,8 +167,12 @@ build_binary() {
 
 install_standard() {
     info "Installing to $BINARY_PATH..."
-    sudo cp "target/release/$BINARY_NAME" "$BINARY_PATH"
-    sudo chmod 755 "$BINARY_PATH"
+    if cp "target/release/$BINARY_NAME" "$BINARY_PATH" 2>/dev/null; then
+        chmod 755 "$BINARY_PATH"
+    else
+        sudo cp "target/release/$BINARY_NAME" "$BINARY_PATH"
+        sudo chmod 755 "$BINARY_PATH"
+    fi
     success "Binary installed to $BINARY_PATH (755)"
 
     echo ""
@@ -210,13 +214,21 @@ create_system_user_macos() {
         fi
     done
 
+    # Find an unused GID (use same starting point as UID)
+    local gid="$uid"
+    while dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -q "^${gid}$"; do
+        gid=$((gid - 1))
+        if [[ $gid -lt 300 ]]; then
+            die "Could not find an available GID for system group"
+        fi
+    done
+
     # Create group if it doesn't exist
     if ! dscl . -read "/Groups/$CLAWLET_GROUP" &>/dev/null; then
         dscl . -create "/Groups/$CLAWLET_GROUP"
-        dscl . -create "/Groups/$CLAWLET_GROUP" PrimaryGroupID "$uid"
+        dscl . -create "/Groups/$CLAWLET_GROUP" PrimaryGroupID "$gid"
     fi
 
-    local gid
     gid=$(dscl . -read "/Groups/$CLAWLET_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')
 
     dscl . -create "/Users/$CLAWLET_USER"

@@ -126,9 +126,25 @@ impl PolicyEngine {
     fn load_tracker(path: &Path) -> DailyTracker {
         let current_date = today();
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(tracker) = serde_json::from_str::<DailyTracker>(&data) {
-                if tracker.date == current_date {
-                    return tracker;
+            match serde_json::from_str::<DailyTracker>(&data) {
+                Ok(tracker) => {
+                    if tracker.date == current_date {
+                        if !tracker.total_usd.is_finite() || tracker.total_usd < 0.0 {
+                            eprintln!(
+                                "warning: spending tracker data invalid (total_usd={}); resetting to defaults",
+                                tracker.total_usd
+                            );
+                        } else {
+                            return tracker;
+                        }
+                    }
+                }
+                Err(err) => {
+                    // Use stderr directly since tracing may not be available in core.
+                    eprintln!(
+                        "warning: failed to parse spending tracker ({}); resetting to defaults",
+                        err
+                    );
                 }
             }
         }
@@ -139,15 +155,28 @@ impl PolicyEngine {
     }
 
     /// Persist the current tracker state atomically (write-to-temp + rename).
-    fn persist_tracker(&self, tracker: &DailyTracker) {
-        if let Some(ref path) = self.spending_path {
-            let tmp_path = path.with_extension("json.tmp");
-            if let Ok(data) = serde_json::to_string_pretty(tracker) {
-                if std::fs::write(&tmp_path, data).is_ok() {
-                    let _ = std::fs::rename(&tmp_path, path);
-                }
-            }
-        }
+    fn persist_tracker(&self, tracker: &DailyTracker) -> Result<(), std::io::Error> {
+        use std::io::Write;
+
+        let Some(ref path) = self.spending_path else {
+            return Ok(());
+        };
+
+        let tmp_path = path.with_extension("json.tmp");
+        let data = serde_json::to_string_pretty(tracker).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("json encode: {e}"))
+        })?;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp_path)?;
+        file.write_all(data.as_bytes())?;
+        file.sync_all()?;
+
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
     }
 
     /// Check whether a transfer is allowed by the policy.
@@ -219,7 +248,7 @@ impl PolicyEngine {
 
             // All checks passed — record spending
             tracker.total_usd += amount_usd;
-            self.persist_tracker(&tracker);
+            self.persist_tracker(&tracker)?;
         }
 
         Ok(PolicyDecision::Allowed)
@@ -238,6 +267,7 @@ fn today() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn test_policy() -> Policy {
         Policy {
@@ -803,5 +833,50 @@ daily_transfer_limit_usd: 1000.0
             .check_transfer(Some(f64::INFINITY), "USDC", 1)
             .unwrap();
         assert!(matches!(decision, PolicyDecision::Denied(_)));
+    }
+
+    // ========== Spending Persistence ==========
+
+    #[test]
+    fn spending_tracker_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spending.json");
+        let engine = PolicyEngine::with_spending_persistence(test_policy(), path.clone()).unwrap();
+
+        let tracker = DailyTracker {
+            date: today(),
+            total_usd: 123.45,
+        };
+        engine.persist_tracker(&tracker).unwrap();
+
+        let loaded = PolicyEngine::load_tracker(&path);
+        assert_eq!(loaded.date, tracker.date);
+        assert!((loaded.total_usd - tracker.total_usd).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spending_tracker_corrupt_file_recovers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spending.json");
+        std::fs::write(&path, "this is not json").unwrap();
+
+        let loaded = PolicyEngine::load_tracker(&path);
+        assert_eq!(loaded.date, today());
+        assert_eq!(loaded.total_usd, 0.0);
+    }
+
+    #[test]
+    fn spending_tracker_negative_value_rejected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spending.json");
+        let data = serde_json::json!({
+            "date": today(),
+            "total_usd": -1.0
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap()).unwrap();
+
+        let loaded = PolicyEngine::load_tracker(&path);
+        assert_eq!(loaded.date, today());
+        assert_eq!(loaded.total_usd, 0.0);
     }
 }

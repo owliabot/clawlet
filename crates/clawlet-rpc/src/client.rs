@@ -224,16 +224,16 @@ impl RpcClient {
     /// Send a raw transaction (bypasses policy engine).
     pub async fn send_raw(
         &self,
-        to: &str,
-        value: Option<&str>,
+        to: alloy::primitives::Address,
+        value: Option<alloy::primitives::U256>,
         data: Option<&str>,
         chain_id: u64,
         gas_limit: Option<u64>,
     ) -> Result<SendRawResponse, ClientError> {
         let client = self.build_client()?;
         let req = serde_json::json!({
-            "to": to,
-            "value": value,
+            "to": to.to_string(),
+            "value": value.map(|v| v.to_string()),
             "data": data,
             "chain_id": chain_id,
             "gas_limit": gas_limit,

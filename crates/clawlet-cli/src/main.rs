@@ -88,11 +88,11 @@ enum Commands {
     Send {
         /// Recipient address (0x...).
         #[arg(long)]
-        to: String,
+        to: alloy::primitives::Address,
 
-        /// ETH value to send (e.g. "0.1"). Default: 0.
+        /// ETH value to send as raw wei (U256). Default: 0.
         #[arg(long)]
-        value: Option<String>,
+        value: Option<alloy::primitives::U256>,
 
         /// Hex-encoded calldata (with or without 0x prefix).
         #[arg(long)]

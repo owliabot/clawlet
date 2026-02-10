@@ -370,17 +370,56 @@ impl ClawletApiServer for RpcServerImpl {
         &self,
         params: SendTxRequestWithAuth,
     ) -> Result<Value, ErrorObjectOwned> {
+        use alloy::primitives::{Address, Bytes, U256};
+
         let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
+        // Parse string params into proper types
+        let to: Address = params.to.parse().map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INVALID_PARAMS,
+                format!("invalid to address: {e}"),
+                None::<()>,
+            )
+        })?;
+
+        let value = if let Some(v) = params.value {
+            Some(v.parse::<U256>().map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INVALID_PARAMS,
+                    format!("invalid value: {e}"),
+                    None::<()>,
+                )
+            })?)
+        } else {
+            None
+        };
+
+        let data = if let Some(d) = params.data {
+            let hex_str = d.strip_prefix("0x").unwrap_or(&d);
+            let bytes = hex::decode(hex_str).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INVALID_PARAMS,
+                    format!("invalid data hex: {e}"),
+                    None::<()>,
+                )
+            })?;
+            Some(Bytes::from(bytes))
+        } else {
+            None
+        };
+
+        let gas_limit = params.gas_limit.map(U256::from);
+
         let req = SendTxRequest {
-            to: params.to,
-            value: params.value,
-            data: params.data,
+            to,
+            value,
+            data,
             chain_id: params.chain_id,
-            gas_limit: params.gas_limit,
+            gas_limit,
         };
 
         match handlers::handle_send_transaction(&self.state, req).await {

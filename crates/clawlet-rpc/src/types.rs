@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use clawlet_core::auth::TokenScope;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -293,19 +293,19 @@ pub struct AddressResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendTxRequest {
     /// Recipient address (hex, 0x-prefixed).
-    pub to: String,
-    /// ETH value in human units (e.g. "0.1"), default "0".
+    pub to: Address,
+    /// ETH value in wei (U256), default 0.
     #[serde(default)]
-    pub value: Option<String>,
-    /// Calldata hex (0x-prefixed), default empty.
+    pub value: Option<U256>,
+    /// Calldata bytes, default empty.
     #[serde(default)]
-    pub data: Option<String>,
+    pub data: Option<Bytes>,
     /// Chain ID (default from config or 1).
     #[serde(default)]
     pub chain_id: Option<u64>,
     /// Optional gas limit override.
     #[serde(default)]
-    pub gas_limit: Option<u64>,
+    pub gas_limit: Option<U256>,
 }
 
 /// Send transaction outcome status.

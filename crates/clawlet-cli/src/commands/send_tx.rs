@@ -12,7 +12,7 @@ pub async fn run(
     value: Option<String>,
     data: Option<String>,
     chain_id: Option<u64>,
-    gas_limit: Option<u64>,
+    gas_limit: Option<String>,
     addr: Option<String>,
     auth_token: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +28,7 @@ pub async fn run(
         println!("  Data:     {d}");
     }
     println!("  Chain ID: {}", chain_id.unwrap_or(1));
-    if let Some(g) = gas_limit {
+    if let Some(ref g) = gas_limit {
         println!("  Gas Limit: {g}");
     }
     println!("  Server:   {rpc_url}");
@@ -36,7 +36,13 @@ pub async fn run(
 
     let client = RpcClient::with_addr(server_addr).with_token(auth_token);
     let resp = client
-        .send_transaction(&to, value.as_deref(), data.as_deref(), chain_id, gas_limit)
+        .send_transaction(
+            &to,
+            value.as_deref(),
+            data.as_deref(),
+            chain_id,
+            gas_limit.as_deref(),
+        )
         .await
         .map_err(|e| format!("RPC call failed: {e}"))?;
 

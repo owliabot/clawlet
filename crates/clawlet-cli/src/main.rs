@@ -102,9 +102,9 @@ enum Commands {
         #[arg(long)]
         chain_id: Option<u64>,
 
-        /// Gas limit override.
+        /// Gas limit override (decimal or hex with 0x prefix).
         #[arg(long)]
-        gas_limit: Option<u64>,
+        gas_limit: Option<String>,
 
         /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
         #[arg(long, env = "CLAWLET_AUTH_TOKEN")]

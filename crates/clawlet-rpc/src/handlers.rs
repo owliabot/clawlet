@@ -220,33 +220,14 @@ pub async fn handle_send_transaction(
     state: &AppState,
     req: SendTxRequest,
 ) -> Result<SendTxResponse, HandlerError> {
-    use alloy::primitives::{Address, Bytes};
     use alloy::rpc::types::TransactionRequest;
 
     let chain_id = req.chain_id.unwrap_or(1);
 
-    // Parse recipient address
-    let to: Address = req
-        .to
-        .parse()
-        .map_err(|e| HandlerError::BadRequest(format!("invalid to address: {e}")))?;
-
-    // Parse value (default "0")
-    let value_str = req.value.as_deref().unwrap_or("0");
-    let value_amount: Amount = value_str
-        .parse()
-        .map_err(|e| HandlerError::BadRequest(format!("invalid value: {e}")))?;
-    let value = to_raw(value_amount, 18).map_err(HandlerError::BadRequest)?;
-
-    // Parse calldata (default empty)
-    let data = if let Some(ref hex_str) = req.data {
-        let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-        let bytes = hex::decode(hex_str)
-            .map_err(|e| HandlerError::BadRequest(format!("invalid data hex: {e}")))?;
-        Bytes::from(bytes)
-    } else {
-        Bytes::new()
-    };
+    // Types are already properly typed from deserialization
+    let to = req.to;
+    let value = req.value.unwrap_or(U256::ZERO);
+    let data = req.data.unwrap_or_default();
 
     // Policy check — use check_transfer with ETH value (no USD oracle)
     let decision = state
@@ -263,10 +244,14 @@ pub async fn handle_send_transaction(
             let mut tx = TransactionRequest::default().to(to).value(value);
             tx.set_chain_id(chain_id);
             if !data.is_empty() {
-                tx = tx.input(data.into());
+                tx = tx.input(data.clone().into());
             }
             if let Some(gas) = req.gas_limit {
-                tx = tx.gas_limit(gas);
+                // TransactionRequest::gas_limit expects u64
+                let gas_u64 = gas.try_into().map_err(|_| {
+                    HandlerError::BadRequest("gas_limit too large for u64".to_string())
+                })?;
+                tx = tx.gas_limit(gas_u64);
             }
 
             let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx)
@@ -287,8 +272,8 @@ pub async fn handle_send_transaction(
                     "send_transaction",
                     json!({
                         "to": format!("{to}"),
-                        "value": value_str,
-                        "data": req.data.as_deref().unwrap_or(""),
+                        "value": format!("{value}"),
+                        "data": format!("{data}"),
                         "chain_id": chain_id,
                         "tx_hash": format!("{tx_hash}"),
                         "audit_id": audit_id,
@@ -313,8 +298,8 @@ pub async fn handle_send_transaction(
                     "send_transaction",
                     json!({
                         "to": format!("{to}"),
-                        "value": value_str,
-                        "data": req.data.as_deref().unwrap_or(""),
+                        "value": format!("{value}"),
+                        "data": format!("{data}"),
                         "chain_id": chain_id,
                     }),
                     format!("denied: {reason}"),

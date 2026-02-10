@@ -75,18 +75,18 @@ pub struct ExecuteRequest {
 pub struct SendTxClientRequest {
     /// Recipient address (0x...).
     pub to: String,
-    /// ETH value in human units.
+    /// ETH value (as wei in string form, or hex string starting with 0x).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    /// Calldata hex (0x...).
+    /// Calldata (hex string, 0x-prefixed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     /// Chain ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_id: Option<u64>,
-    /// Gas limit override.
+    /// Gas limit (as decimal in string form, or hex string starting with 0x).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gas_limit: Option<u64>,
+    pub gas_limit: Option<String>,
 }
 
 /// Client for the clawlet-rpc HTTP JSON-RPC server.
@@ -247,7 +247,7 @@ impl RpcClient {
         value: Option<&str>,
         data: Option<&str>,
         chain_id: Option<u64>,
-        gas_limit: Option<u64>,
+        gas_limit: Option<&str>,
     ) -> Result<SendTxResponse, ClientError> {
         let client = self.build_client()?;
         let req = SendTxClientRequest {
@@ -255,7 +255,7 @@ impl RpcClient {
             value: value.map(|s| s.to_string()),
             data: data.map(|s| s.to_string()),
             chain_id,
-            gas_limit,
+            gas_limit: gas_limit.map(|s| s.to_string()),
         };
         let result: SendTxResponse = client.request("send_transaction", rpc_params![req]).await?;
         Ok(result)

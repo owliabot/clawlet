@@ -210,7 +210,7 @@ build_binary() {
         info "Building from local source..."
         cargo build --release -p clawlet-cli || die "Build failed"
         success "Build complete"
-    elif download_binary 2>/dev/null; then
+    elif download_binary; then
         # Fallback to downloading pre-built binary (works with curl | bash flow)
         :
     else

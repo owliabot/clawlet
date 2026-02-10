@@ -287,6 +287,32 @@ create_system_user_linux() {
 create_system_user_macos() {
     if id "$CLAWLET_USER" &>/dev/null; then
         info "User '$CLAWLET_USER' already exists"
+
+        # Ensure group exists and user is a member even when reusing an existing user
+        if ! dscl . -read "/Groups/$CLAWLET_GROUP" &>/dev/null; then
+            info "Creating group '$CLAWLET_GROUP'..."
+            local gid=399
+            while dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -q "^${gid}$"; do
+                gid=$((gid - 1))
+                if [[ $gid -lt 300 ]]; then
+                    die "Could not find an available GID for system group"
+                fi
+            done
+            dscl . -create "/Groups/$CLAWLET_GROUP"
+            dscl . -create "/Groups/$CLAWLET_GROUP" PrimaryGroupID "$gid"
+            success "Group '$CLAWLET_GROUP' created (GID=$gid)"
+        fi
+
+        # Ensure user is a member of the group
+        local current_gid
+        current_gid=$(dscl . -read "/Groups/$CLAWLET_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')
+        local user_gid
+        user_gid=$(dscl . -read "/Users/$CLAWLET_USER" PrimaryGroupID 2>/dev/null | awk '{print $2}')
+        if [[ "$user_gid" != "$current_gid" ]]; then
+            dscl . -create "/Users/$CLAWLET_USER" PrimaryGroupID "$current_gid"
+            info "Updated '$CLAWLET_USER' primary group to '$CLAWLET_GROUP'"
+        fi
+        success "User '$CLAWLET_USER' group membership verified"
         return 0
     fi
 

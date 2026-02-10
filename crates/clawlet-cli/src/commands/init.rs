@@ -231,7 +231,7 @@ pub fn run(
 }
 
 /// Validate password strength, returning a list of unmet requirements.
-fn validate_password_strength(password: &str) -> Vec<&'static str> {
+pub(crate) fn validate_password_strength(password: &str) -> Vec<&'static str> {
     let mut issues = Vec::new();
     if password.len() < 8 {
         issues.push("must be at least 8 characters");

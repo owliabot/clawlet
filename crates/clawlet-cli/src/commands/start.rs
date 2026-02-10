@@ -181,6 +181,16 @@ pub fn prepare(
             return Err("passwords do not match".into());
         }
 
+        // Enforce password strength rules
+        let issues = super::init::validate_password_strength(&password);
+        if !issues.is_empty() {
+            let mut msg = String::from("Password does not meet strength requirements:\n");
+            for issue in &issues {
+                msg.push_str(&format!("  - {issue}\n"));
+            }
+            return Err(msg.into());
+        }
+
         // Create directory structure
         std::fs::create_dir_all(&keystore_dir)?;
 

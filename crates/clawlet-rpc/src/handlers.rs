@@ -5,7 +5,6 @@
 
 use serde_json::json;
 
-use alloy::primitives::Bytes;
 use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
@@ -236,16 +235,8 @@ pub async fn handle_send_raw(
         None => U256::ZERO,
     };
 
-    // Parse calldata (default empty)
-    let data = match req.data {
-        Some(ref hex_str) => {
-            let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-            let bytes = hex::decode(hex_str)
-                .map_err(|e| HandlerError::BadRequest(format!("invalid hex data: {e}")))?;
-            Bytes::from(bytes)
-        }
-        None => Bytes::new(),
-    };
+    // Use calldata directly (already Bytes)
+    let data = req.data.clone().unwrap_or_default();
 
     let tx_req = build_raw_tx(&RawTxRequest {
         to: req.to,
@@ -274,7 +265,7 @@ pub async fn handle_send_raw(
             json!({
                 "to": format!("{}", req.to),
                 "value": req.value.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
-                "data": req.data.as_deref().unwrap_or(""),
+                "data": req.data.as_ref().map(|b| b.to_string()).unwrap_or_default(),
                 "chain_id": chain_id,
                 "gas_limit": req.gas_limit,
                 "tx_hash": format!("{tx_hash}"),

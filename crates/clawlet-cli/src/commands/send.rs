@@ -1,6 +1,6 @@
 //! `clawlet send` — send a raw transaction via the running RPC server (bypasses policy engine).
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use clawlet_rpc::client::RpcClient;
 
 /// Default RPC server address.
@@ -36,9 +36,17 @@ pub async fn run(
     println!("  Server:   {rpc_url}");
     println!("=========================\n");
 
+    let data_bytes = data
+        .map(|hex_str| {
+            let hex_str = hex_str.strip_prefix("0x").unwrap_or(&hex_str);
+            let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex data: {e}"))?;
+            Ok::<Bytes, String>(Bytes::from(bytes))
+        })
+        .transpose()?;
+
     let client = RpcClient::with_addr(server_addr).with_token(auth_token);
     let resp = client
-        .send_raw(to, value, data.as_deref(), chain_id, gas_limit)
+        .send_raw(to, value, data_bytes, chain_id, gas_limit)
         .await
         .map_err(|e| format!("RPC call failed: {e}"))?;
 

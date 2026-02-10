@@ -226,7 +226,7 @@ impl RpcClient {
         &self,
         to: alloy::primitives::Address,
         value: Option<alloy::primitives::U256>,
-        data: Option<&str>,
+        data: Option<alloy::primitives::Bytes>,
         chain_id: u64,
         gas_limit: Option<u64>,
     ) -> Result<SendRawResponse, ClientError> {

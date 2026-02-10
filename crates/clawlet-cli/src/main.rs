@@ -82,10 +82,6 @@ enum Commands {
         /// RPC server address (default: 127.0.0.1:9100).
         #[arg(long)]
         addr: Option<String>,
-
-        /// Skip confirmation prompt.
-        #[arg(long, short)]
-        yes: bool,
     },
 
     /// Quick start: init (if needed) + grant token + serve.
@@ -131,8 +127,7 @@ async fn main() {
             asset,
             chain_id,
             addr,
-            yes,
-        } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token, yes).await,
+        } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::Start {
             agent,

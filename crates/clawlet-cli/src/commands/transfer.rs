@@ -18,7 +18,6 @@ pub async fn run(
     chain_id: Option<u64>,
     addr: Option<String>,
     auth_token: String,
-    skip_confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = addr.as_deref().unwrap_or(DEFAULT_ADDR);
     let token_spec = asset.to_string();
@@ -33,16 +32,6 @@ pub async fn run(
     println!("  Chain ID: {chain_id}");
     println!("  Server:   {rpc_url}");
     println!("========================\n");
-
-    if !skip_confirm {
-        eprint!("Confirm transfer? [y/N] ");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Transfer cancelled.");
-            return Ok(());
-        }
-    }
 
     // Use RpcClient for the actual call
     let client = RpcClient::with_addr(server_addr).with_token(auth_token);

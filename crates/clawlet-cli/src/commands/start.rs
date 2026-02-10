@@ -261,6 +261,7 @@ async fn start_server_with_session(
 
     use clawlet_core::audit::AuditLogger;
     use clawlet_core::policy::PolicyEngine;
+    use clawlet_evm::okx::OkxDexClient;
     use clawlet_evm::EvmAdapter;
     use clawlet_rpc::server::{AppState, ClawletApiServer, RpcServerImpl};
     use jsonrpsee::server::Server;
@@ -285,6 +286,16 @@ async fn start_server_with_session(
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("skills"));
 
+    // Initialize OKX DEX client if configured
+    let okx_client = config.okx.as_ref().map(|okx_cfg| {
+        Arc::new(OkxDexClient::new(
+            okx_cfg.api_key.clone(),
+            okx_cfg.secret_key.clone(),
+            okx_cfg.passphrase.clone(),
+            okx_cfg.project_id.clone(),
+        ))
+    });
+
     let state = Arc::new(AppState {
         policy: Arc::new(policy),
         audit: Arc::new(Mutex::new(audit)),
@@ -294,6 +305,7 @@ async fn start_server_with_session(
         signer: Arc::new(signer),
         skills_dir,
         keystore_path: config.keystore_path.clone(),
+        okx_client,
     });
 
     let server = Server::builder().build(addr).await?;

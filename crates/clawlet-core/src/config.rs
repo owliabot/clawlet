@@ -44,6 +44,19 @@ impl Default for AuthConfig {
     }
 }
 
+/// OKX DEX API configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OkxConfig {
+    /// OKX API key.
+    pub api_key: String,
+    /// OKX Secret key.
+    pub secret_key: String,
+    /// OKX Passphrase.
+    pub passphrase: String,
+    /// OKX Project ID (for DEX API).
+    pub project_id: String,
+}
+
 /// Top-level Clawlet configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -62,6 +75,9 @@ pub struct Config {
     /// Authentication configuration.
     #[serde(default)]
     pub auth: AuthConfig,
+    /// OKX DEX API configuration (optional).
+    #[serde(default)]
+    pub okx: Option<OkxConfig>,
 }
 
 fn default_rpc_bind() -> String {

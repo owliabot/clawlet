@@ -54,6 +54,8 @@ pub enum RpcMethod {
     Transfer,
     Skills,
     Execute,
+    /// Swap tokens via DEX aggregator.
+    Swap,
     /// Grant a new session token (Admin only).
     AuthGrant,
     /// List all active sessions (Admin only).
@@ -74,6 +76,7 @@ impl RpcMethod {
             "transfer" => Some(Self::Transfer),
             "skills" => Some(Self::Skills),
             "execute" => Some(Self::Execute),
+            "swap" => Some(Self::Swap),
             "auth.grant" => Some(Self::AuthGrant),
             "auth.list" => Some(Self::AuthList),
             "auth.revoke" => Some(Self::AuthRevoke),
@@ -91,6 +94,7 @@ impl RpcMethod {
             Self::Transfer => "transfer",
             Self::Skills => "skills",
             Self::Execute => "execute",
+            Self::Swap => "swap",
             Self::AuthGrant => "auth.grant",
             Self::AuthList => "auth.list",
             Self::AuthRevoke => "auth.revoke",
@@ -108,7 +112,7 @@ impl RpcMethod {
         match self {
             RpcMethod::Health | RpcMethod::Address => None,
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
-            RpcMethod::Transfer | RpcMethod::Execute => Some(TokenScope::Trade),
+            RpcMethod::Transfer | RpcMethod::Execute | RpcMethod::Swap => Some(TokenScope::Trade),
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
@@ -282,6 +286,57 @@ pub struct AddressResponse {
     pub address: Address,
 }
 
+/// Request body for swaps.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SwapRequest {
+    /// Source token ("ETH" or ERC-20 address).
+    pub from_token: TokenSpec,
+    /// Destination token ("ETH" or ERC-20 address).
+    pub to_token: TokenSpec,
+    /// Amount to swap (in source token units).
+    pub amount: Amount,
+    /// Chain ID.
+    pub chain_id: u64,
+    /// Slippage tolerance in percent (e.g. "0.5" for 0.5%).
+    #[serde(default = "default_slippage")]
+    pub slippage: String,
+}
+
+fn default_slippage() -> String {
+    "0.5".to_string()
+}
+
+/// Swap outcome status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapStatus {
+    Success,
+    Denied,
+    Error,
+}
+
+/// Response for swaps.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SwapResponse {
+    /// Outcome of the swap.
+    pub status: SwapStatus,
+    /// Transaction hash (present on success).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<B256>,
+    /// Amount of source token consumed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_amount: Option<String>,
+    /// Amount of destination token received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_amount: Option<String>,
+    /// Audit event ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<String>,
+    /// Denial or error reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -326,6 +381,7 @@ mod tests {
             RpcMethod::parse_method("auth.revoke_all"),
             Some(RpcMethod::AuthRevokeAll)
         );
+        assert_eq!(RpcMethod::parse_method("swap"), Some(RpcMethod::Swap));
         assert_eq!(RpcMethod::parse_method("unknown"), None);
     }
 
@@ -341,6 +397,7 @@ mod tests {
         assert_eq!(RpcMethod::AuthList.as_str(), "auth.list");
         assert_eq!(RpcMethod::AuthRevoke.as_str(), "auth.revoke");
         assert_eq!(RpcMethod::AuthRevokeAll.as_str(), "auth.revoke_all");
+        assert_eq!(RpcMethod::Swap.as_str(), "swap");
     }
 
     #[test]
@@ -356,6 +413,7 @@ mod tests {
             Some(TokenScope::Trade)
         );
         assert_eq!(RpcMethod::Execute.required_scope(), Some(TokenScope::Trade));
+        assert_eq!(RpcMethod::Swap.required_scope(), Some(TokenScope::Trade));
         assert_eq!(RpcMethod::AuthGrant.required_scope(), None);
         assert_eq!(RpcMethod::AuthList.required_scope(), None);
         assert_eq!(RpcMethod::AuthRevoke.required_scope(), None);
@@ -371,6 +429,7 @@ mod tests {
             RpcMethod::Transfer,
             RpcMethod::Skills,
             RpcMethod::Execute,
+            RpcMethod::Swap,
             RpcMethod::AuthGrant,
             RpcMethod::AuthList,
             RpcMethod::AuthRevoke,

@@ -13,6 +13,7 @@
 pub mod abi;
 pub mod adapter;
 pub mod executor;
+pub mod okx;
 pub mod token;
 pub mod tx;
 

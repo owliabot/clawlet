@@ -40,6 +40,7 @@ use clawlet_core::audit::AuditLogger;
 use clawlet_core::auth::{AuthError, SessionStore, TokenScope};
 use clawlet_core::config::{AuthConfig, Config};
 use clawlet_core::policy::PolicyEngine;
+use clawlet_evm::okx::OkxDexClient;
 use clawlet_evm::EvmAdapter;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
@@ -49,7 +50,9 @@ use crate::dispatch::{
     AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
 };
 use crate::handlers;
-use crate::types::{BalanceQuery, ExecuteRequest, HandlerError, TokenSpec, TransferRequest};
+use crate::types::{
+    BalanceQuery, ExecuteRequest, HandlerError, SwapRequest, TokenSpec, TransferRequest,
+};
 
 // ---- Server Error Type ----
 
@@ -160,6 +163,8 @@ pub struct AppState {
     pub skills_dir: PathBuf,
     /// Path to keystore directory (for password verification).
     pub keystore_path: PathBuf,
+    /// OKX DEX API client (optional — only present if OKX config is provided).
+    pub okx_client: Option<Arc<OkxDexClient>>,
 }
 
 // ---- HTTP Server ----
@@ -205,6 +210,26 @@ pub struct TransferRequestWithAuth {
     pub chain_id: u64,
 }
 
+/// Swap request parameters.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SwapRequestWithAuth {
+    /// Source token.
+    pub from_token: TokenSpec,
+    /// Destination token.
+    pub to_token: TokenSpec,
+    /// Amount as a non-negative decimal string.
+    pub amount: crate::types::Amount,
+    /// Chain ID.
+    pub chain_id: u64,
+    /// Slippage tolerance in percent.
+    #[serde(default = "default_slippage")]
+    pub slippage: String,
+}
+
+fn default_slippage() -> String {
+    "0.5".to_string()
+}
+
 /// Skills request parameters (empty - auth from header).
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct SkillsRequest {}
@@ -247,6 +272,10 @@ pub trait ClawletApi {
     /// Execute a skill.
     #[method(name = "execute")]
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
+
+    /// Swap tokens via DEX aggregator.
+    #[method(name = "swap")]
+    async fn swap(&self, params: SwapRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
 
     /// Grant a new session token.
     #[method(name = "auth.grant")]
@@ -362,6 +391,37 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_execute(&self.state, req).await {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
+    }
+
+    async fn swap(&self, params: SwapRequestWithAuth) -> Result<Value, ErrorObjectOwned> {
+        let token = Self::get_token();
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let okx_client = match &self.state.okx_client {
+            Some(c) => c,
+            None => {
+                return Err(ErrorObjectOwned::owned(
+                    error_code::INVALID_REQUEST,
+                    "OKX API key not configured",
+                    None::<()>,
+                ));
+            }
+        };
+
+        let req = SwapRequest {
+            from_token: params.from_token,
+            to_token: params.to_token,
+            amount: params.amount,
+            chain_id: params.chain_id,
+            slippage: params.slippage,
+        };
+
+        match handlers::handle_swap(&self.state, okx_client, req).await {
             Ok(result) => Ok(serde_json::to_value(result).unwrap()),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
@@ -518,6 +578,16 @@ impl RpcServer {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("skills"));
 
+        // Initialize OKX DEX client if configured
+        let okx_client = config.okx.as_ref().map(|okx_cfg| {
+            Arc::new(OkxDexClient::new(
+                okx_cfg.api_key.clone(),
+                okx_cfg.secret_key.clone(),
+                okx_cfg.passphrase.clone(),
+                okx_cfg.project_id.clone(),
+            ))
+        });
+
         let state = Arc::new(AppState {
             policy: Arc::new(policy),
             audit: Arc::new(Mutex::new(audit)),
@@ -527,6 +597,7 @@ impl RpcServer {
             signer: Arc::new(signer),
             skills_dir,
             keystore_path: config.keystore_path.clone(),
+            okx_client,
         });
 
         let server_config = ServerConfig {

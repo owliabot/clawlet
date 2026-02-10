@@ -15,11 +15,13 @@ use clawlet_evm::tx::{
 };
 use clawlet_signer::Signer;
 
+use clawlet_evm::okx::{OkxDexClient, SwapParams, ETH_NATIVE_ADDRESS};
+
 use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
-    ExecuteStatus, HandlerError, SkillSummary, SkillsResponse, TokenSpec, TransferRequest,
-    TransferResponse, TransferStatus,
+    ExecuteStatus, HandlerError, SkillSummary, SkillsResponse, SwapRequest, SwapResponse,
+    SwapStatus, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -304,6 +306,163 @@ pub async fn handle_execute(
         status: ExecuteStatus::Success,
         tx_hashes,
         error: None,
+    })
+}
+
+/// Execute a token swap via the OKX DEX aggregator.
+pub async fn handle_swap(
+    state: &AppState,
+    okx_client: &OkxDexClient,
+    req: SwapRequest,
+) -> Result<SwapResponse, HandlerError> {
+    let chain_id = req.chain_id;
+    let from_token_str = req.from_token.as_policy_str();
+
+    // Policy check — same rules as transfer
+    let decision = state
+        .policy
+        .check_transfer(None, &from_token_str, chain_id)
+        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
+
+    match decision {
+        PolicyDecision::Allowed => {}
+        PolicyDecision::Denied(reason) | PolicyDecision::RequiresApproval(reason) => {
+            let event = AuditEvent::new(
+                "swap",
+                json!({
+                    "from_token": from_token_str,
+                    "to_token": req.to_token.as_policy_str(),
+                    "amount": req.amount.to_string(),
+                    "chain_id": chain_id,
+                }),
+                format!("denied: {reason}"),
+            );
+            if let Ok(mut audit) = state.audit.lock() {
+                let _ = audit.log_event(event);
+            }
+            return Ok(SwapResponse {
+                status: SwapStatus::Denied,
+                tx_hash: None,
+                from_amount: None,
+                to_amount: None,
+                audit_id: None,
+                reason: Some(reason),
+            });
+        }
+    }
+
+    // Convert token specs to OKX addresses
+    let from_addr = match &req.from_token {
+        TokenSpec::Native => ETH_NATIVE_ADDRESS.to_string(),
+        TokenSpec::Erc20(addr) => format!("{addr}"),
+    };
+    let to_addr = match &req.to_token {
+        TokenSpec::Native => ETH_NATIVE_ADDRESS.to_string(),
+        TokenSpec::Erc20(addr) => format!("{addr}"),
+    };
+
+    // Convert amount to raw units
+    let raw_amount = match &req.from_token {
+        TokenSpec::Native => to_raw(req.amount, 18).map_err(HandlerError::BadRequest)?,
+        TokenSpec::Erc20(token_address) => {
+            let adapter = state.adapters.get(&chain_id).ok_or_else(|| {
+                HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}"))
+            })?;
+            let token_info = adapter
+                .get_erc20_info(*token_address)
+                .await
+                .map_err(|e| HandlerError::Internal(format!("failed to query token info: {e}")))?;
+            to_raw(req.amount, token_info.decimals as u32).map_err(HandlerError::BadRequest)?
+        }
+    };
+
+    let sender = state.signer.address();
+
+    let swap_params = SwapParams {
+        chain_id: chain_id.to_string(),
+        from_token_address: from_addr,
+        to_token_address: to_addr,
+        amount: raw_amount.to_string(),
+        slippage: req.slippage,
+        user_wallet_address: format!("{sender}"),
+    };
+
+    // Get swap data from OKX
+    let swap_data = okx_client
+        .get_swap(&swap_params)
+        .await
+        .map_err(|e| HandlerError::Internal(format!("OKX API error: {e}")))?;
+
+    let swap_tx = swap_data
+        .tx
+        .ok_or_else(|| HandlerError::Internal("OKX returned no transaction data".into()))?;
+
+    // Build and send the transaction
+    let adapter = state
+        .adapters
+        .get(&chain_id)
+        .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
+
+    let to: alloy::primitives::Address = swap_tx
+        .to
+        .parse()
+        .map_err(|e| HandlerError::Internal(format!("invalid to address from OKX: {e}")))?;
+    let value = U256::from_str_radix(swap_tx.value.trim_start_matches("0x"), 16)
+        .or_else(|_| U256::from_str_radix(&swap_tx.value, 10))
+        .map_err(|e| HandlerError::Internal(format!("invalid value from OKX: {e}")))?;
+    let data_bytes = hex::decode(swap_tx.data.trim_start_matches("0x"))
+        .map_err(|e| HandlerError::Internal(format!("invalid data from OKX: {e}")))?;
+    let gas_limit: u64 = swap_tx
+        .gas_limit
+        .parse()
+        .map_err(|e| HandlerError::Internal(format!("invalid gas limit from OKX: {e}")))?;
+
+    let tx_req = alloy::rpc::types::TransactionRequest::default()
+        .to(to)
+        .value(value)
+        .input(alloy::primitives::Bytes::from(data_bytes).into())
+        .gas_limit(gas_limit);
+
+    let tx_hash = send_transaction(adapter, state.signer.as_ref(), tx_req)
+        .await
+        .map_err(|e| HandlerError::Internal(format!("send tx error: {e}")))?;
+
+    let audit_id = format!(
+        "{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            & 0xFFFF_FFFF_FFFF_FFFF
+    );
+
+    {
+        let event = AuditEvent::new(
+            "swap",
+            json!({
+                "from_token": from_token_str,
+                "to_token": req.to_token.as_policy_str(),
+                "amount": req.amount.to_string(),
+                "chain_id": chain_id,
+                "tx_hash": format!("{tx_hash}"),
+                "from_amount": &swap_data.router_result.from_token_amount,
+                "to_amount": &swap_data.router_result.to_token_amount,
+                "audit_id": &audit_id,
+            }),
+            "allowed",
+        );
+        if let Ok(mut audit) = state.audit.lock() {
+            let _ = audit.log_event(event);
+        }
+    }
+
+    Ok(SwapResponse {
+        status: SwapStatus::Success,
+        tx_hash: Some(tx_hash),
+        from_amount: Some(swap_data.router_result.from_token_amount),
+        to_amount: Some(swap_data.router_result.to_token_amount),
+        audit_id: Some(audit_id),
+        reason: None,
     })
 }
 

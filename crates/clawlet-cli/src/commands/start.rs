@@ -307,7 +307,16 @@ pub async fn start_notify(
     prepared: PreparedStart,
     _ready_fd: impl Into<Option<i32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    start(prepared).await
+    tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
+
+    start_server_with_session_notify(
+        &prepared.config,
+        prepared.signer,
+        prepared.listen_addr,
+        prepared.session_store,
+        None,
+    )
+    .await
 }
 
 /// Run the `start` subcommand (non-daemon mode).

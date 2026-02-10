@@ -123,7 +123,17 @@ pub async fn start_notify(
     prepared: PreparedServer,
     _ready_fd: impl Into<Option<i32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    start(prepared).await
+    tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
+
+    RpcServer::start_with_config_notify(
+        &prepared.config,
+        prepared.signer,
+        Some(prepared.listen_addr),
+        None,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Run the `serve` subcommand (non-daemon mode).

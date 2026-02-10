@@ -364,10 +364,7 @@ pub(crate) fn signal_daemon_ready(fd: i32) {
 }
 
 #[cfg(not(unix))]
-fn daemonize(
-    _log_path: &Path,
-    _pid_path: &Path,
-) -> Result<(i32, PidFileGuard), Box<dyn std::error::Error>> {
+fn daemonize(_log_path: &Path, _pid_path: &Path) -> Result<(i32, ()), Box<dyn std::error::Error>> {
     Err("--daemon is only supported on Unix targets".into())
 }
 

@@ -293,6 +293,7 @@ build_from_source() {
 # === Installation ===
 install_binary() {
     local binary_path="$1"
+    local os="${2:-}"
     local dest="$BIN_DIR/clawlet"
 
     info "Installing to $dest..."
@@ -316,7 +317,7 @@ install_binary() {
     fi
 
     # On macOS, clear quarantine flag and ad-hoc sign so Gatekeeper doesn't kill it
-    if [[ "$OS" == "darwin" ]]; then
+    if [[ "$os" == "darwin" ]]; then
         if [[ "$PREFIX" == "$DEFAULT_PREFIX" && ! -w "$BIN_DIR" ]]; then
             sudo xattr -c "$dest" 2>/dev/null || true
             sudo codesign -s - -f "$dest" 2>/dev/null || true
@@ -782,7 +783,7 @@ main() {
         fi
     fi
 
-    install_binary "$binary_path"
+    install_binary "$binary_path" "$os"
 
     if [[ "$ISOLATED" == true ]]; then
         # Isolated mode setup

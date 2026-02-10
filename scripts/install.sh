@@ -315,6 +315,17 @@ install_binary() {
         chmod 755 "$dest"
     fi
 
+    # On macOS, clear quarantine flag and ad-hoc sign so Gatekeeper doesn't kill it
+    if [[ "$OS" == "darwin" ]]; then
+        if [[ "$PREFIX" == "$DEFAULT_PREFIX" && ! -w "$BIN_DIR" ]]; then
+            sudo xattr -c "$dest" 2>/dev/null || true
+            sudo codesign -s - -f "$dest" 2>/dev/null || true
+        else
+            xattr -c "$dest" 2>/dev/null || true
+            codesign -s - -f "$dest" 2>/dev/null || true
+        fi
+    fi
+
     success "Binary installed to $dest"
 }
 

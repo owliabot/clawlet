@@ -149,6 +149,53 @@ BINARY_PATH="$BIN_DIR/$BINARY_NAME"
 
 # === Build ===
 
+detect_arch() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  echo "x86_64" ;;
+        aarch64|arm64) echo "aarch64" ;;
+        *)       die "Unsupported architecture: $arch" ;;
+    esac
+}
+
+download_binary() {
+    local os arch
+    os=$(detect_os)
+    arch=$(detect_arch)
+
+    info "Detecting latest release..."
+
+    # Use GitHub API to find the latest release asset matching our OS/arch
+    local api_url="https://api.github.com/repos/owliabot/clawlet/releases/latest"
+    local release_json
+    release_json=$(curl -fsSL "$api_url") || die "Failed to fetch latest release info"
+
+    # Find the asset URL matching our platform: clawlet-{version}-{arch}-{os}.tar.gz
+    local asset_url
+    asset_url=$(echo "$release_json" | grep -o "\"browser_download_url\": *\"[^\"]*${arch}-${os}\\.tar\\.gz\"" | head -1 | sed 's/.*"browser_download_url": *"//;s/"$//')
+
+    if [[ -z "$asset_url" ]]; then
+        die "No release binary found for ${os}/${arch}. You may need to build from source."
+    fi
+
+    info "Downloading $BINARY_NAME for ${os}/${arch}..."
+    info "URL: $asset_url"
+
+    mkdir -p target/release
+    local tmpfile
+    tmpfile=$(mktemp)
+    curl -fsSL -o "$tmpfile" "$asset_url" || die "Download failed"
+    tar -xzf "$tmpfile" -C target/release || die "Extraction failed"
+    rm -f "$tmpfile"
+
+    if [[ ! -f "target/release/$BINARY_NAME" ]]; then
+        die "Downloaded archive did not contain '$BINARY_NAME'"
+    fi
+    chmod +x "target/release/$BINARY_NAME"
+    success "Downloaded $BINARY_NAME for ${os}/${arch}"
+}
+
 build_binary() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
         if [[ ! -f "target/release/$BINARY_NAME" ]]; then
@@ -158,9 +205,14 @@ build_binary() {
         return 0
     fi
 
-    info "Building $BINARY_NAME (release)..."
-    cargo build --release -p clawlet-cli || die "Build failed"
-    success "Build complete"
+    if [[ -f "Cargo.toml" ]]; then
+        info "Building $BINARY_NAME from source (release)..."
+        cargo build --release -p clawlet-cli || die "Build failed"
+        success "Build complete"
+    else
+        info "No Cargo.toml found — downloading pre-built binary..."
+        download_binary
+    fi
 }
 
 # === Standard Install ===

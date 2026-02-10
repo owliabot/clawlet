@@ -224,20 +224,20 @@ pub struct ExecuteRequestWithAuth {
 /// Send transaction request parameters.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendTxRequestWithAuth {
-    /// Recipient address (0x...).
-    pub to: String,
-    /// ETH value in human units (e.g. "0.1"), default "0".
+    /// Recipient address (0x-prefixed hex string, deserialized to Address).
+    pub to: alloy::primitives::Address,
+    /// ETH value in wei (hex or decimal string, deserialized to U256).
     #[serde(default)]
-    pub value: Option<String>,
-    /// Calldata hex (0x...), default empty.
+    pub value: Option<alloy::primitives::U256>,
+    /// Calldata (0x-prefixed hex string, deserialized to Bytes).
     #[serde(default)]
-    pub data: Option<String>,
+    pub data: Option<alloy::primitives::Bytes>,
     /// Chain ID (default from config or 1).
     #[serde(default)]
     pub chain_id: Option<u64>,
     /// Optional gas limit override.
     #[serde(default)]
-    pub gas_limit: Option<u64>,
+    pub gas_limit: Option<alloy::primitives::U256>,
 }
 
 // ---- JSON-RPC API Definition ----
@@ -370,56 +370,18 @@ impl ClawletApiServer for RpcServerImpl {
         &self,
         params: SendTxRequestWithAuth,
     ) -> Result<Value, ErrorObjectOwned> {
-        use alloy::primitives::{Address, Bytes, U256};
-
         let token = Self::get_token();
         if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 
-        // Parse string params into proper types
-        let to: Address = params.to.parse().map_err(|e| {
-            ErrorObjectOwned::owned(
-                error_code::INVALID_PARAMS,
-                format!("invalid to address: {e}"),
-                None::<()>,
-            )
-        })?;
-
-        let value = if let Some(v) = params.value {
-            Some(v.parse::<U256>().map_err(|e| {
-                ErrorObjectOwned::owned(
-                    error_code::INVALID_PARAMS,
-                    format!("invalid value: {e}"),
-                    None::<()>,
-                )
-            })?)
-        } else {
-            None
-        };
-
-        let data = if let Some(d) = params.data {
-            let hex_str = d.strip_prefix("0x").unwrap_or(&d);
-            let bytes = hex::decode(hex_str).map_err(|e| {
-                ErrorObjectOwned::owned(
-                    error_code::INVALID_PARAMS,
-                    format!("invalid data hex: {e}"),
-                    None::<()>,
-                )
-            })?;
-            Some(Bytes::from(bytes))
-        } else {
-            None
-        };
-
-        let gas_limit = params.gas_limit.map(U256::from);
-
+        // Serde already deserialized the alloy types from hex strings - just use them directly
         let req = SendTxRequest {
-            to,
-            value,
-            data,
+            to: params.to,
+            value: params.value,
+            data: params.data,
             chain_id: params.chain_id,
-            gas_limit,
+            gas_limit: params.gas_limit,
         };
 
         match handlers::handle_send_transaction(&self.state, req).await {

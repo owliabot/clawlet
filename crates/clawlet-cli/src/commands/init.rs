@@ -59,6 +59,8 @@ chain_rpc_urls:
   137: "https://polygon-rpc.com"
   # BNB Smart Chain
   56: "https://bsc-dataseed.binance.org"
+  # Sepolia (testnet)
+  11155111: "https://ethereum-sepolia-rpc.publicnode.com"
 
 # Authentication configuration
 # Password verification uses your keystore password - no separate auth password needed.

@@ -66,7 +66,7 @@ OPTIONS:
     --isolated      Uninstall isolated mode installation:
                     - Stops and removes systemd/launchd service
                     - Optionally removes clawlet system user
-                    - Removes /home/clawlet or /Users/clawlet data
+                    - Removes /home/clawlet or /var/clawlet data
     --skip-service  Skip service removal (useful for Docker)
     --yes, -y       Skip confirmation prompts
     --help          Show this help message
@@ -311,7 +311,7 @@ remove_clawlet_user_macos() {
     pkill -u "$CLAWLET_USER" 2>/dev/null || true
     sleep 1
     
-    local clawlet_home="/Users/$CLAWLET_USER"
+    local clawlet_home="/var/$CLAWLET_USER"
     
     # Remove user via dscl
     dscl . -delete "/Users/$CLAWLET_USER" || die "Failed to remove user"
@@ -330,7 +330,7 @@ remove_isolated_data() {
     
     case "$os" in
         linux)  clawlet_home="/home/$CLAWLET_USER" ;;
-        darwin) clawlet_home="/Users/$CLAWLET_USER" ;;
+        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
     esac
 
     local data_dir="$clawlet_home/.clawlet"

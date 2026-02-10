@@ -4,6 +4,9 @@
 //! 1. Initialize keystore if needed (or unlock existing)
 //! 2. Grant a session token to the specified agent
 //! 3. Start the HTTP JSON-RPC server
+//!
+//! Like `serve`, the command is split into [`prepare`] (synchronous) and
+//! [`start`] (asynchronous) so that daemon mode can fork in between.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -64,6 +67,8 @@ chain_rpc_urls:
   137: "https://polygon-rpc.com"
   # BNB Smart Chain
   56: "https://bsc-dataseed.binance.org"
+  # Sepolia (testnet)
+  11155111: "https://ethereum-sepolia-rpc.publicnode.com"
 
 # Authentication configuration
 auth:
@@ -113,14 +118,24 @@ fn parse_duration(s: &str) -> Result<Duration, Box<dyn std::error::Error>> {
     Ok(Duration::from_secs(secs))
 }
 
-/// Run the `start` subcommand.
-pub async fn run(
+/// Everything needed to start the server, produced by [`prepare`].
+pub struct PreparedStart {
+    pub config: Config,
+    pub signer: LocalSigner,
+    pub listen_addr: SocketAddr,
+    pub session_store: SessionStore,
+}
+
+/// Synchronous preparation: init/unlock keystore, grant token, load config.
+///
+/// Must run before daemonizing (needs interactive terminal for password prompt).
+pub fn prepare(
     agent: String,
     scope: String,
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PreparedStart, Box<dyn std::error::Error>> {
     let data_dir = resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
     let config_path = data_dir.join("config.yaml");
@@ -233,20 +248,42 @@ pub async fn run(
             .unwrap_or_else(|_| DEFAULT_ADDR.parse().unwrap())
     });
 
-    eprintln!();
-    eprintln!("🚀 Clawlet server running on http://{listen_addr}");
-    eprintln!("   Press Ctrl+C to stop");
-
-    // Start the server with pre-granted session
-    start_server_with_session(
-        &config,
-        LocalSigner::new(signing_key),
+    Ok(PreparedStart {
+        config,
+        signer: LocalSigner::new(signing_key),
         listen_addr,
         session_store,
-    )
-    .await?;
+    })
+}
 
-    Ok(())
+/// Start the server with previously prepared state (async).
+pub async fn start(prepared: PreparedStart) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
+
+    start_server_with_session(
+        &prepared.config,
+        prepared.signer,
+        prepared.listen_addr,
+        prepared.session_store,
+    )
+    .await
+}
+
+/// Run the `start` subcommand (non-daemon mode).
+pub async fn run(
+    agent: String,
+    scope: String,
+    expires: String,
+    data_dir: Option<PathBuf>,
+    addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared = prepare(agent, scope, expires, data_dir, addr)?;
+
+    eprintln!();
+    eprintln!("🚀 Clawlet server running on http://{}", prepared.listen_addr);
+    eprintln!("   Press Ctrl+C to stop");
+
+    start(prepared).await
 }
 
 /// Start the RPC server with a pre-populated session store.

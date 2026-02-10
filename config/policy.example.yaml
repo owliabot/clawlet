@@ -18,6 +18,7 @@ allowed_tokens: []
 #   - 1       # Ethereum mainnet
 #   - 8453    # Base
 #   - 42161   # Arbitrum
+#   - 11155111 # Sepolia (testnet)
 allowed_chains: []
 
 # Transfers above this USD value require human approval (optional)

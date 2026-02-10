@@ -289,7 +289,7 @@ verify_data_permissions() {
         success "Data directory permissions verified ($data_dir)"
     else
         info "Data directory not yet created ($data_dir)"
-        info "It will be created when you run: sudo -u $CLAWLET_USER $BINARY_NAME init"
+        info "It will be created when you run: sudo -H -u $CLAWLET_USER $BINARY_NAME init"
     fi
 }
 
@@ -309,15 +309,19 @@ print_isolated_post_install() {
     echo "Next steps:"
     echo ""
     echo "  1. Initialize keystore (password >= 8 chars, upper+lower+digit+symbol):"
-    echo "     sudo -u $CLAWLET_USER $BINARY_NAME init"
+    echo "     sudo -H -u $CLAWLET_USER $BINARY_NAME init"
     echo ""
     echo "  2. Edit configuration:"
-    echo "     sudo -u $CLAWLET_USER nano $clawlet_home/.clawlet/config.yaml"
+    echo "     sudo -H -u $CLAWLET_USER nano $clawlet_home/.clawlet/config.yaml"
     echo ""
-    echo "  3. Start daemon:"
-    echo "     sudo -u $CLAWLET_USER $BINARY_NAME serve"
+    echo "  3. Start daemon (backgrounds after password input):"
+    echo "     sudo -H -u $CLAWLET_USER $BINARY_NAME serve --daemon"
     echo ""
-    echo "  4. Clear sudo cache (security best practice):"
+    echo "  4. View logs / stop daemon:"
+    echo "     sudo tail -f $clawlet_home/.clawlet/clawlet.log"
+    echo "     sudo sh -c 'kill \$(cat $clawlet_home/.clawlet/clawlet.pid)'"
+    echo ""
+    echo "  5. Clear sudo cache (security best practice):"
     echo "     sudo -k"
     echo ""
     echo "Security verification:"

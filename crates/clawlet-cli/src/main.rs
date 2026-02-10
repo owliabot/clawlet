@@ -9,7 +9,8 @@
 //! - `clawlet start` — Quick start: init + auth grant + serve
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -45,6 +46,10 @@ enum Commands {
         /// Address to bind the HTTP server (default: 127.0.0.1:9100).
         #[arg(long, short)]
         addr: Option<SocketAddr>,
+
+        /// Detach and run as a background daemon after password input.
+        #[arg(long, short)]
+        daemon: bool,
     },
 
     /// Manage session tokens for AI agents.
@@ -136,21 +141,137 @@ enum Commands {
         /// Address to bind the HTTP server (default: 127.0.0.1:9100).
         #[arg(long, short)]
         addr: Option<SocketAddr>,
+
+        /// Detach and run as a background daemon after password input.
+        #[arg(long, short)]
+        daemon: bool,
     },
 }
 
-#[tokio::main]
-async fn main() {
+// ---------------------------------------------------------------------------
+// Daemon helpers
+// ---------------------------------------------------------------------------
+
+/// Fork the current process into a background daemon.
+///
+/// - Opens `log_path` for append (stdout/stderr are redirected there).
+/// - The **parent** prints a status message and exits successfully.
+/// - The **child** calls `setsid`, writes its PID to `pid_path`, closes
+///   stdin, and returns so the caller can continue with server startup.
+fn daemonize(log_path: &Path, pid_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Open log file *before* forking so both parent and child see any error.
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| format!("failed to open log file {}: {e}", log_path.display()))?;
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err("fork() failed".into());
+    }
+    if pid > 0 {
+        // Parent — report and exit.
+        eprintln!(
+            "Daemon started (PID {pid}), log: {}",
+            log_path.display(),
+        );
+        std::process::exit(0);
+    }
+
+    // --- child ---
+
+    // New session so we detach from the controlling terminal.
+    if unsafe { libc::setsid() } < 0 {
+        return Err("setsid() failed".into());
+    }
+
+    // Write PID file.
+    std::fs::write(pid_path, format!("{}", std::process::id()))?;
+
+    // Redirect stdout & stderr to the log file; close stdin.
+    let fd = log_file.as_raw_fd();
+    unsafe {
+        libc::dup2(fd, libc::STDOUT_FILENO);
+        libc::dup2(fd, libc::STDERR_FILENO);
+        libc::close(libc::STDIN_FILENO);
+    }
+
+    Ok(())
+}
+
+/// Derive the data directory from the config's keystore path.
+///
+/// `config.keystore_path` is typically `{data_dir}/keystore`, so its parent
+/// is the data directory.
+fn data_dir_from_config(config: &clawlet_core::config::Config) -> &Path {
+    config
+        .keystore_path
+        .parent()
+        .unwrap_or(Path::new("."))
+}
+
+/// Daemon path for `serve --daemon`.
+fn run_serve_daemon(
+    config: Option<PathBuf>,
+    addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared = commands::serve::prepare(config, addr)?;
+
+    let data_dir = data_dir_from_config(&prepared.config);
+    let log_path = data_dir.join("clawlet.log");
+    let pid_path = data_dir.join("clawlet.pid");
+
+    eprintln!(
+        "Clawlet RPC server listening on http://{}",
+        prepared.listen_addr
+    );
+    daemonize(&log_path, &pid_path)?;
+
+    // Child: init tracing (writes to redirected stderr → log file).
     tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(commands::serve::start(prepared))
+}
 
-    let result = match cli.command {
+/// Daemon path for `start --daemon`.
+fn run_start_daemon(
+    agent: String,
+    scope: String,
+    expires: String,
+    data_dir: Option<PathBuf>,
+    addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
+
+    let dd = data_dir_from_config(&prepared.config);
+    let log_path = dd.join("clawlet.log");
+    let pid_path = dd.join("clawlet.pid");
+
+    eprintln!(
+        "Clawlet RPC server listening on http://{}",
+        prepared.listen_addr
+    );
+    daemonize(&log_path, &pid_path)?;
+
+    tracing_subscriber::fmt::init();
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(commands::start::start(prepared))
+}
+
+// ---------------------------------------------------------------------------
+// Normal (foreground) async entry point
+// ---------------------------------------------------------------------------
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    match cli.command {
         Commands::Init {
             from_mnemonic,
             data_dir,
         } => commands::init::run(from_mnemonic, data_dir),
-        Commands::Serve { config, addr } => commands::serve::run(config, addr).await,
+        Commands::Serve { config, addr, .. } => commands::serve::run(config, addr).await,
         Commands::Transfer {
             to,
             amount,
@@ -175,10 +296,56 @@ async fn main() {
             expires,
             data_dir,
             addr,
+            ..
         } => commands::start::run(agent, scope, expires, data_dir, addr).await,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// main — no #[tokio::main] so daemon mode can fork before worker threads.
+// ---------------------------------------------------------------------------
+
+fn main() {
+    let cli = Cli::parse();
+
+    // Daemon mode: synchronous prepare → fork → create tokio runtime → start.
+    // This avoids forking inside an existing multi-threaded tokio runtime.
+    let daemon_result = match &cli.command {
+        Commands::Serve {
+            config,
+            addr,
+            daemon: true,
+        } => Some(run_serve_daemon(config.clone(), *addr)),
+        Commands::Start {
+            agent,
+            scope,
+            expires,
+            data_dir,
+            addr,
+            daemon: true,
+        } => Some(run_start_daemon(
+            agent.clone(),
+            scope.clone(),
+            expires.clone(),
+            data_dir.clone(),
+            *addr,
+        )),
+        _ => None,
     };
 
-    if let Err(e) = result {
+    if let Some(result) = daemon_result {
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Normal foreground mode: init tracing, create runtime, dispatch.
+    tracing_subscriber::fmt::init();
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    if let Err(e) = rt.block_on(run(cli)) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }

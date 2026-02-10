@@ -2,6 +2,10 @@
 //!
 //! Loads config, unlocks keystore, starts the HTTP JSON-RPC server,
 //! and handles graceful shutdown on Ctrl+C.
+//!
+//! The command is split into [`prepare`] (synchronous: password prompt, keystore
+//! unlock) and [`start`] (asynchronous: RPC server) so that daemon mode can
+//! fork between the two phases — before any tokio worker threads exist.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -14,6 +18,13 @@ use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
 
+/// Everything needed to start the RPC server, produced by [`prepare`].
+pub struct PreparedServer {
+    pub config: Config,
+    pub signer: LocalSigner,
+    pub listen_addr: SocketAddr,
+}
+
 /// Resolve the config path (default: ~/.clawlet/config.yaml).
 fn resolve_config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(path) = config {
@@ -24,30 +35,33 @@ fn resolve_config_path(config: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::
     Ok(home.join(".clawlet").join("config.yaml"))
 }
 
-/// Run the `serve` subcommand.
-pub async fn run(
+/// Synchronous preparation: load config, prompt for password, unlock keystore.
+///
+/// This must run **before** daemonizing because it needs an interactive
+/// terminal for the password prompt.
+pub fn prepare(
     config_path: Option<PathBuf>,
     addr: Option<SocketAddr>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PreparedServer, Box<dyn std::error::Error>> {
     let config_path = resolve_config_path(config_path)?;
 
-    tracing::info!("loading config from {}", config_path.display());
+    eprintln!("Loading config from {}", config_path.display());
     let config = Config::from_file(&config_path)?;
 
-    // Prompt for keystore password (used for future signing operations)
+    // Prompt for keystore password (interactive)
     eprint!("Enter keystore password: ");
     let password = rpassword::read_password()?;
 
-    // Verify keystore file permissions are 0600 (owner-only read/write)
+    // Verify keystore file permissions are 0600
     verify_keystore_permissions(&config.keystore_path)?;
 
-    // Verify that keystore directory exists and has at least one key
+    // Unlock keystore
     let signing_key = if config.keystore_path.exists() {
         let keys = Keystore::list(&config.keystore_path)?;
         if keys.is_empty() {
             return Err("no keystore files found — run `clawlet init` first".into());
         }
-        tracing::info!("found {} keystore file(s)", keys.len());
+        eprintln!("Found {} keystore file(s)", keys.len());
         let key_path = &keys[0];
         let mnemonic = Keystore::unlock(key_path, &password)?;
         Some(hd::derive_key(&mnemonic, 0)?)
@@ -69,12 +83,38 @@ pub async fn run(
             .unwrap_or_else(|_| DEFAULT_ADDR.parse().unwrap())
     });
 
-    println!("Clawlet RPC server listening on http://{}", listen_addr);
+    Ok(PreparedServer {
+        config,
+        signer: LocalSigner::new(signing_key),
+        listen_addr,
+    })
+}
+
+/// Start the RPC server with previously prepared state (async).
+pub async fn start(prepared: PreparedServer) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
 
     // Start the HTTP JSON-RPC server
-    RpcServer::start_with_config(&config, LocalSigner::new(signing_key), Some(listen_addr)).await?;
+    RpcServer::start_with_config(
+        &prepared.config,
+        prepared.signer,
+        Some(prepared.listen_addr),
+    )
+    .await?;
 
     Ok(())
+}
+
+/// Run the `serve` subcommand (non-daemon mode).
+pub async fn run(
+    config_path: Option<PathBuf>,
+    addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let prepared = prepare(config_path, addr)?;
+
+    println!("Clawlet RPC server listening on http://{}", prepared.listen_addr);
+
+    start(prepared).await
 }
 
 /// Verify that the keystore directory and all keystore files have permission 0600.
@@ -109,6 +149,6 @@ fn verify_keystore_permissions(keystore_path: &Path) -> Result<(), Box<dyn std::
         }
     }
 
-    tracing::info!("keystore permissions verified: {}", keystore_path.display());
+    eprintln!("Keystore permissions verified: {}", keystore_path.display());
     Ok(())
 }

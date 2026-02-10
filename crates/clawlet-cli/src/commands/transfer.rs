@@ -4,43 +4,13 @@
 //! All keystore unlocking, policy checking, signing, and broadcasting
 //! happen server-side.
 
-use std::fmt;
-use std::str::FromStr;
-
 use clawlet_evm::Address;
 use rust_decimal::Decimal;
 use serde_json::json;
 
-/// Asset to transfer: native ETH or an ERC-20 token.
-#[derive(Clone, Debug)]
-pub enum Asset {
-    /// Native chain currency (e.g. ETH).
-    Native,
-    /// ERC-20 token identified by contract address.
-    Erc20(Address),
-}
-
-impl FromStr for Asset {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.eq_ignore_ascii_case("ETH") {
-            Ok(Self::Native)
-        } else {
-            let addr: Address = s.parse().map_err(|e| format!("invalid address: {e}"))?;
-            Ok(Self::Erc20(addr))
-        }
-    }
-}
-
-impl fmt::Display for Asset {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Native => f.write_str("ETH"),
-            Self::Erc20(addr) => write!(f, "{addr}"),
-        }
-    }
-}
+/// Re-export [`clawlet_rpc::types::TokenSpec`] as `Asset` so the CLI arg
+/// type in `main.rs` stays unchanged.
+pub type Asset = clawlet_rpc::types::TokenSpec;
 
 /// Default RPC server address.
 const DEFAULT_ADDR: &str = "127.0.0.1:9100";

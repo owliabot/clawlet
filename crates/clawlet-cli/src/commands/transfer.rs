@@ -4,6 +4,8 @@
 //! All keystore unlocking, policy checking, signing, and broadcasting
 //! happen server-side.
 
+use clawlet_evm::Address;
+use rust_decimal::Decimal;
 use serde_json::json;
 
 /// Default RPC server address.
@@ -11,8 +13,8 @@ const DEFAULT_ADDR: &str = "127.0.0.1:9100";
 
 /// Run the `transfer` subcommand.
 pub async fn run(
-    to: String,
-    amount: String,
+    to: Address,
+    amount: Decimal,
     asset: String,
     chain_id: Option<u64>,
     addr: Option<String>,
@@ -32,10 +34,13 @@ pub async fn run(
     // Resolve chain_id (default to 1 if not specified)
     let chain_id = chain_id.unwrap_or(1);
 
+    // Convert human-readable amount to string for the RPC call
+    let amount_str = amount.to_string();
+
     // Show summary and ask for confirmation
     println!("\n=== Transfer Summary ===");
     println!("  To:       {to}");
-    println!("  Amount:   {amount} {token_spec}");
+    println!("  Amount:   {amount_str} {token_spec}");
     println!("  Chain ID: {chain_id}");
     println!("  Server:   {rpc_url}");
     println!("========================\n");
@@ -57,8 +62,8 @@ pub async fn run(
         "id": 1,
         "method": "transfer",
         "params": {
-            "to": to,
-            "amount": amount,
+            "to": to.to_string(),
+            "amount": amount_str,
             "token_type": token_spec,
             "chain_id": chain_id,
         }

@@ -61,11 +61,11 @@ enum Commands {
     Transfer {
         /// Recipient address (0x...).
         #[arg(long)]
-        to: String,
+        to: clawlet_evm::Address,
 
         /// Human-readable amount (e.g. "0.1" for 0.1 ETH).
         #[arg(long)]
-        amount: String,
+        amount: rust_decimal::Decimal,
 
         /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
         #[arg(long, env = "CLAWLET_AUTH_TOKEN")]

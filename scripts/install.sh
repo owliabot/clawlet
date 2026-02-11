@@ -288,6 +288,23 @@ create_system_user_macos() {
     if id "$CLAWLET_USER" &>/dev/null; then
         info "User '$CLAWLET_USER' already exists"
 
+        # Handle legacy installers that created the user with home under /Users/clawlet.
+        # Our isolated install expects the system user's home under /var/clawlet.
+        local current_home
+        current_home=$(dscl . -read "/Users/$CLAWLET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+        if [[ "$current_home" == "/Users/$CLAWLET_USER" ]]; then
+            info "Migrating legacy home from $current_home to /var/$CLAWLET_USER..."
+            mkdir -p "/var/$CLAWLET_USER"
+
+            # Migrate clawlet data directory if present.
+            if [[ -d "/Users/$CLAWLET_USER/.clawlet" && ! -d "/var/$CLAWLET_USER/.clawlet" ]]; then
+                mv "/Users/$CLAWLET_USER/.clawlet" "/var/$CLAWLET_USER/" 2>/dev/null || true
+            fi
+
+            dscl . -create "/Users/$CLAWLET_USER" NFSHomeDirectory "/var/$CLAWLET_USER"
+            success "Updated '$CLAWLET_USER' home to /var/$CLAWLET_USER"
+        fi
+
         # Ensure group exists and user is a member even when reusing an existing user
         if ! dscl . -read "/Groups/$CLAWLET_GROUP" &>/dev/null; then
             info "Creating group '$CLAWLET_GROUP'..."
@@ -312,6 +329,12 @@ create_system_user_macos() {
             dscl . -create "/Users/$CLAWLET_USER" PrimaryGroupID "$current_gid"
             info "Updated '$CLAWLET_USER' primary group to '$CLAWLET_GROUP'"
         fi
+
+        # Ensure target home exists with correct permissions.
+        mkdir -p "/var/$CLAWLET_USER"
+        chown "$CLAWLET_USER:$CLAWLET_GROUP" "/var/$CLAWLET_USER" 2>/dev/null || true
+        chmod 700 "/var/$CLAWLET_USER" 2>/dev/null || true
+
         success "User '$CLAWLET_USER' group membership verified"
         return 0
     fi
@@ -388,7 +411,7 @@ verify_data_permissions() {
 
     case "$os" in
         linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
-        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
+        darwin) clawlet_home=$(dscl . -read "/Users/$CLAWLET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || echo "/var/$CLAWLET_USER") ;;
     esac
 
     local data_dir="$clawlet_home/.clawlet"

@@ -10,12 +10,11 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use clawlet_core::auth::{SessionStore, TokenScope};
 use clawlet_core::config::Config;
-use clawlet_rpc::server::DEFAULT_ADDR;
+use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
@@ -292,14 +291,16 @@ pub async fn start_notify(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
 
-    start_server_with_session_notify(
+    RpcServer::start_with_session_notify(
         &prepared.config,
         prepared.signer,
-        prepared.listen_addr,
         prepared.session_store,
+        Some(prepared.listen_addr),
         ready_fd.into(),
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -309,14 +310,16 @@ pub async fn start_notify(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("starting RPC server on http://{}", prepared.listen_addr);
 
-    start_server_with_session_notify(
+    RpcServer::start_with_session_notify(
         &prepared.config,
         prepared.signer,
-        prepared.listen_addr,
         prepared.session_store,
+        Some(prepared.listen_addr),
         None,
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 /// Run the `start` subcommand (non-daemon mode).
@@ -339,73 +342,3 @@ pub async fn run(
     start(prepared).await
 }
 
-/// Start the RPC server with a pre-populated session store and optional ready notification fd.
-async fn start_server_with_session_notify(
-    config: &Config,
-    signer: LocalSigner,
-    addr: SocketAddr,
-    session_store: SessionStore,
-    ready_fd: Option<i32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    use clawlet_core::audit::AuditLogger;
-    use clawlet_core::policy::PolicyEngine;
-    use clawlet_evm::EvmAdapter;
-    use clawlet_rpc::server::{AppState, ClawletApiServer, RpcServerImpl};
-    use jsonrpsee::server::Server;
-
-    // Load policy — derive spending.json from the writable data dir
-    // (audit_log_path parent) rather than policy dir which may be read-only.
-    let spending_path = config
-        .audit_log_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("spending.json");
-    let policy = PolicyEngine::from_file_with_spending(&config.policy_path, spending_path)?;
-
-    // Create audit logger (ensure parent dir exists)
-    if let Some(parent) = config.audit_log_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let audit = AuditLogger::new(&config.audit_log_path)?;
-
-    // Build EVM adapters for each configured chain
-    let mut adapters = HashMap::new();
-    for (chain_id, rpc_url) in &config.chain_rpc_urls {
-        let adapter = EvmAdapter::new(rpc_url)?;
-        adapters.insert(*chain_id, adapter);
-    }
-
-    let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("skills"));
-
-    let state = Arc::new(AppState {
-        policy: Arc::new(policy),
-        audit: Arc::new(Mutex::new(audit)),
-        adapters: Arc::new(adapters),
-        session_store: Arc::new(RwLock::new(session_store)),
-        auth_config: config.auth.clone(),
-        signer: Arc::new(signer),
-        skills_dir,
-        keystore_path: config.keystore_path.clone(),
-    });
-
-    let server = Server::builder().build(addr).await?;
-
-    // Signal readiness after successful bind
-    #[cfg(unix)]
-    if let Some(fd) = ready_fd {
-        crate::signal_daemon_ready(fd);
-    }
-
-    let rpc_impl = RpcServerImpl::new(Arc::clone(&state));
-    let handle = server.start(rpc_impl.into_rpc());
-
-    // Wait for server to finish (runs until stopped)
-    handle.stopped().await;
-
-    Ok(())
-}

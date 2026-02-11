@@ -604,6 +604,60 @@ impl RpcServer {
         server.run_notify(ready_fd).await
     }
 
+    /// Start the RPC server with an externally provided [`SessionStore`].
+    ///
+    /// This is used by `clawlet start` which grants a token before the server
+    /// boots.  Everything else (policy, audit, EVM adapters, middleware) is
+    /// identical to [`start_with_config_notify`].
+    pub async fn start_with_session_notify(
+        config: &Config,
+        signer: LocalSigner,
+        session_store: SessionStore,
+        addr: Option<SocketAddr>,
+        ready_fd: Option<i32>,
+    ) -> Result<(), ServerError> {
+        let spending_path = config
+            .audit_log_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("spending.json");
+        let policy = PolicyEngine::from_file_with_spending(&config.policy_path, spending_path)?;
+
+        if let Some(parent) = config.audit_log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let audit = AuditLogger::new(&config.audit_log_path)?;
+
+        let mut adapters = HashMap::new();
+        for (chain_id, rpc_url) in &config.chain_rpc_urls {
+            let adapter =
+                EvmAdapter::new(rpc_url).map_err(|e| ServerError::EvmAdapter(e.to_string()))?;
+            adapters.insert(*chain_id, adapter);
+        }
+
+        let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("skills"));
+
+        let state = Arc::new(AppState {
+            policy: Arc::new(policy),
+            audit: Arc::new(Mutex::new(audit)),
+            adapters: Arc::new(adapters),
+            session_store: Arc::new(RwLock::new(session_store)),
+            auth_config: config.auth.clone(),
+            signer: Arc::new(signer),
+            skills_dir,
+            keystore_path: config.keystore_path.clone(),
+        });
+
+        let server_config = ServerConfig {
+            addr: addr.unwrap_or_else(|| DEFAULT_ADDR.parse().unwrap()),
+        };
+
+        let server = RpcServer::new(server_config, state);
+        server.run_notify(ready_fd).await
+    }
+
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
         self.run_notify(None).await

@@ -388,33 +388,6 @@ fn daemonize(
     Ok((pipe_write, guard))
 }
 
-/// Signal daemon readiness by writing "ok\n" to the pipe fd and closing it.
-///
-/// This unblocks the parent process, which then exits successfully.
-#[cfg(unix)]
-pub(crate) fn signal_daemon_ready(fd: i32) {
-    let msg = b"ok\n";
-    let mut off = 0usize;
-    while off < msg.len() {
-        let n = unsafe {
-            libc::write(
-                fd,
-                msg[off..].as_ptr().cast(),
-                (msg.len() - off) as libc::size_t,
-            )
-        };
-        if n > 0 {
-            off += n as usize;
-            continue;
-        }
-        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        break;
-    }
-    unsafe { libc::close(fd) };
-}
-
 #[cfg(not(unix))]
 fn daemonize(_log_path: &Path, _pid_path: &Path) -> Result<(i32, ()), Box<dyn std::error::Error>> {
     Err("--daemon is only supported on Unix targets".into())

@@ -4,18 +4,9 @@ use std::path::PathBuf;
 
 use clawlet_signer::keystore::Keystore;
 
-/// Resolve the data directory (default: ~/.clawlet).
-fn resolve_data_dir(data_dir: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Some(dir) = data_dir {
-        return Ok(dir);
-    }
-    let home = dirs::home_dir().ok_or("could not determine home directory")?;
-    Ok(home.join(".clawlet"))
-}
-
 /// Run the `export-mnemonic` subcommand.
 pub fn run(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = resolve_data_dir(data_dir)?;
+    let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
 
     let entries = Keystore::list(&keystore_dir)?;

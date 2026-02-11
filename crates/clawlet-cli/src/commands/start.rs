@@ -81,16 +81,6 @@ auth:
     )
 }
 
-/// Resolve the data directory (default: ~/.clawlet).
-fn resolve_data_dir(data_dir: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Some(dir) = data_dir {
-        return Ok(dir);
-    }
-
-    let home = dirs::home_dir().ok_or("could not determine home directory")?;
-    Ok(home.join(".clawlet"))
-}
-
 /// Parse a duration string like "1y", "30d", "24h" into a Duration.
 fn parse_duration(s: &str) -> Result<Duration, Box<dyn std::error::Error>> {
     let s = s.trim().to_lowercase();
@@ -135,7 +125,7 @@ pub fn prepare(
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
 ) -> Result<PreparedStart, Box<dyn std::error::Error>> {
-    let data_dir = resolve_data_dir(data_dir)?;
+    let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
     let config_path = data_dir.join("config.yaml");
 

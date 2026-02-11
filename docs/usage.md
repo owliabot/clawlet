@@ -24,16 +24,11 @@
 # 1. 安装
 cargo install --git https://github.com/owliabot/clawlet clawlet-cli
 
-# 2. 初始化（生成钱包 + 配置）
-clawlet init
+# 2. 一键启动（初始化 + 授权 + 启动服务）
+clawlet start --agent my-agent
+# Listening on http://127.0.0.1:9100
 
-# 3. 授权 AI agent（生成 token）
-clawlet auth grant --scope read,trade --label "my-agent"
-
-# 4. 启动服务
-clawlet serve
-
-# 5. 测试（通过 HTTP）
+# 3. 测试（通过 HTTP）
 curl -X POST http://127.0.0.1:9100/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"health","params":{},"id":1}'
@@ -43,10 +38,22 @@ curl -X POST http://127.0.0.1:9100/rpc \
 
 ## 安装
 
-### 一键安装（推荐）
+### 隔离模式安装（推荐）
 
 ```bash
-# 下载预编译二进制
+# 创建独立 clawlet 系统用户，密钥隔离
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | sudo bash -s -- --isolated
+
+# 安装后一键启动
+sudo -H -u clawlet clawlet start --agent owliabot --daemon
+```
+
+详见 [deployment.md](./deployment.md) 了解完整部署指南。
+
+### Dev Mode 安装
+
+```bash
+# 下载预编译二进制（当前用户目录）
 curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
 
 # 或者指定选项
@@ -169,9 +176,21 @@ chain_rpc_urls:
 
 ## 启动服务
 
-### HTTP 模式（默认）
+### 推荐方式：`clawlet start`
 
-Clawlet 使用 HTTP JSON-RPC 2.0 协议提供 API 服务。
+`clawlet start` 会自动完成初始化、授权和启动服务：
+
+```bash
+# Dev Mode
+clawlet start --agent my-agent
+
+# Isolated Mode
+sudo -H -u clawlet clawlet start --agent owliabot --daemon
+```
+
+### HTTP 模式（手动）
+
+也可以分步手动启动，Clawlet 使用 HTTP JSON-RPC 2.0 协议提供 API 服务。
 
 ```bash
 clawlet serve

@@ -82,6 +82,14 @@ sudo chmod 755 /usr/local/bin/clawlet
 
 ### 3.3 Initialize
 
+**Recommended:** Use `clawlet start` to init, grant token, and start the server in one step:
+
+```bash
+sudo -H -u clawlet clawlet start --agent owliabot --daemon
+```
+
+**Or manually:**
+
 ```bash
 # Run as the clawlet user
 sudo -u clawlet clawlet init
@@ -226,8 +234,8 @@ sudo useradd --system --create-home --shell /usr/sbin/nologin clawlet
 cargo build --release -p clawlet-cli
 sudo cp target/release/clawlet /usr/local/bin/clawlet
 
-# 3. Initialize (will prompt for keystore password)
-sudo -u clawlet clawlet init
+# 3. Initialize + start (all-in-one)
+sudo -H -u clawlet clawlet start --agent owliabot --daemon
 
 # 4. Configure RPC URLs
 sudo -u clawlet bash -c 'cat >> ~/.clawlet/config.yaml << EOF

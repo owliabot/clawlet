@@ -220,11 +220,7 @@ pub fn prepare(
         } else {
             // Generate new mnemonic (default)
             let mnemonic = hd::generate_mnemonic();
-            eprintln!();
-            eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
-            eprintln!();
-            eprintln!("  {mnemonic}");
-            eprintln!();
+            super::util::confirm_and_clear_mnemonic(&mnemonic)?;
             mnemonic
         };
 

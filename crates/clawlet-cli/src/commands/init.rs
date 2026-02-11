@@ -178,11 +178,7 @@ pub fn run(
     } else {
         // Generate a new mnemonic
         let mnemonic = hd::generate_mnemonic();
-        eprintln!();
-        eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
-        eprintln!();
-        eprintln!("  {mnemonic}");
-        eprintln!();
+        super::util::confirm_and_clear_mnemonic(&mnemonic)?;
 
         // Store the mnemonic in the keystore
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;

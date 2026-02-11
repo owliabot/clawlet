@@ -193,13 +193,40 @@ pub fn prepare(
         // Create directory structure
         std::fs::create_dir_all(&keystore_dir)?;
 
-        // Generate new mnemonic and derive key
-        let mnemonic = hd::generate_mnemonic();
+        // Ask user whether to create new or import existing mnemonic
         eprintln!();
-        eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
+        eprintln!("🔑 No existing keystore found. Choose an option:");
+        eprintln!("  1) Create new wallet (generate mnemonic)");
+        eprintln!("  2) Import existing mnemonic");
         eprintln!();
-        eprintln!("  {mnemonic}");
-        eprintln!();
+        eprint!("Enter choice [1/2]: ");
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        let choice = choice.trim();
+
+        let mnemonic = if choice == "2" {
+            // Import existing mnemonic
+            eprintln!();
+            eprint!("Enter your BIP-39 mnemonic phrase: ");
+            let mut mnemonic_input = String::new();
+            std::io::stdin().read_line(&mut mnemonic_input)?;
+            let mnemonic_input = mnemonic_input.trim().to_string();
+            if mnemonic_input.is_empty() {
+                return Err("mnemonic cannot be empty".into());
+            }
+            eprintln!();
+            eprintln!("📥 Importing mnemonic...");
+            mnemonic_input
+        } else {
+            // Generate new mnemonic (default)
+            let mnemonic = hd::generate_mnemonic();
+            eprintln!();
+            eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
+            eprintln!();
+            eprintln!("  {mnemonic}");
+            eprintln!();
+            mnemonic
+        };
 
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 

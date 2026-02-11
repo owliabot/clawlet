@@ -259,6 +259,10 @@ pub trait ClawletApi {
     #[method(name = "health")]
     async fn health(&self) -> Result<Value, ErrorObjectOwned>;
 
+    /// List supported chains.
+    #[method(name = "chains")]
+    async fn chains(&self) -> Result<Value, ErrorObjectOwned>;
+
     /// Get wallet address.
     #[method(name = "address")]
     async fn address(&self) -> Result<Value, ErrorObjectOwned>;
@@ -327,6 +331,13 @@ impl RpcServerImpl {
 impl ClawletApiServer for RpcServerImpl {
     async fn health(&self) -> Result<Value, ErrorObjectOwned> {
         Ok(serde_json::json!({"status": "ok"}))
+    }
+
+    async fn chains(&self) -> Result<Value, ErrorObjectOwned> {
+        match handlers::handle_chains(&self.state) {
+            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Err(e) => Err(handler_error_to_rpc(e)),
+        }
     }
 
     async fn address(&self) -> Result<Value, ErrorObjectOwned> {

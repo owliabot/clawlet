@@ -16,7 +16,8 @@ use serde_json::Value;
 
 use crate::server::DEFAULT_ADDR;
 use crate::types::{
-    BalanceResponse, ExecuteResponse, SendRawResponse, SkillsResponse, TransferResponse,
+    BalanceResponse, ChainsResponse, ExecuteResponse, SendRawResponse, SkillsResponse,
+    TransferResponse,
 };
 
 /// Error type for RPC client operations.
@@ -154,6 +155,13 @@ impl RpcClient {
     pub async fn health(&self) -> Result<Value, ClientError> {
         let client = self.build_client()?;
         let result: Value = client.request("health", rpc_params![]).await?;
+        Ok(result)
+    }
+
+    /// List supported chains.
+    pub async fn chains(&self) -> Result<ChainsResponse, ClientError> {
+        let client = self.build_client()?;
+        let result: ChainsResponse = client.request("chains", rpc_params![]).await?;
         Ok(result)
     }
 

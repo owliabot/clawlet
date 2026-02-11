@@ -17,9 +17,9 @@ use clawlet_signer::Signer;
 
 use crate::server::AppState;
 use crate::types::{
-    AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
-    ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse, SkillSummary, SkillsResponse,
-    TokenSpec, TransferRequest, TransferResponse, TransferStatus,
+    AddressResponse, Amount, BalanceQuery, BalanceResponse, ChainInfo, ChainsResponse,
+    ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse,
+    SkillSummary, SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -27,6 +27,24 @@ use crate::types::{
 /// Health check — always returns `{"status": "ok"}`.
 pub fn handle_health(_state: &AppState) -> serde_json::Value {
     json!({ "status": "ok" })
+}
+
+/// Returns the list of supported chains with their configuration status.
+pub fn handle_chains(state: &AppState) -> Result<ChainsResponse, HandlerError> {
+    let mut chains: Vec<ChainInfo> = state
+        .adapters
+        .keys()
+        .map(|&chain_id| ChainInfo {
+            chain_id,
+            name: crate::types::chain_name(chain_id),
+            rpc_configured: true,
+        })
+        .collect();
+
+    // Sort by chain_id for deterministic output
+    chains.sort_by_key(|c| c.chain_id);
+
+    Ok(ChainsResponse { chains })
 }
 
 /// Returns the wallet address managed by this clawlet instance.

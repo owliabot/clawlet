@@ -292,6 +292,12 @@ fn daemonize(
                 msg.extend_from_slice(&buf[..(n as usize)]);
                 continue;
             }
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue; // retry on EINTR
+                }
+            }
             break;
         }
         unsafe { libc::close(pipe_read) };
@@ -326,8 +332,17 @@ fn daemonize(
     // before clobbering the file (avoids losing track of the original process).
     if let Ok(contents) = std::fs::read_to_string(pid_path) {
         if let Ok(existing_pid) = contents.trim().parse::<i32>() {
-            // kill(pid, 0) checks if process exists without sending a signal
-            if unsafe { libc::kill(existing_pid, 0) } == 0 {
+            // kill(pid, 0) checks if process exists without sending a signal.
+            // Returns 0 if we can signal it; -1 with EPERM means it exists but
+            // we lack permission; -1 with ESRCH means no such process (stale).
+            let kill_ret = unsafe { libc::kill(existing_pid, 0) };
+            let process_alive = if kill_ret == 0 {
+                true
+            } else {
+                let err = std::io::Error::last_os_error();
+                err.raw_os_error() == Some(libc::EPERM) // EPERM → exists but can't signal
+            };
+            if process_alive {
                 // Avoid blocking restart if the PID was reused by a different process.
                 match pid_is_clawlet(existing_pid) {
                     Some(false) => {

@@ -328,90 +328,100 @@ fn daemonize(
         return Err("setsid() failed".into());
     }
 
-    // Check for an existing PID file — if another daemon is still running, bail out
-    // before clobbering the file (avoids losing track of the original process).
-    if let Ok(contents) = std::fs::read_to_string(pid_path) {
-        if let Ok(existing_pid) = contents.trim().parse::<i32>() {
-            // kill(pid, 0) checks if process exists without sending a signal.
-            // Returns 0 if we can signal it; -1 with EPERM means it exists but
-            // we lack permission; -1 with ESRCH means no such process (stale).
-            let kill_ret = unsafe { libc::kill(existing_pid, 0) };
-            let process_alive = if kill_ret == 0 {
-                true
-            } else {
-                let err = std::io::Error::last_os_error();
-                err.raw_os_error() == Some(libc::EPERM) // EPERM → exists but can't signal
-            };
-            if process_alive {
-                // Avoid blocking restart if the PID was reused by a different process.
-                match pid_is_clawlet(existing_pid) {
-                    Some(false) => {
-                        // PID is alive but not clawlet; treat the pid file as stale and overwrite.
-                    }
-                    Some(true) | None => {
-                        let msg = format!(
-                            "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
-                            pid_path.display()
-                        );
-                        write_pipe_all(pipe_write, msg.as_bytes());
-                        unsafe { libc::close(pipe_write) };
-                        return Err(
-                            format!("another daemon already running (PID {existing_pid})").into(),
-                        );
-                    }
-                }
-            }
-            // Stale PID file — previous daemon exited without cleanup; safe to overwrite.
-        }
-    }
-
-    // Write PID file atomically using O_EXCL to prevent races between
-    // concurrent daemon launches. If the file already exists (stale case
-    // validated above), remove it first then create exclusively.
+    // Acquire PID file using O_EXCL (create_new) for race-free locking.
+    // If the file already exists, check whether the owning process is still
+    // alive; only remove and retry if it's stale or not clawlet.
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Remove stale PID file if it survived the liveness check above.
-        let _ = std::fs::remove_file(pid_path);
+        let try_create = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(pid_path)
+        };
 
-        let pid_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true) // O_EXCL — fails if another process created it first
-            .mode(0o600)
-            .open(pid_path);
+        let mut pid_file = match try_create() {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // PID file exists — check if the owning process is alive.
+                let is_stale = match std::fs::read_to_string(pid_path) {
+                    Ok(contents) => match contents.trim().parse::<i32>() {
+                        Ok(existing_pid) => {
+                            let kill_ret = unsafe { libc::kill(existing_pid, 0) };
+                            let process_alive = if kill_ret == 0 {
+                                true
+                            } else {
+                                let err = std::io::Error::last_os_error();
+                                err.raw_os_error() == Some(libc::EPERM)
+                            };
+                            if process_alive {
+                                match pid_is_clawlet(existing_pid) {
+                                    Some(false) => true, // PID reused by non-clawlet
+                                    Some(true) | None => {
+                                        let msg = format!(
+                                            "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
+                                            pid_path.display()
+                                        );
+                                        write_pipe_all(pipe_write, msg.as_bytes());
+                                        unsafe { libc::close(pipe_write) };
+                                        return Err(format!(
+                                            "another daemon already running (PID {existing_pid})"
+                                        )
+                                        .into());
+                                    }
+                                }
+                            } else {
+                                true // Process dead — stale
+                            }
+                        }
+                        Err(_) => true, // Unparseable PID — stale
+                    },
+                    Err(_) => true, // Can't read — treat as stale
+                };
 
-        match pid_file {
-            Ok(mut f) => {
-                if let Err(e) = write!(f, "{}", std::process::id()) {
-                    write_pipe_all(
-                        pipe_write,
-                        format!(
-                            "err: failed to write pid file {}: {e}\n",
-                            pid_path.display()
-                        )
-                        .as_bytes(),
-                    );
-                    unsafe { libc::close(pipe_write) };
-                    return Err(e.into());
+                if is_stale {
+                    let _ = std::fs::remove_file(pid_path);
+                    match try_create() {
+                        Ok(f) => f,
+                        Err(e2) => {
+                            let msg = format!(
+                                "err: failed to create pid file {} after stale cleanup: {e2}\n",
+                                pid_path.display()
+                            );
+                            write_pipe_all(pipe_write, msg.as_bytes());
+                            unsafe { libc::close(pipe_write) };
+                            return Err(e2.into());
+                        }
+                    }
+                } else {
+                    unreachable!("non-stale case returns Err above");
                 }
             }
             Err(e) => {
-                let msg = if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    format!(
-                        "err: another daemon is starting concurrently (pid file {} locked)\n",
-                        pid_path.display()
-                    )
-                } else {
-                    format!(
-                        "err: failed to create pid file {}: {e}\n",
-                        pid_path.display()
-                    )
-                };
+                let msg = format!(
+                    "err: failed to create pid file {}: {e}\n",
+                    pid_path.display()
+                );
                 write_pipe_all(pipe_write, msg.as_bytes());
                 unsafe { libc::close(pipe_write) };
                 return Err(e.into());
             }
+        };
+
+        if let Err(e) = write!(pid_file, "{}", std::process::id()) {
+            write_pipe_all(
+                pipe_write,
+                format!(
+                    "err: failed to write pid file {}: {e}\n",
+                    pid_path.display()
+                )
+                .as_bytes(),
+            );
+            unsafe { libc::close(pipe_write) };
+            return Err(e.into());
         }
     }
 

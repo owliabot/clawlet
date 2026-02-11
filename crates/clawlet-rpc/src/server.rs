@@ -549,9 +549,11 @@ impl RpcServer {
         addr: Option<SocketAddr>,
         ready_fd: Option<i32>,
     ) -> Result<(), ServerError> {
-        // Load policy with spending persistence
+        // Load policy with spending persistence — use the audit log directory
+        // (the writable data dir) rather than the policy directory, which may
+        // be a read-only config location in some deployments.
         let spending_path = config
-            .policy_path
+            .audit_log_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("spending.json");

@@ -313,7 +313,13 @@ create_system_user_macos() {
             info "Updated '$CLAWLET_USER' primary group to '$CLAWLET_GROUP'"
         fi
 
-        # Ensure target home exists with correct permissions.
+        # Ensure home directory points to /var and exists with correct permissions.
+        local current_home
+        current_home=$(dscl . -read "/Users/$CLAWLET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+        if [[ "$current_home" != "/var/$CLAWLET_USER" ]]; then
+            dscl . -create "/Users/$CLAWLET_USER" NFSHomeDirectory "/var/$CLAWLET_USER"
+            info "Updated '$CLAWLET_USER' home directory to '/var/$CLAWLET_USER'"
+        fi
         mkdir -p "/var/$CLAWLET_USER"
         chown "$CLAWLET_USER:$CLAWLET_GROUP" "/var/$CLAWLET_USER" 2>/dev/null || true
         chmod 700 "/var/$CLAWLET_USER" 2>/dev/null || true

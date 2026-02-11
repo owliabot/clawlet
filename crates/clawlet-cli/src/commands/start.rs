@@ -356,9 +356,10 @@ async fn start_server_with_session_notify(
     use clawlet_rpc::server::{AppState, ClawletApiServer, RpcServerImpl};
     use jsonrpsee::server::Server;
 
-    // Load policy
+    // Load policy — derive spending.json from the writable data dir
+    // (audit_log_path parent) rather than policy dir which may be read-only.
     let spending_path = config
-        .policy_path
+        .audit_log_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("spending.json");

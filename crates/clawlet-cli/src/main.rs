@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 
 mod commands;
+pub(crate) mod tui;
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;

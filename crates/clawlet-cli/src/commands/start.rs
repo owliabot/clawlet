@@ -263,9 +263,9 @@ pub fn prepare(
     let uid = 0u32;
 
     // Grant the token
-    let token = session_store.grant(&agent, token_scope, expires_duration, uid);
-    let session = session_store.get(&agent).unwrap();
-    let expires_at = session.expires_at;
+    let grant = session_store.grant(&agent, token_scope, expires_duration, uid);
+    let token = &grant.token;
+    let expires_at = grant.expires_at;
 
     eprintln!();
     eprintln!(

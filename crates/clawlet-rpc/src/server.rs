@@ -505,12 +505,11 @@ impl ClawletApiServer for RpcServerImpl {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
         })?;
 
-        let token = store.grant(&params.agent_id, scope, expires_in, uid);
-        let session = store.get(&params.agent_id).unwrap();
+        let grant = store.grant(&params.agent_id, scope, expires_in, uid);
 
         let response = AuthGrantResponse {
-            token,
-            expires_at: session.expires_at.to_rfc3339(),
+            token: grant.token,
+            expires_at: grant.expires_at.to_rfc3339(),
         };
 
         serde_json::to_value(response).map_err(|e| {

@@ -2,6 +2,7 @@
 //!
 //! This module provides request/response types, typed wrappers, and RPC method definitions.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use std::fmt;
@@ -48,6 +49,8 @@ impl FromStr for Amount {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcMethod {
     Health,
+    /// List supported chains (no auth required).
+    Chains,
     /// Query wallet address (no auth required).
     Address,
     Balance,
@@ -71,6 +74,7 @@ impl RpcMethod {
     pub fn parse_method(s: &str) -> Option<Self> {
         match s {
             "health" => Some(Self::Health),
+            "chains" => Some(Self::Chains),
             "address" => Some(Self::Address),
             "balance" => Some(Self::Balance),
             "transfer" => Some(Self::Transfer),
@@ -89,6 +93,7 @@ impl RpcMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Health => "health",
+            Self::Chains => "chains",
             Self::Address => "address",
             Self::Balance => "balance",
             Self::Transfer => "transfer",
@@ -110,7 +115,7 @@ impl RpcMethod {
     /// - `Auth*`: use password-based auth instead (handled in their handlers)
     pub fn required_scope(&self) -> Option<TokenScope> {
         match self {
-            RpcMethod::Health | RpcMethod::Address => None,
+            RpcMethod::Health | RpcMethod::Chains | RpcMethod::Address => None,
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
             RpcMethod::Transfer | RpcMethod::Execute | RpcMethod::SendRaw => {
                 Some(TokenScope::Trade)
@@ -315,6 +320,36 @@ pub struct SendRawResponse {
     pub audit_id: String,
 }
 
+/// Information about a supported chain.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChainInfo {
+    /// Numeric chain ID.
+    pub chain_id: u64,
+    /// Human-readable chain name.
+    pub name: String,
+}
+
+/// Response for chains listing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChainsResponse {
+    /// List of supported chains.
+    pub chains: Vec<ChainInfo>,
+}
+
+/// Map a chain ID to a well-known human-readable name.
+pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
+    match chain_id {
+        1 => Cow::Borrowed("Ethereum"),
+        10 => Cow::Borrowed("Optimism"),
+        56 => Cow::Borrowed("BNB Chain"),
+        137 => Cow::Borrowed("Polygon"),
+        8453 => Cow::Borrowed("Base"),
+        42161 => Cow::Borrowed("Arbitrum"),
+        43114 => Cow::Borrowed("Avalanche"),
+        _ => Cow::Owned(format!("Unknown ({chain_id})")),
+    }
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -330,11 +365,77 @@ pub enum HandlerError {
 mod tests {
     use super::*;
 
+    // ---- chain_name tests ----
+
+    #[test]
+    fn chain_name_known_chains() {
+        assert_eq!(chain_name(1), "Ethereum");
+        assert_eq!(chain_name(10), "Optimism");
+        assert_eq!(chain_name(56), "BNB Chain");
+        assert_eq!(chain_name(137), "Polygon");
+        assert_eq!(chain_name(8453), "Base");
+        assert_eq!(chain_name(42161), "Arbitrum");
+        assert_eq!(chain_name(43114), "Avalanche");
+    }
+
+    #[test]
+    fn chain_name_unknown_chain() {
+        assert_eq!(chain_name(999999), "Unknown (999999)");
+    }
+
+    #[test]
+    fn chain_name_known_returns_borrowed() {
+        let name = chain_name(1);
+        assert!(matches!(name, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn chain_name_unknown_returns_owned() {
+        let name = chain_name(999999);
+        assert!(matches!(name, Cow::Owned(_)));
+    }
+
+    // ---- ChainInfo serialization tests ----
+
+    #[test]
+    fn chain_info_serialization_no_rpc_configured_field() {
+        let info = ChainInfo {
+            chain_id: 1,
+            name: "Ethereum".to_string(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["chain_id"], 1);
+        assert_eq!(json["name"], "Ethereum");
+        assert!(json.get("rpc_configured").is_none());
+    }
+
+    #[test]
+    fn chains_response_roundtrip() {
+        let resp = ChainsResponse {
+            chains: vec![
+                ChainInfo {
+                    chain_id: 1,
+                    name: "Ethereum".to_string(),
+                },
+                ChainInfo {
+                    chain_id: 8453,
+                    name: "Base".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: ChainsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.chains.len(), 2);
+        assert_eq!(parsed.chains[0].chain_id, 1);
+        assert_eq!(parsed.chains[1].name, "Base");
+    }
+
     // ---- RpcMethod tests ----
 
     #[test]
     fn test_method_from_str() {
         assert_eq!(RpcMethod::parse_method("health"), Some(RpcMethod::Health));
+        assert_eq!(RpcMethod::parse_method("chains"), Some(RpcMethod::Chains));
         assert_eq!(RpcMethod::parse_method("address"), Some(RpcMethod::Address));
         assert_eq!(RpcMethod::parse_method("balance"), Some(RpcMethod::Balance));
         assert_eq!(
@@ -369,6 +470,7 @@ mod tests {
     #[test]
     fn test_method_as_str() {
         assert_eq!(RpcMethod::Health.as_str(), "health");
+        assert_eq!(RpcMethod::Chains.as_str(), "chains");
         assert_eq!(RpcMethod::Address.as_str(), "address");
         assert_eq!(RpcMethod::Balance.as_str(), "balance");
         assert_eq!(RpcMethod::Transfer.as_str(), "transfer");
@@ -386,6 +488,7 @@ mod tests {
         use clawlet_core::auth::TokenScope;
 
         assert_eq!(RpcMethod::Health.required_scope(), None);
+        assert_eq!(RpcMethod::Chains.required_scope(), None);
         assert_eq!(RpcMethod::Address.required_scope(), None);
         assert_eq!(RpcMethod::Balance.required_scope(), Some(TokenScope::Read));
         assert_eq!(RpcMethod::Skills.required_scope(), Some(TokenScope::Read));
@@ -405,6 +508,7 @@ mod tests {
     fn test_method_roundtrip() {
         let methods = [
             RpcMethod::Health,
+            RpcMethod::Chains,
             RpcMethod::Address,
             RpcMethod::Balance,
             RpcMethod::Transfer,

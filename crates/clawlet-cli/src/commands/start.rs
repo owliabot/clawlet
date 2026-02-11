@@ -212,21 +212,21 @@ pub fn prepare(
             hd::generate_mnemonic()
         };
 
-        // If mnemonic was generated (not imported), show it in alternate screen
-        // We check by trying to see if the user chose option 1 — but since we
-        // already consumed the choice, we show it regardless for safety.
-        // The alternate screen ensures it's not in scroll-back.
-        crate::tui::show_sensitive(
-            &[
-                "🔑 Your mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
-                "",
-                &format!("  {mnemonic}"),
-            ],
-            "Press Enter when you have saved the mnemonic...",
-        )?;
-
-        // Create directory structure
+        // Create directory structure first so we fail before showing the mnemonic
         std::fs::create_dir_all(&keystore_dir)?;
+
+        // If mnemonic was generated (not imported), show it in alternate screen.
+        // The alternate screen ensures it's not in scroll-back.
+        if choice == "1" {
+            crate::tui::show_sensitive(
+                &[
+                    "🔑 Your mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
+                    "",
+                    &format!("  {mnemonic}"),
+                ],
+                "Press Enter when you have saved the mnemonic...",
+            )?;
+        }
 
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 

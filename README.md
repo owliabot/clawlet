@@ -34,21 +34,9 @@ clawlet/
 
 ## Installation
 
-### Quick Install (User Mode)
+### Isolated Mode (Recommended)
 
-```bash
-# One-liner install (downloads pre-built binary)
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
-
-# Or with options
-./scripts/install.sh --prefix ~/.local    # Custom install location
-./scripts/install.sh --from-source        # Build from source
-./scripts/install.sh --version v0.1.0     # Specific version
-```
-
-### Isolated Mode (Recommended for Production)
-
-For production deployments, use isolated mode which creates a dedicated `clawlet` system user for key isolation:
+Isolated mode creates a dedicated `clawlet` system user for key isolation — recommended for all deployments:
 
 ```bash
 # Linux - installs binary, creates user, sets up systemd service
@@ -67,17 +55,23 @@ curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/insta
 
 **Post-install steps:**
 ```bash
-# Initialize keystore (as clawlet user)
-sudo -u clawlet clawlet init
-
-# Linux: Start service
-sudo systemctl enable --now clawlet
-
-# macOS: Start service
-sudo launchctl load /Library/LaunchDaemons/com.openclaw.clawlet.plist
+# Init + grant token + start daemon (all-in-one)
+sudo -H -u clawlet clawlet start --agent owliabot --daemon
 ```
 
 See [docs/deployment.md](docs/deployment.md) for full production setup guide.
+
+### Quick Install (Dev Mode)
+
+```bash
+# One-liner install (downloads pre-built binary)
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
+
+# Or with options
+./scripts/install.sh --prefix ~/.local    # Custom install location
+./scripts/install.sh --from-source        # Build from source
+./scripts/install.sh --version v0.1.0     # Specific version
+```
 
 ### From Source
 
@@ -92,7 +86,7 @@ sudo cp target/release/clawlet /usr/local/bin/
 ### Uninstall
 
 ```bash
-# User mode
+# Dev mode
 curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
 
 # Isolated mode (removes service, optionally user and data)
@@ -113,18 +107,11 @@ curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/unins
 ## Quick Start
 
 ```bash
-# 1. Initialize (generates keystore + default policy)
-clawlet init
-
-# 2. Grant token to agent
-clawlet auth grant --scope read,trade --label "my-agent"
-# Save the token: clwt_xxx...
-
-# 3. Start HTTP server
-clawlet serve
+# 1. Start clawlet (init + grant token + start server, all-in-one)
+clawlet start --agent my-agent
 # Listening on http://127.0.0.1:9100
 
-# 4. Test
+# 2. Test
 curl -X POST http://127.0.0.1:9100/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"health","params":{},"id":1}'

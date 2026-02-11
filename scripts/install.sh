@@ -56,17 +56,17 @@ OPTIONS:
     --help          Show this help message
 
 MODES:
-    Standard mode (default):
+    Dev mode (default):
         Builds and installs the binary to PREFIX/bin with standard permissions.
         User manages their own ~/.clawlet directory.
 
-    Isolated mode (--isolated):
+    Isolated mode (--isolated, recommended):
         Creates a dedicated clawlet system user for UID isolation.
         All wallet data is owned by clawlet user (600), inaccessible to
         the current user or AI agents. See docs/security-boundary-analysis.md.
 
 EXAMPLES:
-    # Standard install
+    # Dev mode install
     ./install.sh
 
     # Isolated mode (recommended for production)
@@ -236,7 +236,7 @@ install_standard() {
     success "Binary installed to $BINARY_PATH (755)"
 
     echo ""
-    info "Standard mode installed. Quick start:"
+    info "Dev mode installed. Quick start:"
     echo ""
     echo "    $BINARY_NAME start --agent owliabot    # Init + grant token + start server"
     echo ""

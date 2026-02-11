@@ -123,6 +123,13 @@ enum Commands {
         addr: Option<String>,
     },
 
+    /// Export (display) the BIP-39 mnemonic from the encrypted keystore.
+    ExportMnemonic {
+        /// Data directory (default: ~/.clawlet).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -502,6 +509,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             addr,
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
+        Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Start {
             agent,
             scope,

@@ -61,6 +61,29 @@ pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std
         return Ok(None);
     }
 
+    // Verify the process is actually a clawlet instance by inspecting
+    // /proc/{pid}/cmdline. If it doesn't contain "clawlet", the PID file
+    // is stale (recycled PID).
+    {
+        let cmdline_path = format!("/proc/{pid}/cmdline");
+        match std::fs::read(&cmdline_path) {
+            Ok(bytes) => {
+                // cmdline is NUL-separated; check if any argument contains "clawlet".
+                let cmdline = String::from_utf8_lossy(&bytes);
+                if !cmdline.contains("clawlet") {
+                    let _ = std::fs::remove_file(&pid_path);
+                    return Ok(None);
+                }
+            }
+            Err(_) => {
+                // Can't read cmdline (process may have exited or /proc unavailable).
+                // Treat as stale to be safe.
+                let _ = std::fs::remove_file(&pid_path);
+                return Ok(None);
+            }
+        }
+    }
+
     // Send SIGTERM.
     unsafe { libc::kill(pid, libc::SIGTERM) };
 

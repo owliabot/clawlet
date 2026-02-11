@@ -458,15 +458,14 @@ fn run_start_daemon(
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Stop any existing instance before starting.
-    let dd = commands::stop::resolve_data_dir(data_dir.clone())?;
-    if let Some(pid) = commands::stop::stop_running_instance(&dd)? {
-        eprintln!("Stopping existing clawlet (PID {pid})...");
-    }
-
     let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
 
+    // Stop any existing instance *after* prepare succeeds, so a failed
+    // prepare (wrong password, config error) doesn't kill the running daemon.
     let dd = data_dir_from_config(&prepared.config);
+    if let Some(pid) = commands::stop::stop_running_instance(dd)? {
+        eprintln!("Stopping existing clawlet (PID {pid})...");
+    }
     let log_path = dd.join("clawlet.log");
     let pid_path = dd.join("clawlet.pid");
 
@@ -531,17 +530,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             data_dir,
             addr,
             ..
-        } => {
-            // Stop any existing instance before starting (Unix only).
-            #[cfg(unix)]
-            {
-                let dd = commands::stop::resolve_data_dir(data_dir.clone())?;
-                if let Some(pid) = commands::stop::stop_running_instance(&dd)? {
-                    eprintln!("Stopping existing clawlet (PID {pid})...");
-                }
-            }
-            commands::start::run(agent, scope, expires, data_dir, addr).await
-        }
+        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
     }
 }
 

@@ -380,9 +380,9 @@ impl SessionStore {
         count
     }
 
-    /// List all active sessions.
-    pub fn list(&self) -> Vec<&Session> {
-        self.sessions.values().collect()
+    /// List all sessions (including expired ones still within the grace period).
+    pub fn list(&self) -> Vec<(&str, &Session)> {
+        self.sessions.iter().map(|(k, v)| (k.as_str(), v)).collect()
     }
 
     /// Remove sessions that have been expired longer than the grace period (7 days).
@@ -598,7 +598,7 @@ mod tests {
         let agent_sessions: Vec<_> = store
             .list()
             .into_iter()
-            .filter(|s| s.id == "agent-1")
+            .filter(|(_, s)| s.id == "agent-1")
             .collect();
         assert_eq!(agent_sessions.len(), 2);
 

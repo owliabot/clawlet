@@ -46,7 +46,8 @@ use clawlet_signer::signer::LocalSigner;
 
 use crate::dispatch::{
     AuthGrantRequest, AuthGrantResponse, AuthListRequest, AuthListResponse, AuthRevokeAllRequest,
-    AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, SessionSummary,
+    AuthRevokeAllResponse, AuthRevokeRequest, AuthRevokeResponse, AuthRevokeSessionRequest,
+    AuthRevokeSessionResponse, SessionSummary,
 };
 use crate::handlers;
 use crate::types::{
@@ -291,13 +292,20 @@ pub trait ClawletApi {
     #[method(name = "auth.grant")]
     async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned>;
 
-    /// List all active sessions.
+    /// List all sessions (including expired ones still within the grace period).
     #[method(name = "auth.list")]
     async fn auth_list(&self, params: AuthListRequest) -> Result<Value, ErrorObjectOwned>;
 
-    /// Revoke a session.
+    /// Revoke all sessions for an agent.
     #[method(name = "auth.revoke")]
     async fn auth_revoke(&self, params: AuthRevokeRequest) -> Result<Value, ErrorObjectOwned>;
+
+    /// Revoke a single session by its session key.
+    #[method(name = "auth.revoke_session")]
+    async fn auth_revoke_session(
+        &self,
+        params: AuthRevokeSessionRequest,
+    ) -> Result<Value, ErrorObjectOwned>;
 
     /// Revoke all sessions.
     #[method(name = "auth.revoke_all")]
@@ -530,16 +538,19 @@ impl ClawletApiServer for RpcServerImpl {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
         })?;
 
+        let now = chrono::Utc::now();
         let sessions: Vec<_> = store
             .list()
             .into_iter()
-            .map(|s| SessionSummary {
+            .map(|(key, s)| SessionSummary {
+                session_key: key.to_string(),
                 id: s.id.clone(),
                 scope: s.scope.to_string(),
                 created_at: s.created_at.to_rfc3339(),
                 expires_at: s.expires_at.to_rfc3339(),
                 last_used_at: s.last_used_at.to_rfc3339(),
                 request_count: s.request_count,
+                is_expired: s.expires_at < now,
             })
             .collect();
 
@@ -563,6 +574,28 @@ impl ClawletApiServer for RpcServerImpl {
 
         let revoked = store.revoke(&params.agent_id);
         serde_json::to_value(AuthRevokeResponse { revoked }).map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None::<()>,
+            )
+        })
+    }
+
+    async fn auth_revoke_session(
+        &self,
+        params: AuthRevokeSessionRequest,
+    ) -> Result<Value, ErrorObjectOwned> {
+        if let Err(e) = verify_admin_password(&self.state, &params.password) {
+            return Err(auth_error_to_rpc(e));
+        }
+
+        let mut store = self.state.session_store.write().map_err(|_| {
+            ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
+        })?;
+
+        let revoked = store.revoke_by_key(&params.session_key);
+        serde_json::to_value(AuthRevokeSessionResponse { revoked }).map_err(|e| {
             ErrorObjectOwned::owned(
                 error_code::INTERNAL_ERROR,
                 format!("serialization error: {e}"),

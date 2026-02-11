@@ -61,10 +61,12 @@ pub enum RpcMethod {
     SendRaw,
     /// Grant a new session token (Admin only).
     AuthGrant,
-    /// List all active sessions (Admin only).
+    /// List all sessions including expired ones in grace period (Admin only).
     AuthList,
-    /// Revoke a session by agent ID (Admin only).
+    /// Revoke all sessions for an agent (Admin only).
     AuthRevoke,
+    /// Revoke a single session by session key (Admin only).
+    AuthRevokeSession,
     /// Revoke all sessions (Admin only).
     AuthRevokeAll,
 }
@@ -84,6 +86,7 @@ impl RpcMethod {
             "auth.grant" => Some(Self::AuthGrant),
             "auth.list" => Some(Self::AuthList),
             "auth.revoke" => Some(Self::AuthRevoke),
+            "auth.revoke_session" => Some(Self::AuthRevokeSession),
             "auth.revoke_all" => Some(Self::AuthRevokeAll),
             _ => None,
         }
@@ -103,6 +106,7 @@ impl RpcMethod {
             Self::AuthGrant => "auth.grant",
             Self::AuthList => "auth.list",
             Self::AuthRevoke => "auth.revoke",
+            Self::AuthRevokeSession => "auth.revoke_session",
             Self::AuthRevokeAll => "auth.revoke_all",
         }
     }
@@ -123,6 +127,7 @@ impl RpcMethod {
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
+            | RpcMethod::AuthRevokeSession
             | RpcMethod::AuthRevokeAll => None,
         }
     }
@@ -484,6 +489,10 @@ mod tests {
             Some(RpcMethod::AuthRevoke)
         );
         assert_eq!(
+            RpcMethod::parse_method("auth.revoke_session"),
+            Some(RpcMethod::AuthRevokeSession)
+        );
+        assert_eq!(
             RpcMethod::parse_method("auth.revoke_all"),
             Some(RpcMethod::AuthRevokeAll)
         );
@@ -503,6 +512,7 @@ mod tests {
         assert_eq!(RpcMethod::AuthGrant.as_str(), "auth.grant");
         assert_eq!(RpcMethod::AuthList.as_str(), "auth.list");
         assert_eq!(RpcMethod::AuthRevoke.as_str(), "auth.revoke");
+        assert_eq!(RpcMethod::AuthRevokeSession.as_str(), "auth.revoke_session");
         assert_eq!(RpcMethod::AuthRevokeAll.as_str(), "auth.revoke_all");
     }
 

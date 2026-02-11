@@ -7,6 +7,7 @@ description = "HTTP JSON-RPC server for Clawlet"
 
 [dependencies]
 alloy = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 clawlet-core = { path = "../clawlet-core" }
 clawlet-evm = { path = "../clawlet-evm" }
 clawlet-signer = { path = "../clawlet-signer" }

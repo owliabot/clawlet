@@ -27,13 +27,22 @@ pub struct AuthGrantResponse {
     pub expires_at: String,
 }
 
-/// Request body for revoking a session.
+/// Request body for revoking all sessions for an agent.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuthRevokeRequest {
     /// Password for authentication.
     pub password: String,
-    /// Agent identifier to revoke.
+    /// Agent identifier whose sessions should all be revoked.
     pub agent_id: String,
+}
+
+/// Request body for revoking a single session by key.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AuthRevokeSessionRequest {
+    /// Password for authentication.
+    pub password: String,
+    /// Session key (hex-encoded token hash) to revoke.
+    pub session_key: String,
 }
 
 /// Request body for revoking all sessions.
@@ -53,6 +62,8 @@ pub struct AuthListRequest {
 /// A single session summary in the list response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionSummary {
+    /// Session key (hex-encoded token hash), used to revoke individual sessions.
+    pub session_key: String,
     /// Agent identifier.
     pub id: String,
     /// Session scope.
@@ -65,18 +76,27 @@ pub struct SessionSummary {
     pub last_used_at: String,
     /// Number of requests made with this session.
     pub request_count: u64,
+    /// Whether this session has expired (still in grace period).
+    pub is_expired: bool,
 }
 
 /// Response for auth list.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthListResponse {
-    /// Active sessions.
+    /// All sessions (including expired ones still within the grace period).
     pub sessions: Vec<SessionSummary>,
 }
 
-/// Response for auth revoke.
+/// Response for auth revoke (by agent ID).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthRevokeResponse {
+    /// Whether any sessions were revoked.
+    pub revoked: bool,
+}
+
+/// Response for auth revoke session (by session key).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthRevokeSessionResponse {
     /// Whether the session was revoked.
     pub revoked: bool,
 }

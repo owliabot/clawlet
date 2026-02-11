@@ -25,7 +25,7 @@ pub enum AuthCommand {
         scope: String,
 
         /// Session duration (e.g., "24h", "7d", "1w").
-        #[arg(long, default_value = "24h")]
+        #[arg(long, default_value = "7d")]
         expires: String,
 
         /// Server address (default: 127.0.0.1:9100).

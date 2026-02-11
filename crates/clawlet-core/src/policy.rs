@@ -167,11 +167,14 @@ impl PolicyEngine {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("json encode: {e}"))
         })?;
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp_path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp_path)?;
         file.write_all(data.as_bytes())?;
         file.sync_all()?;
 

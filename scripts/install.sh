@@ -409,7 +409,7 @@ verify_data_permissions() {
         # Ensure all files are 600
         find "$data_dir" -type f -exec chmod 600 {} \;
         find "$data_dir" -type d -exec chmod 700 {} \;
-        find "$data_dir" -exec chown "$CLAWLET_USER:$CLAWLET_GROUP" {} \;
+        find "$data_dir" \( -type f -o -type d \) -exec chown "$CLAWLET_USER:$CLAWLET_GROUP" {} \;
 
         success "Data directory permissions verified ($data_dir)"
     else

@@ -365,32 +365,53 @@ fn daemonize(
         }
     }
 
-    // Write PID file.
-    if let Err(e) = std::fs::write(pid_path, format!("{}", std::process::id())) {
-        write_pipe_all(
-            pipe_write,
-            format!(
-                "err: failed to write pid file {}: {e}\n",
-                pid_path.display()
-            )
-            .as_bytes(),
-        );
-        unsafe { libc::close(pipe_write) };
-        return Err(e.into());
-    }
+    // Write PID file atomically using O_EXCL to prevent races between
+    // concurrent daemon launches. If the file already exists (stale case
+    // validated above), remove it first then create exclusively.
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(pid_path, std::fs::Permissions::from_mode(0o600)) {
-            write_pipe_all(
-                pipe_write,
-                format!(
-                    "err: failed to set pid file permissions {}: {e}\n",
-                    pid_path.display()
-                )
-                .as_bytes(),
-            );
-            unsafe { libc::close(pipe_write) };
-            return Err(e.into());
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Remove stale PID file if it survived the liveness check above.
+        let _ = std::fs::remove_file(pid_path);
+
+        let pid_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true) // O_EXCL — fails if another process created it first
+            .mode(0o600)
+            .open(pid_path);
+
+        match pid_file {
+            Ok(mut f) => {
+                if let Err(e) = write!(f, "{}", std::process::id()) {
+                    write_pipe_all(
+                        pipe_write,
+                        format!(
+                            "err: failed to write pid file {}: {e}\n",
+                            pid_path.display()
+                        )
+                        .as_bytes(),
+                    );
+                    unsafe { libc::close(pipe_write) };
+                    return Err(e.into());
+                }
+            }
+            Err(e) => {
+                let msg = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "err: another daemon is starting concurrently (pid file {} locked)\n",
+                        pid_path.display()
+                    )
+                } else {
+                    format!(
+                        "err: failed to create pid file {}: {e}\n",
+                        pid_path.display()
+                    )
+                };
+                write_pipe_all(pipe_write, msg.as_bytes());
+                unsafe { libc::close(pipe_write) };
+                return Err(e.into());
+            }
         }
     }
 

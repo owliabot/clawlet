@@ -349,6 +349,28 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prepared = prepare(agent, scope, expires, data_dir, addr)?;
 
+    // Stop any existing instance *after* prepare succeeds, so a failed
+    // prepare (wrong password, config error) doesn't kill the running daemon.
+    #[cfg(unix)]
+    {
+        let dd = prepared
+            .config
+            .keystore_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        match super::stop::stop_running_instance(dd, false) {
+            Ok(Some(pid)) => eprintln!("Stopping existing clawlet (PID {pid})..."),
+            Ok(None) => {}
+            Err(e) => {
+                if matches!(&e, super::stop::StopError::CannotVerify { .. }) {
+                    eprintln!("warning: {e}");
+                    eprintln!("Run `clawlet stop --force` first, then retry.");
+                }
+                return Err(e.into());
+            }
+        }
+    }
+
     eprintln!();
     eprintln!(
         "🚀 Clawlet server running on http://{}",

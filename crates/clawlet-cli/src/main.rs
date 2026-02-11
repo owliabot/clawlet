@@ -130,6 +130,17 @@ enum Commands {
         data_dir: Option<PathBuf>,
     },
 
+    /// Stop a running clawlet daemon.
+    Stop {
+        /// Data directory (default: ~/.clawlet).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Force stop even if the process cannot be verified as clawlet.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -453,7 +464,20 @@ fn run_start_daemon(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
 
+    // Stop any existing instance *after* prepare succeeds, so a failed
+    // prepare (wrong password, config error) doesn't kill the running daemon.
     let dd = data_dir_from_config(&prepared.config);
+    match commands::stop::stop_running_instance(dd, false) {
+        Ok(Some(pid)) => eprintln!("Stopping existing clawlet (PID {pid})..."),
+        Ok(None) => {}
+        Err(e) => {
+            if matches!(&e, commands::stop::StopError::CannotVerify { .. }) {
+                eprintln!("warning: {e}");
+                eprintln!("Run `clawlet stop --force` first, then retry.");
+            }
+            return Err(e.into());
+        }
+    }
     let log_path = dd.join("clawlet.log");
     let pid_path = dd.join("clawlet.pid");
 
@@ -510,6 +534,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
+        Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {
             agent,
             scope,

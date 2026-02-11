@@ -327,6 +327,8 @@ pub struct ChainInfo {
     pub chain_id: u64,
     /// Human-readable chain name.
     pub name: String,
+    /// Whether this chain is a testnet.
+    pub testnet: bool,
 }
 
 /// Response for chains listing.
@@ -334,6 +336,23 @@ pub struct ChainInfo {
 pub struct ChainsResponse {
     /// List of supported chains.
     pub chains: Vec<ChainInfo>,
+}
+
+/// Returns `true` if the given chain ID is a well-known testnet.
+pub fn is_testnet(chain_id: u64) -> bool {
+    matches!(
+        chain_id,
+        5          // Goerli
+        | 11155111 // Sepolia
+        | 80001    // Mumbai
+        | 97       // BSC Testnet
+        | 421613   // Arbitrum Goerli
+        | 420      // Optimism Goerli
+        | 84531    // Base Goerli
+        | 84532    // Base Sepolia
+        | 11155420 // Optimism Sepolia
+        | 421614 // Arbitrum Sepolia
+    )
 }
 
 /// Map a chain ID to a well-known human-readable name.
@@ -402,10 +421,12 @@ mod tests {
         let info = ChainInfo {
             chain_id: 1,
             name: "Ethereum".to_string(),
+            testnet: false,
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["chain_id"], 1);
         assert_eq!(json["name"], "Ethereum");
+        assert_eq!(json["testnet"], false);
         assert!(json.get("rpc_configured").is_none());
     }
 
@@ -416,10 +437,12 @@ mod tests {
                 ChainInfo {
                     chain_id: 1,
                     name: "Ethereum".to_string(),
+                    testnet: false,
                 },
                 ChainInfo {
                     chain_id: 8453,
                     name: "Base".to_string(),
+                    testnet: false,
                 },
             ],
         };

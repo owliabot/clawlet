@@ -76,10 +76,9 @@ pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std
                 }
             }
             Err(_) => {
-                // Can't read cmdline (process may have exited or /proc unavailable).
-                // Treat as stale to be safe.
-                let _ = std::fs::remove_file(&pid_path);
-                return Ok(None);
+                // Can't read cmdline — /proc may not exist (macOS) or process
+                // exited between the alive-check and here. Since we wrote the
+                // PID file ourselves, trust it and proceed with the stop.
             }
         }
     }

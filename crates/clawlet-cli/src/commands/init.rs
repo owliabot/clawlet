@@ -152,8 +152,15 @@ pub fn run(
     };
 
     let address = if from_mnemonic {
-        // Prompt for existing mnemonic in private mode (input hidden)
-        let mnemonic = rpassword::prompt_password_stderr("Enter your BIP-39 mnemonic phrase: ")?;
+        // Prompt for existing mnemonic — hidden input when TTY available,
+        // falls back to stdin for piped/scripted usage.
+        let mnemonic = if atty::is(atty::Stream::Stdin) {
+            rpassword::prompt_password_stderr("Enter your BIP-39 mnemonic phrase: ")?
+        } else {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf)?;
+            buf
+        };
         let mnemonic = mnemonic.trim().to_string();
         if mnemonic.is_empty() {
             return Err(std::io::Error::new(

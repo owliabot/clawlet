@@ -37,6 +37,7 @@ pub fn handle_chains(state: &AppState) -> Result<ChainsResponse, HandlerError> {
         .map(|&chain_id| ChainInfo {
             chain_id,
             name: crate::types::chain_name(chain_id).into_owned(),
+            testnet: crate::types::is_testnet(chain_id),
         })
         .collect();
 

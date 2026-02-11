@@ -140,8 +140,8 @@ enum Commands {
         #[arg(long, default_value = "trade")]
         scope: String,
 
-        /// Token expiry duration (default: 24h).
-        #[arg(long, default_value = "24h")]
+        /// Token expiry duration (default: 7d).
+        #[arg(long, default_value = "7d")]
         expires: String,
 
         /// Data directory (default: ~/.clawlet).

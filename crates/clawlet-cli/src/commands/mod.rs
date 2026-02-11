@@ -8,6 +8,7 @@ pub mod init;
 pub mod send;
 pub mod serve;
 pub mod start;
+pub mod stop;
 pub mod transfer;
 
 pub(crate) fn resolve_data_dir(

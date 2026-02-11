@@ -130,6 +130,13 @@ enum Commands {
         data_dir: Option<PathBuf>,
     },
 
+    /// Stop a running clawlet daemon.
+    Stop {
+        /// Data directory (default: ~/.clawlet).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -451,6 +458,12 @@ fn run_start_daemon(
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Stop any existing instance before starting.
+    let dd = commands::stop::resolve_data_dir(data_dir.clone())?;
+    if let Some(pid) = commands::stop::stop_running_instance(&dd)? {
+        eprintln!("Stopping existing clawlet (PID {pid})...");
+    }
+
     let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
 
     let dd = data_dir_from_config(&prepared.config);
@@ -510,6 +523,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
+        Commands::Stop { data_dir } => commands::stop::run(data_dir),
         Commands::Start {
             agent,
             scope,
@@ -517,7 +531,17 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             data_dir,
             addr,
             ..
-        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
+        } => {
+            // Stop any existing instance before starting (Unix only).
+            #[cfg(unix)]
+            {
+                let dd = commands::stop::resolve_data_dir(data_dir.clone())?;
+                if let Some(pid) = commands::stop::stop_running_instance(&dd)? {
+                    eprintln!("Stopping existing clawlet (PID {pid})...");
+                }
+            }
+            commands::start::run(agent, scope, expires, data_dir, addr).await
+        }
     }
 }
 

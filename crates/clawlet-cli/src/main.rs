@@ -471,13 +471,11 @@ fn run_start_daemon(
         Ok(Some(pid)) => eprintln!("Stopping existing clawlet (PID {pid})..."),
         Ok(None) => {}
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("cannot verify") {
-                eprintln!("warning: {msg}");
+            if matches!(&e, commands::stop::StopError::CannotVerify { .. }) {
+                eprintln!("warning: {e}");
                 eprintln!("Run `clawlet stop --force` first, then retry.");
-                return Err(e);
             }
-            return Err(e);
+            return Err(e.into());
         }
     }
     let log_path = dd.join("clawlet.log");

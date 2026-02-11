@@ -85,7 +85,7 @@ confirm() {
         return 0
     fi
     echo -en "${YELLOW}?${NC} $prompt [y/N] "
-    read -r response
+    read -r response < /dev/tty
     case "$response" in
         [yY][eE][sS]|[yY]) return 0 ;;
         *) return 1 ;;

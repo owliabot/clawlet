@@ -36,8 +36,7 @@ pub fn handle_chains(state: &AppState) -> Result<ChainsResponse, HandlerError> {
         .keys()
         .map(|&chain_id| ChainInfo {
             chain_id,
-            name: crate::types::chain_name(chain_id),
-            rpc_configured: true,
+            name: crate::types::chain_name(chain_id).into_owned(),
         })
         .collect();
 

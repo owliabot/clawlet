@@ -2,6 +2,7 @@
 //!
 //! This module provides request/response types, typed wrappers, and RPC method definitions.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use std::fmt;
@@ -326,8 +327,6 @@ pub struct ChainInfo {
     pub chain_id: u64,
     /// Human-readable chain name.
     pub name: String,
-    /// Whether an RPC endpoint is configured for this chain.
-    pub rpc_configured: bool,
 }
 
 /// Response for chains listing.
@@ -338,16 +337,16 @@ pub struct ChainsResponse {
 }
 
 /// Map a chain ID to a well-known human-readable name.
-pub fn chain_name(chain_id: u64) -> String {
+pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
     match chain_id {
-        1 => "Ethereum".to_string(),
-        10 => "Optimism".to_string(),
-        56 => "BNB Chain".to_string(),
-        137 => "Polygon".to_string(),
-        8453 => "Base".to_string(),
-        42161 => "Arbitrum".to_string(),
-        43114 => "Avalanche".to_string(),
-        _ => format!("Unknown ({chain_id})"),
+        1 => Cow::Borrowed("Ethereum"),
+        10 => Cow::Borrowed("Optimism"),
+        56 => Cow::Borrowed("BNB Chain"),
+        137 => Cow::Borrowed("Polygon"),
+        8453 => Cow::Borrowed("Base"),
+        42161 => Cow::Borrowed("Arbitrum"),
+        43114 => Cow::Borrowed("Avalanche"),
+        _ => Cow::Owned(format!("Unknown ({chain_id})")),
     }
 }
 
@@ -365,6 +364,71 @@ pub enum HandlerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- chain_name tests ----
+
+    #[test]
+    fn chain_name_known_chains() {
+        assert_eq!(chain_name(1), "Ethereum");
+        assert_eq!(chain_name(10), "Optimism");
+        assert_eq!(chain_name(56), "BNB Chain");
+        assert_eq!(chain_name(137), "Polygon");
+        assert_eq!(chain_name(8453), "Base");
+        assert_eq!(chain_name(42161), "Arbitrum");
+        assert_eq!(chain_name(43114), "Avalanche");
+    }
+
+    #[test]
+    fn chain_name_unknown_chain() {
+        assert_eq!(chain_name(999999), "Unknown (999999)");
+    }
+
+    #[test]
+    fn chain_name_known_returns_borrowed() {
+        let name = chain_name(1);
+        assert!(matches!(name, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn chain_name_unknown_returns_owned() {
+        let name = chain_name(999999);
+        assert!(matches!(name, Cow::Owned(_)));
+    }
+
+    // ---- ChainInfo serialization tests ----
+
+    #[test]
+    fn chain_info_serialization_no_rpc_configured_field() {
+        let info = ChainInfo {
+            chain_id: 1,
+            name: "Ethereum".to_string(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["chain_id"], 1);
+        assert_eq!(json["name"], "Ethereum");
+        assert!(json.get("rpc_configured").is_none());
+    }
+
+    #[test]
+    fn chains_response_roundtrip() {
+        let resp = ChainsResponse {
+            chains: vec![
+                ChainInfo {
+                    chain_id: 1,
+                    name: "Ethereum".to_string(),
+                },
+                ChainInfo {
+                    chain_id: 8453,
+                    name: "Base".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: ChainsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.chains.len(), 2);
+        assert_eq!(parsed.chains[0].chain_id, 1);
+        assert_eq!(parsed.chains[1].name, "Base");
+    }
 
     // ---- RpcMethod tests ----
 

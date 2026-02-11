@@ -335,14 +335,26 @@ impl ClawletApiServer for RpcServerImpl {
 
     async fn chains(&self) -> Result<Value, ErrorObjectOwned> {
         match handlers::handle_chains(&self.state) {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
 
     async fn address(&self) -> Result<Value, ErrorObjectOwned> {
         match handlers::handle_address(&self.state) {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -360,7 +372,13 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_balance(&self.state, query).await {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -379,7 +397,13 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_transfer(&self.state, req).await {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -391,7 +415,13 @@ impl ClawletApiServer for RpcServerImpl {
         }
 
         match handlers::handle_skills(&self.state) {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -408,7 +438,13 @@ impl ClawletApiServer for RpcServerImpl {
         };
 
         match handlers::handle_execute(&self.state, req).await {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -420,7 +456,13 @@ impl ClawletApiServer for RpcServerImpl {
         }
 
         match handlers::handle_send_raw(&self.state, params).await {
-            Ok(result) => Ok(serde_json::to_value(result).unwrap()),
+            Ok(result) => serde_json::to_value(result).map_err(|e| {
+                ErrorObjectOwned::owned(
+                    error_code::INTERNAL_ERROR,
+                    format!("serialization error: {e}"),
+                    None::<()>,
+                )
+            }),
             Err(e) => Err(handler_error_to_rpc(e)),
         }
     }
@@ -471,7 +513,13 @@ impl ClawletApiServer for RpcServerImpl {
             expires_at: session.expires_at.to_rfc3339(),
         };
 
-        Ok(serde_json::to_value(response).unwrap())
+        serde_json::to_value(response).map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None::<()>,
+            )
+        })
     }
 
     async fn auth_list(&self, params: AuthListRequest) -> Result<Value, ErrorObjectOwned> {
@@ -496,7 +544,13 @@ impl ClawletApiServer for RpcServerImpl {
             })
             .collect();
 
-        Ok(serde_json::to_value(AuthListResponse { sessions }).unwrap())
+        serde_json::to_value(AuthListResponse { sessions }).map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None::<()>,
+            )
+        })
     }
 
     async fn auth_revoke(&self, params: AuthRevokeRequest) -> Result<Value, ErrorObjectOwned> {
@@ -509,7 +563,13 @@ impl ClawletApiServer for RpcServerImpl {
         })?;
 
         let revoked = store.revoke(&params.agent_id);
-        Ok(serde_json::to_value(AuthRevokeResponse { revoked }).unwrap())
+        serde_json::to_value(AuthRevokeResponse { revoked }).map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None::<()>,
+            )
+        })
     }
 
     async fn auth_revoke_all(
@@ -525,7 +585,13 @@ impl ClawletApiServer for RpcServerImpl {
         })?;
 
         let count = store.revoke_all();
-        Ok(serde_json::to_value(AuthRevokeAllResponse { count }).unwrap())
+        serde_json::to_value(AuthRevokeAllResponse { count }).map_err(|e| {
+            ErrorObjectOwned::owned(
+                error_code::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None::<()>,
+            )
+        })
     }
 }
 

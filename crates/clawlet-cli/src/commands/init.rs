@@ -152,15 +152,18 @@ pub fn run(
     };
 
     let address = if from_mnemonic {
-        // Prompt for existing mnemonic in alternate screen
-        let mnemonic = crate::tui::with_alternate_screen(|| {
-            eprintln!("Enter your BIP-39 mnemonic phrase:");
-            let mut mnemonic = String::new();
-            std::io::stdin().read_line(&mut mnemonic)?;
-            Ok(mnemonic.trim().to_string())
-        })?;
+        // Prompt for existing mnemonic in private mode (input hidden)
+        let mnemonic = rpassword::prompt_password_stderr("Enter your BIP-39 mnemonic phrase: ")?;
+        let mnemonic = mnemonic.trim().to_string();
+        if mnemonic.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "mnemonic entry aborted (empty input/EOF)",
+            )
+            .into());
+        }
 
-        // Store the mnemonic in the keystore
+        // Store the mnemonic in the keystore (validates internally)
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 
         #[cfg(unix)]

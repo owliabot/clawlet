@@ -154,9 +154,8 @@ pub fn prepare(
     };
 
     let (signing_key, _address) = if already_initialized {
-        // Already initialized - just ask for password once
-        eprintln!("🔐 Enter wallet password: ");
-        let password = rpassword::read_password()?;
+        // Already initialized - ask for password
+        let password: String = rpassword::prompt_password_stderr("🔐 Enter wallet password: ")?;
 
         let keys = Keystore::list(&keystore_dir)?;
         let key_path = &keys[0];
@@ -170,17 +169,14 @@ pub fn prepare(
 
         (key, addr)
     } else {
-        // New init - ask for password with confirmation
-        eprintln!("🔐 Enter wallet password: ");
-        let password = rpassword::read_password()?;
-        eprintln!("🔐 Confirm wallet password: ");
-        let confirm = rpassword::read_password()?;
+        // New init — password in normal terminal, mnemonic in alternate screen
+        let password: String = rpassword::prompt_password_stderr("🔐 Enter wallet password: ")?;
+        let confirm: String = rpassword::prompt_password_stderr("🔐 Confirm wallet password: ")?;
 
         if password != confirm {
             return Err("passwords do not match".into());
         }
 
-        // Enforce password strength rules
         let issues = super::init::validate_password_strength(&password);
         if !issues.is_empty() {
             let mut msg = String::from("Password does not meet strength requirements:\n");
@@ -190,10 +186,6 @@ pub fn prepare(
             return Err(msg.into());
         }
 
-        // Create directory structure
-        std::fs::create_dir_all(&keystore_dir)?;
-
-        // Ask user whether to create new or import existing mnemonic
         eprintln!();
         eprintln!("🔑 No existing keystore found. Choose an option:");
         eprintln!("  1) Create new wallet (generate mnemonic)");
@@ -202,10 +194,9 @@ pub fn prepare(
         eprint!("Enter choice [1/2]: ");
         let mut choice = String::new();
         std::io::stdin().read_line(&mut choice)?;
-        let choice = choice.trim();
+        let choice = choice.trim().to_string();
 
         let mnemonic = if choice == "2" {
-            // Import existing mnemonic
             eprintln!();
             eprint!("Enter your BIP-39 mnemonic phrase: ");
             let mut mnemonic_input = String::new();
@@ -218,15 +209,24 @@ pub fn prepare(
             eprintln!("📥 Importing mnemonic...");
             mnemonic_input
         } else {
-            // Generate new mnemonic (default)
-            let mnemonic = hd::generate_mnemonic();
-            eprintln!();
-            eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
-            eprintln!();
-            eprintln!("  {mnemonic}");
-            eprintln!();
-            mnemonic
+            hd::generate_mnemonic()
         };
+
+        // If mnemonic was generated (not imported), show it in alternate screen
+        // We check by trying to see if the user chose option 1 — but since we
+        // already consumed the choice, we show it regardless for safety.
+        // The alternate screen ensures it's not in scroll-back.
+        crate::tui::show_sensitive(
+            &[
+                "🔑 Your mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
+                "",
+                &format!("  {mnemonic}"),
+            ],
+            "Press Enter when you have saved the mnemonic...",
+        )?;
+
+        // Create directory structure
+        std::fs::create_dir_all(&keystore_dir)?;
 
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 

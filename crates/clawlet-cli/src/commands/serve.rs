@@ -49,8 +49,7 @@ pub fn prepare(
     let config = Config::from_file(&config_path)?;
 
     // Prompt for keystore password (interactive)
-    eprint!("Enter keystore password: ");
-    let password = rpassword::read_password()?;
+    let password = rpassword::prompt_password_stderr("Enter keystore password: ")?;
 
     // Verify keystore file permissions are 0600
     verify_keystore_permissions(&config.keystore_path)?;

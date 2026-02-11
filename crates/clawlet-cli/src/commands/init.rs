@@ -111,78 +111,84 @@ pub fn run(
     eprintln!("This password encrypts your private key AND authenticates API requests.");
     eprintln!("When granting session tokens to AI agents, you'll use this same password.");
     eprintln!();
-    let mut attempts: usize = 0;
-    let password = loop {
-        attempts += 1;
-        if attempts > 5 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "password entry failed: too many attempts",
-            )
-            .into());
-        }
 
-        eprint!("Enter password: ");
-        let password = rpassword::read_password()?;
-        if password.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "password entry aborted (empty input/EOF)",
-            )
-            .into());
-        }
-
-        let issues = validate_password_strength(&password);
-        if !issues.is_empty() {
-            eprintln!("Password does not meet requirements:");
-            for issue in &issues {
-                eprintln!("  - {issue}");
+    let password = {
+        let mut attempts: usize = 0;
+        loop {
+            attempts += 1;
+            if attempts > 5 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "password entry failed: too many attempts",
+                )
+                .into());
             }
-            eprintln!();
-            continue;
-        }
 
-        eprint!("Confirm password: ");
-        let confirm = rpassword::read_password()?;
-        if confirm.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "password confirmation aborted (empty input/EOF)",
-            )
-            .into());
-        }
-        if password != confirm {
-            eprintln!("Passwords do not match. Please try again.");
-            eprintln!();
-            continue;
-        }
+            let password = rpassword::prompt_password_stderr("Enter password: ")?;
+            if password.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "password entry aborted (empty input/EOF)",
+                )
+                .into());
+            }
 
-        break password;
+            let issues = validate_password_strength(&password);
+            if !issues.is_empty() {
+                eprintln!("Password does not meet requirements:");
+                for issue in &issues {
+                    eprintln!("  - {issue}");
+                }
+                eprintln!();
+                continue;
+            }
+
+            let confirm = rpassword::prompt_password_stderr("Confirm password: ")?;
+            if confirm.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "password confirmation aborted (empty input/EOF)",
+                )
+                .into());
+            }
+            if password != confirm {
+                eprintln!("Passwords do not match. Please try again.");
+                eprintln!();
+                continue;
+            }
+
+            break password;
+        }
     };
 
     let address = if from_mnemonic {
-        // Prompt for existing mnemonic
-        eprintln!();
-        eprintln!("Enter your BIP-39 mnemonic phrase:");
-        let mut mnemonic = String::new();
-        std::io::stdin().read_line(&mut mnemonic)?;
-        let mnemonic = mnemonic.trim();
+        // Prompt for existing mnemonic in alternate screen
+        let mnemonic = crate::tui::with_alternate_screen(|| {
+            eprintln!("Enter your BIP-39 mnemonic phrase:");
+            let mut mnemonic = String::new();
+            std::io::stdin().read_line(&mut mnemonic)?;
+            Ok(mnemonic.trim().to_string())
+        })?;
 
         // Store the mnemonic in the keystore
-        let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, mnemonic)?;
+        let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 
         #[cfg(unix)]
         set_keystore_file_permissions(&keystore_dir)?;
 
         address
     } else {
-        // Generate a new mnemonic
+        // Generate a new mnemonic and show it in alternate screen
         let mnemonic = hd::generate_mnemonic();
-        eprintln!();
-        eprintln!("🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):");
-        eprintln!();
-        eprintln!("  {mnemonic}");
-        eprintln!();
+
+        crate::tui::show_sensitive(
+            &[
+                "🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
+                "",
+                &format!("  {mnemonic}"),
+            ],
+            "Press Enter when you have saved the mnemonic...",
+        )?;
 
         // Store the mnemonic in the keystore
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;

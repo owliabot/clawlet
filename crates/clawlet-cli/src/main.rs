@@ -302,10 +302,7 @@ fn daemonize(
                                 err.raw_os_error() == Some(libc::EPERM)
                             };
                             if process_alive {
-                                // pid_is_clawlet is conservative: it only
-                                // returns Some(true) on positive match, and
-                                // None otherwise. Either way, if the process
-                                // is alive we refuse to start.
+                                // Process is alive — refuse to start.
                                 let msg = format!(
                                     "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
                                     pid_path.display()

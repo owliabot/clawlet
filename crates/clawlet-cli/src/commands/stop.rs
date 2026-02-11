@@ -32,12 +32,55 @@ fn process_alive(_pid: i32) -> bool {
     false
 }
 
+enum VerifyResult {
+    IsClawlet,
+    NotClawlet,
+    CannotVerify,
+}
+
+/// Verify that the given PID belongs to a clawlet process.
+///
+/// Tries `/proc/{pid}/cmdline` first (Linux), then falls back to
+/// `ps -p {pid} -o comm=` which works on both Linux and macOS.
+fn verify_is_clawlet(pid: i32) -> VerifyResult {
+    // Try procfs first.
+    let cmdline_path = format!("/proc/{pid}/cmdline");
+    if let Ok(bytes) = std::fs::read(&cmdline_path) {
+        let cmdline = String::from_utf8_lossy(&bytes);
+        return if cmdline.contains("clawlet") {
+            VerifyResult::IsClawlet
+        } else {
+            VerifyResult::NotClawlet
+        };
+    }
+
+    // Fall back to `ps` (works on macOS and Linux).
+    match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let comm = String::from_utf8_lossy(&output.stdout);
+            if comm.contains("clawlet") {
+                VerifyResult::IsClawlet
+            } else {
+                VerifyResult::NotClawlet
+            }
+        }
+        _ => VerifyResult::CannotVerify,
+    }
+}
+
 /// Stop a running clawlet instance identified by the PID file in `data_dir`.
 ///
-/// Returns `Ok(Some(pid))` if a process was stopped, `Ok(None)` if no running
-/// instance was found, or `Err` on unexpected failures.
+/// When `force` is true, proceed even if the process identity cannot be
+/// verified. Returns `Ok(Some(pid))` if a process was stopped, `Ok(None)` if
+/// no running instance was found, or `Err` on unexpected failures.
 #[cfg(unix)]
-pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std::error::Error>> {
+pub fn stop_running_instance(
+    data_dir: &Path,
+    force: bool,
+) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     let pid_path = data_dir.join("clawlet.pid");
 
     let pid_str = match std::fs::read_to_string(&pid_path) {
@@ -61,30 +104,43 @@ pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std
         return Ok(None);
     }
 
-    // Verify the process is actually a clawlet instance by inspecting
-    // /proc/{pid}/cmdline. If it doesn't contain "clawlet", the PID file
-    // is stale (recycled PID).
+    // Verify the process is actually a clawlet instance.
+    // First try /proc/{pid}/cmdline (Linux), then fall back to `ps` (works
+    // on both Linux and macOS).
     {
-        let cmdline_path = format!("/proc/{pid}/cmdline");
-        match std::fs::read(&cmdline_path) {
-            Ok(bytes) => {
-                // cmdline is NUL-separated; check if any argument contains "clawlet".
-                let cmdline = String::from_utf8_lossy(&bytes);
-                if !cmdline.contains("clawlet") {
-                    let _ = std::fs::remove_file(&pid_path);
-                    return Ok(None);
-                }
+        let verified = verify_is_clawlet(pid);
+        match verified {
+            VerifyResult::IsClawlet => { /* proceed */ }
+            VerifyResult::NotClawlet => {
+                // PID was recycled — stale PID file.
+                let _ = std::fs::remove_file(&pid_path);
+                return Ok(None);
             }
-            Err(_) => {
-                // Can't read cmdline — /proc may not exist (macOS) or process
-                // exited between the alive-check and here. Since we wrote the
-                // PID file ourselves, trust it and proceed with the stop.
+            VerifyResult::CannotVerify => {
+                if !force {
+                    return Err(format!(
+                        "cannot verify that PID {pid} is a clawlet process; \
+                         use --force to stop it anyway, or kill it manually"
+                    )
+                    .into());
+                }
+                eprintln!("warning: cannot verify PID {pid} is clawlet; proceeding due to --force");
             }
         }
     }
 
-    // Send SIGTERM.
-    unsafe { libc::kill(pid, libc::SIGTERM) };
+    // Send SIGTERM and check the return value.
+    let ret = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            // Process already gone.
+            let _ = std::fs::remove_file(&pid_path);
+            return Ok(None);
+        }
+        // EPERM or other error — cannot stop.
+        return Err(format!("failed to send SIGTERM to PID {pid}: {err}").into());
+    }
 
     // Wait up to 5 seconds for the process to exit.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -94,7 +150,13 @@ pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std
         }
         if Instant::now() >= deadline {
             // Still alive — SIGKILL.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            let ret = unsafe { libc::kill(pid, libc::SIGKILL) };
+            if ret != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(format!("failed to send SIGKILL to PID {pid}: {err}").into());
+                }
+            }
             // Brief wait for SIGKILL to take effect.
             thread::sleep(Duration::from_millis(200));
             break;
@@ -102,21 +164,29 @@ pub fn stop_running_instance(data_dir: &Path) -> Result<Option<i32>, Box<dyn std
         thread::sleep(Duration::from_millis(100));
     }
 
-    // Clean up PID file.
+    // Only clean up the PID file if the process is truly gone.
+    if process_alive(pid) {
+        return Err(
+            format!("PID {pid} is still alive after SIGKILL; not removing PID file").into(),
+        );
+    }
     let _ = std::fs::remove_file(&pid_path);
 
     Ok(Some(pid))
 }
 
 #[cfg(not(unix))]
-pub fn stop_running_instance(_data_dir: &Path) -> Result<Option<i32>, Box<dyn std::error::Error>> {
+pub fn stop_running_instance(
+    _data_dir: &Path,
+    _force: bool,
+) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     Err("stop is only supported on Unix targets".into())
 }
 
 /// Run the `stop` subcommand.
 pub fn run(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = resolve_data_dir(data_dir)?;
-    match stop_running_instance(&data_dir)? {
+    match stop_running_instance(&data_dir, false)? {
         Some(pid) => {
             eprintln!("Stopped clawlet (PID {pid})");
             Ok(())

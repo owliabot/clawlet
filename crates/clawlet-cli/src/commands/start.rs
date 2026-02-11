@@ -358,7 +358,7 @@ pub async fn run(
             .keystore_path
             .parent()
             .unwrap_or(std::path::Path::new("."));
-        if let Some(pid) = super::stop::stop_running_instance(dd)? {
+        if let Some(pid) = super::stop::stop_running_instance(dd, true)? {
             eprintln!("Stopping existing clawlet (PID {pid})...");
         }
     }

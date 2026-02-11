@@ -463,7 +463,7 @@ fn run_start_daemon(
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
     let dd = data_dir_from_config(&prepared.config);
-    if let Some(pid) = commands::stop::stop_running_instance(dd)? {
+    if let Some(pid) = commands::stop::stop_running_instance(dd, true)? {
         eprintln!("Stopping existing clawlet (PID {pid})...");
     }
     let log_path = dd.join("clawlet.log");

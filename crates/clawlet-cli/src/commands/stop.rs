@@ -184,9 +184,9 @@ pub fn stop_running_instance(
 }
 
 /// Run the `stop` subcommand.
-pub fn run(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(data_dir: Option<PathBuf>, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = resolve_data_dir(data_dir)?;
-    match stop_running_instance(&data_dir, false)? {
+    match stop_running_instance(&data_dir, force)? {
         Some(pid) => {
             eprintln!("Stopped clawlet (PID {pid})");
             Ok(())

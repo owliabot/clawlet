@@ -358,8 +358,17 @@ pub async fn run(
             .keystore_path
             .parent()
             .unwrap_or(std::path::Path::new("."));
-        if let Some(pid) = super::stop::stop_running_instance(dd, true)? {
-            eprintln!("Stopping existing clawlet (PID {pid})...");
+        match super::stop::stop_running_instance(dd, false) {
+            Ok(Some(pid)) => eprintln!("Stopping existing clawlet (PID {pid})..."),
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("cannot verify") {
+                    eprintln!("warning: {msg}");
+                    eprintln!("Run `clawlet stop --force` first, then retry.");
+                }
+                return Err(e);
+            }
         }
     }
 

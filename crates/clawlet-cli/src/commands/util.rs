@@ -10,6 +10,12 @@ pub fn confirm_and_clear_mnemonic(mnemonic: &str) -> Result<(), Box<dyn std::err
     eprintln!("  {mnemonic}");
     eprintln!();
 
+    // If stdin is not a terminal, skip confirmation flow
+    if !std::io::stdin().is_terminal() {
+        eprintln!("⚠️  Non-interactive mode: please save your mnemonic above.");
+        return Ok(());
+    }
+
     // Track lines to clear: empty + header + empty + mnemonic + empty = 5
     let mut lines_to_clear = 5;
 
@@ -36,14 +42,22 @@ pub fn confirm_and_clear_mnemonic(mnemonic: &str) -> Result<(), Box<dyn std::err
         lines_to_clear += 1;
     }
 
-    // Clear mnemonic from terminal (move up and clear lines) - only if stderr is a terminal
-    if std::io::stderr().is_terminal() {
-        for _ in 0..lines_to_clear {
-            eprint!("\x1B[A\x1B[2K");
-        }
+    // Clear mnemonic from terminal (move up and clear to end) - only if stderr is a terminal
+    let cleared = if std::io::stderr().is_terminal() {
+        // Move up lines_to_clear lines, then clear from cursor to end of screen
+        // This handles wrapped lines correctly
+        eprint!("\x1B[{}A\x1B[J", lines_to_clear);
         std::io::stderr().flush()?;
+        true
+    } else {
+        false
+    };
+
+    if cleared {
+        eprintln!("✅ Mnemonic confirmed and cleared from screen.");
+    } else {
+        eprintln!("✅ Mnemonic confirmed.");
     }
-    eprintln!("✅ Mnemonic confirmed and cleared from screen");
 
     Ok(())
 }

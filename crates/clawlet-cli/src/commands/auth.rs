@@ -33,16 +33,16 @@ pub enum AuthCommand {
         addr: Option<SocketAddr>,
     },
 
-    /// List all active sessions.
+    /// List all sessions (including expired ones in grace period).
     List {
         /// Server address (default: 127.0.0.1:9100).
         #[arg(long, short)]
         addr: Option<SocketAddr>,
     },
 
-    /// Revoke a session by agent ID.
+    /// Revoke all sessions for an agent.
     Revoke {
-        /// Agent identifier to revoke.
+        /// Agent identifier whose sessions should all be revoked.
         #[arg(long)]
         agent: String,
 
@@ -84,12 +84,14 @@ struct AuthListRequest {
 /// Session summary in list response.
 #[derive(Deserialize)]
 struct SessionSummary {
+    session_key: String,
     id: String,
     scope: String,
     created_at: String,
     expires_at: String,
     last_used_at: String,
     request_count: u64,
+    is_expired: bool,
 }
 
 /// Response for auth list RPC.
@@ -235,12 +237,14 @@ async fn run_list(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Er
 
     eprintln!();
     if resp.sessions.is_empty() {
-        eprintln!("No active sessions.");
+        eprintln!("No sessions.");
     } else {
-        eprintln!("Active sessions:");
+        eprintln!("Sessions:");
         eprintln!();
         for session in &resp.sessions {
-            eprintln!("  Agent: {}", session.id);
+            let status = if session.is_expired { " [EXPIRED]" } else { "" };
+            eprintln!("  Agent: {}{}", session.id, status);
+            eprintln!("    Session key: {}", session.session_key);
             eprintln!("    Scope: {}", session.scope);
             eprintln!("    Created: {}", session.created_at);
             eprintln!("    Expires: {}", session.expires_at);
@@ -253,7 +257,7 @@ async fn run_list(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// Revoke a session by agent ID.
+/// Revoke all sessions for an agent.
 async fn run_revoke(
     agent: String,
     addr: Option<SocketAddr>,
@@ -273,9 +277,9 @@ async fn run_revoke(
 
     eprintln!();
     if resp.revoked {
-        eprintln!("✅ Session revoked for agent: {agent}");
+        eprintln!("✅ All sessions revoked for agent: {agent}");
     } else {
-        eprintln!("⚠️  No active session found for agent: {agent}");
+        eprintln!("⚠️  No sessions found for agent: {agent}");
     }
 
     Ok(())

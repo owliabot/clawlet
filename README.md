@@ -148,8 +148,9 @@ Agent ────HTTP────▶ clawlet-rpc ──▶ clawlet-core (policy
 | `balance` | `read` | Query ETH/ERC-20 balances |
 | `transfer` | `trade` | Execute transfers (policy-checked) |
 | `auth.grant` | — | Grant new session token |
-| `auth.list` | — | List active tokens |
-| `auth.revoke` | — | Revoke a token |
+| `auth.list` | — | List all sessions (including expired in grace period) |
+| `auth.revoke` | — | Revoke all sessions for an agent |
+| `auth.revoke_session` | — | Revoke a single session by key |
 
 See [docs/usage.md](docs/usage.md) for full API documentation.
 

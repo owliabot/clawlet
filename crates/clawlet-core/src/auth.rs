@@ -87,6 +87,22 @@ pub struct Session {
     pub request_count: u64,
 }
 
+/// Result of a successful [`SessionStore::grant`] call.
+///
+/// Contains the plaintext token together with key session metadata so that
+/// callers do not need to re-query the store after granting.
+#[derive(Debug, Clone)]
+pub struct GrantResult {
+    /// The plaintext session token to hand to the agent.
+    pub token: String,
+    /// When the session expires.
+    pub expires_at: DateTime<Utc>,
+    /// Permission scope granted.
+    pub scope: TokenScope,
+    /// When the session was created.
+    pub created_at: DateTime<Utc>,
+}
+
 /// Custom serialization for token hash bytes.
 mod token_hash_serde {
     use super::*;
@@ -113,14 +129,20 @@ mod token_hash_serde {
     }
 }
 
+/// Grace period: expired sessions are kept for 7 days before removal.
+const EXPIRY_GRACE_PERIOD: chrono::Duration = chrono::Duration::days(7);
+
 /// Session store with optional disk persistence.
 ///
 /// When created with [`SessionStore::with_persistence`], sessions are
 /// automatically saved to a JSON file after every mutation (grant, revoke,
 /// etc.) so they survive daemon restarts.
+///
+/// Sessions are keyed by the hex-encoded SHA-256 hash of their token,
+/// allowing multiple sessions per agent ID.
 #[derive(Debug, Default)]
 pub struct SessionStore {
-    /// Active sessions keyed by agent ID.
+    /// Sessions keyed by hex-encoded token hash (unique per session).
     sessions: HashMap<String, Session>,
     /// Failed login attempts tracking for rate limiting.
     failed_attempts: HashMap<String, FailedAttempts>,
@@ -180,15 +202,18 @@ impl SessionStore {
         }
     }
 
-    /// Load sessions from a JSON file, filtering out expired entries.
+    /// Load sessions from a JSON file, filtering out entries past the grace period.
+    ///
+    /// Expired sessions are kept for [`EXPIRY_GRACE_PERIOD`] after their
+    /// `expires_at` timestamp so they remain visible in listings / audits.
     fn load_from_file(path: &PathBuf) -> Option<HashMap<String, Session>> {
         let data = std::fs::read_to_string(path).ok()?;
         let sessions: HashMap<String, Session> = serde_json::from_str(&data).ok()?;
-        let now = Utc::now();
+        let cutoff = Utc::now() - EXPIRY_GRACE_PERIOD;
         Some(
             sessions
                 .into_iter()
-                .filter(|(_, s)| s.expires_at > now)
+                .filter(|(_, s)| s.expires_at > cutoff)
                 .collect(),
         )
     }
@@ -234,7 +259,7 @@ impl SessionStore {
         scope: TokenScope,
         expires_in: Duration,
         created_by_uid: u32,
-    ) -> String {
+    ) -> GrantResult {
         // Generate random token bytes
         let mut token_bytes = [0u8; TOKEN_BYTES];
         OsRng.fill_bytes(&mut token_bytes);
@@ -247,22 +272,29 @@ impl SessionStore {
         let token_hash = hash_token(&token);
 
         let now = Utc::now();
+        let expires_at = now + chrono::Duration::from_std(expires_in).unwrap_or_default();
         let session = Session {
             id: id.to_string(),
             token_hash,
             scope,
             created_at: now,
-            expires_at: now + chrono::Duration::from_std(expires_in).unwrap_or_default(),
+            expires_at,
             created_by_uid,
             last_used_at: now,
             request_count: 0,
         };
 
-        // Replace any existing session for this agent
-        self.sessions.insert(id.to_string(), session);
+        // Use hex-encoded token hash as key (unique per session)
+        let session_key = hex::encode(token_hash);
+        self.sessions.insert(session_key, session);
         self.persist();
 
-        token
+        GrantResult {
+            token,
+            expires_at,
+            scope,
+            created_at: now,
+        }
     }
 
     /// Verify a token and return a mutable reference to the session.
@@ -275,12 +307,12 @@ impl SessionStore {
         }
 
         let token_hash = hash_token(token);
+        let session_key = hex::encode(token_hash);
 
-        // Find matching session
+        // Find matching session by key (O(1) lookup)
         let session = self
             .sessions
-            .values_mut()
-            .find(|s| constant_time_eq(&s.token_hash, &token_hash))
+            .get_mut(&session_key)
             .ok_or(AuthError::InvalidToken)?;
 
         // Check expiration
@@ -293,8 +325,7 @@ impl SessionStore {
         session.request_count += 1;
 
         // Return immutable reference
-        let id = session.id.clone();
-        Ok(self.sessions.get(&id).unwrap())
+        Ok(self.sessions.get(&session_key).unwrap())
     }
 
     /// Verify a token and check that it has the required scope.
@@ -313,11 +344,24 @@ impl SessionStore {
         Ok(session)
     }
 
-    /// Revoke a session by agent ID.
+    /// Revoke all sessions for an agent ID.
     ///
-    /// Returns true if a session was revoked, false if no session existed.
-    pub fn revoke(&mut self, id: &str) -> bool {
-        let revoked = self.sessions.remove(id).is_some();
+    /// Returns true if any sessions were revoked, false if none existed.
+    pub fn revoke(&mut self, agent_id: &str) -> bool {
+        let before = self.sessions.len();
+        self.sessions.retain(|_, s| s.id != agent_id);
+        let revoked = self.sessions.len() != before;
+        if revoked {
+            self.persist();
+        }
+        revoked
+    }
+
+    /// Revoke a single session by its session key (hex-encoded token hash).
+    ///
+    /// Returns true if the session was found and removed.
+    pub fn revoke_by_key(&mut self, session_key: &str) -> bool {
+        let revoked = self.sessions.remove(session_key).is_some();
         if revoked {
             self.persist();
         }
@@ -336,16 +380,17 @@ impl SessionStore {
         count
     }
 
-    /// List all active sessions.
-    pub fn list(&self) -> Vec<&Session> {
-        self.sessions.values().collect()
+    /// List all sessions (including expired ones still within the grace period).
+    pub fn list(&self) -> Vec<(&str, &Session)> {
+        self.sessions.iter().map(|(k, v)| (k.as_str(), v)).collect()
     }
 
-    /// Remove expired sessions.
+    /// Remove sessions that have been expired longer than the grace period (7 days).
     pub fn cleanup_expired(&mut self) {
-        let now = Utc::now();
+        let cutoff = Utc::now() - EXPIRY_GRACE_PERIOD;
         let before = self.sessions.len();
-        self.sessions.retain(|_, session| session.expires_at > now);
+        self.sessions
+            .retain(|_, session| session.expires_at > cutoff);
         if self.sessions.len() != before {
             self.persist();
         }
@@ -390,9 +435,12 @@ impl SessionStore {
         self.failed_attempts.remove(identifier);
     }
 
-    /// Get a session by agent ID (read-only).
-    pub fn get(&self, id: &str) -> Option<&Session> {
-        self.sessions.get(id)
+    /// Get the most recently created session for an agent ID (read-only).
+    pub fn get(&self, agent_id: &str) -> Option<&Session> {
+        self.sessions
+            .values()
+            .filter(|s| s.id == agent_id)
+            .max_by_key(|s| s.created_at)
     }
 }
 
@@ -434,12 +482,6 @@ fn hash_token(token: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Constant-time comparison for token hashes to prevent timing attacks.
-fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    use subtle::ConstantTimeEq;
-    a.ct_eq(b).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,12 +505,14 @@ mod tests {
     fn test_session_grant_and_verify() {
         let mut store = SessionStore::new();
 
-        let token = store.grant(
-            "test-agent",
-            TokenScope::Trade,
-            Duration::from_secs(3600),
-            1000,
-        );
+        let token = store
+            .grant(
+                "test-agent",
+                TokenScope::Trade,
+                Duration::from_secs(3600),
+                1000,
+            )
+            .token;
 
         // Token should have correct prefix
         assert!(token.starts_with(TOKEN_PREFIX));
@@ -493,12 +537,14 @@ mod tests {
         let mut store = SessionStore::new();
 
         // Grant a session that expires immediately
-        let token = store.grant(
-            "expired-agent",
-            TokenScope::Read,
-            Duration::from_secs(0),
-            1000,
-        );
+        let token = store
+            .grant(
+                "expired-agent",
+                TokenScope::Read,
+                Duration::from_secs(0),
+                1000,
+            )
+            .token;
 
         // Wait a tiny bit to ensure expiration
         std::thread::sleep(Duration::from_millis(10));
@@ -511,12 +557,14 @@ mod tests {
     fn test_session_revoke() {
         let mut store = SessionStore::new();
 
-        let token = store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+        let token = store
+            .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
+            .token;
 
         // Verify it works
         assert!(store.verify(&token).is_ok());
 
-        // Revoke it
+        // Revoke by agent ID
         assert!(store.revoke("agent-1"));
 
         // Should no longer work
@@ -527,16 +575,100 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_sessions_per_agent() {
+        let mut store = SessionStore::new();
+
+        let token1 = store
+            .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
+            .token;
+        let token2 = store
+            .grant(
+                "agent-1",
+                TokenScope::Trade,
+                Duration::from_secs(7200),
+                1000,
+            )
+            .token;
+
+        // Both tokens should be valid
+        assert!(store.verify(&token1).is_ok());
+        assert!(store.verify(&token2).is_ok());
+
+        // Both sessions should be in the store
+        let agent_sessions: Vec<_> = store
+            .list()
+            .into_iter()
+            .filter(|(_, s)| s.id == "agent-1")
+            .collect();
+        assert_eq!(agent_sessions.len(), 2);
+
+        // get() should return the most recent one
+        let latest = store.get("agent-1").unwrap();
+        assert_eq!(latest.scope, TokenScope::Trade);
+    }
+
+    #[test]
+    fn test_expired_session_within_grace_period() {
+        let mut store = SessionStore::new();
+
+        // Grant a session that expires immediately
+        let token = store
+            .grant("agent-1", TokenScope::Read, Duration::from_secs(0), 1000)
+            .token;
+        store.grant("agent-2", TokenScope::Read, Duration::from_secs(3600), 1000);
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        // verify() should reject it
+        assert!(matches!(store.verify(&token), Err(AuthError::TokenExpired)));
+
+        // But cleanup should NOT remove it (within 7-day grace period)
+        store.cleanup_expired();
+        assert_eq!(store.list().len(), 2); // both still present
+    }
+
+    #[test]
+    fn test_expired_session_past_grace_period() {
+        let mut store = SessionStore::new();
+
+        // Manually insert a session that expired 8 days ago
+        let token_hash = hash_token("clwt_fake");
+        let session_key = hex::encode(token_hash);
+        let now = Utc::now();
+        store.sessions.insert(
+            session_key,
+            Session {
+                id: "old-agent".to_string(),
+                token_hash,
+                scope: TokenScope::Read,
+                created_at: now - chrono::Duration::days(30),
+                expires_at: now - chrono::Duration::days(8),
+                created_by_uid: 1000,
+                last_used_at: now - chrono::Duration::days(8),
+                request_count: 0,
+            },
+        );
+        store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+
+        assert_eq!(store.list().len(), 2);
+        store.cleanup_expired();
+        assert_eq!(store.list().len(), 1);
+        assert!(store.get("active").is_some());
+    }
+
+    #[test]
     fn test_scope_check() {
         let mut store = SessionStore::new();
 
         // Grant a read-only session
-        let token = store.grant(
-            "read-agent",
-            TokenScope::Read,
-            Duration::from_secs(3600),
-            1000,
-        );
+        let token = store
+            .grant(
+                "read-agent",
+                TokenScope::Read,
+                Duration::from_secs(3600),
+                1000,
+            )
+            .token;
 
         // Should work for Read scope
         assert!(store.verify_with_scope(&token, TokenScope::Read).is_ok());
@@ -548,12 +680,14 @@ mod tests {
         ));
 
         // Grant an admin session
-        let admin_token = store.grant(
-            "admin-agent",
-            TokenScope::Admin,
-            Duration::from_secs(3600),
-            1000,
-        );
+        let admin_token = store
+            .grant(
+                "admin-agent",
+                TokenScope::Admin,
+                Duration::from_secs(3600),
+                1000,
+            )
+            .token;
 
         // Admin should have access to all scopes
         assert!(store
@@ -626,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_expired() {
+    fn test_cleanup_expired_within_grace() {
         let mut store = SessionStore::new();
 
         // Grant one that expires immediately and one that doesn't
@@ -635,17 +769,20 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(10));
 
+        // Expired session is within 7-day grace period, so cleanup keeps it
         store.cleanup_expired();
 
-        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.list().len(), 2);
         assert!(store.get("active").is_some());
-        assert!(store.get("expired").is_none());
+        assert!(store.get("expired").is_some());
     }
 
     #[test]
     fn test_token_format() {
         let mut store = SessionStore::new();
-        let token = store.grant("test", TokenScope::Read, Duration::from_secs(3600), 1000);
+        let token = store
+            .grant("test", TokenScope::Read, Duration::from_secs(3600), 1000)
+            .token;
 
         // Should match expected format: clwt_ + base64url
         assert!(token.starts_with("clwt_"));
@@ -675,18 +812,22 @@ mod tests {
         let token2;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token1 = store.grant(
-                "agent-1",
-                TokenScope::Trade,
-                Duration::from_secs(3600),
-                1000,
-            );
-            token2 = store.grant(
-                "agent-2",
-                TokenScope::Admin,
-                Duration::from_secs(7200),
-                1001,
-            );
+            token1 = store
+                .grant(
+                    "agent-1",
+                    TokenScope::Trade,
+                    Duration::from_secs(3600),
+                    1000,
+                )
+                .token;
+            token2 = store
+                .grant(
+                    "agent-2",
+                    TokenScope::Admin,
+                    Duration::from_secs(7200),
+                    1001,
+                )
+                .token;
             assert_eq!(store.list().len(), 2);
         }
 
@@ -717,7 +858,9 @@ mod tests {
         let token;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token = store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
+            token = store
+                .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
+                .token;
             store.grant(
                 "agent-2",
                 TokenScope::Trade,
@@ -737,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn test_persistence_expired_sessions_filtered() {
+    fn test_persistence_recently_expired_sessions_kept() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.json");
 
@@ -749,12 +892,12 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(10));
 
-        // Reload — expired session should be filtered out on load
+        // Reload — recently expired session is within grace period, should be kept
         {
             let store = SessionStore::with_persistence(path.clone());
-            assert_eq!(store.list().len(), 1);
+            assert_eq!(store.list().len(), 2);
             assert!(store.get("active").is_some());
-            assert!(store.get("expired").is_none());
+            assert!(store.get("expired").is_some());
         }
     }
 }

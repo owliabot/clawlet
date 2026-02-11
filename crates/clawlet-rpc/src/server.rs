@@ -53,6 +53,35 @@ use crate::types::{
     BalanceQuery, ExecuteRequest, HandlerError, SendRawRequest, TokenSpec, TransferRequest,
 };
 
+// ---- Daemon Readiness Signal ----
+
+/// Signal daemon readiness by writing "ok\n" to the pipe fd and closing it.
+///
+/// This unblocks the parent process, which then exits successfully.
+#[cfg(unix)]
+fn signal_daemon_ready(fd: i32) {
+    let msg = b"ok\n";
+    let mut off = 0usize;
+    while off < msg.len() {
+        let n = unsafe {
+            libc::write(
+                fd,
+                msg[off..].as_ptr().cast(),
+                (msg.len() - off) as libc::size_t,
+            )
+        };
+        if n > 0 {
+            off += n as usize;
+            continue;
+        }
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
+    unsafe { libc::close(fd) };
+}
+
 // ---- Server Error Type ----
 
 /// Errors that can occur when running the RPC server.
@@ -507,8 +536,28 @@ impl RpcServer {
         signer: LocalSigner,
         addr: Option<SocketAddr>,
     ) -> Result<(), ServerError> {
-        // Load policy
-        let policy = PolicyEngine::from_file(&config.policy_path)?;
+        Self::start_with_config_notify(config, signer, addr, None).await
+    }
+
+    /// Start the RPC server with optional ready notification fd.
+    ///
+    /// If `ready_fd` is provided, "ok\n" will be written to it after the server
+    /// successfully binds, signaling daemon readiness to the parent process.
+    pub async fn start_with_config_notify(
+        config: &Config,
+        signer: LocalSigner,
+        addr: Option<SocketAddr>,
+        ready_fd: Option<i32>,
+    ) -> Result<(), ServerError> {
+        // Load policy with spending persistence — use the audit log directory
+        // (the writable data dir) rather than the policy directory, which may
+        // be a read-only config location in some deployments.
+        let spending_path = config
+            .audit_log_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("spending.json");
+        let policy = PolicyEngine::from_file_with_spending(&config.policy_path, spending_path)?;
 
         // Create audit logger (ensure parent dir exists)
         if let Some(parent) = config.audit_log_path.parent() {
@@ -552,11 +601,74 @@ impl RpcServer {
         };
 
         let server = RpcServer::new(server_config, state);
-        server.run().await
+        server.run_notify(ready_fd).await
+    }
+
+    /// Start the RPC server with an externally provided [`SessionStore`].
+    ///
+    /// This is used by `clawlet start` which grants a token before the server
+    /// boots.  Everything else (policy, audit, EVM adapters, middleware) is
+    /// identical to [`start_with_config_notify`].
+    pub async fn start_with_session_notify(
+        config: &Config,
+        signer: LocalSigner,
+        session_store: SessionStore,
+        addr: Option<SocketAddr>,
+        ready_fd: Option<i32>,
+    ) -> Result<(), ServerError> {
+        let spending_path = config
+            .audit_log_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("spending.json");
+        let policy = PolicyEngine::from_file_with_spending(&config.policy_path, spending_path)?;
+
+        if let Some(parent) = config.audit_log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let audit = AuditLogger::new(&config.audit_log_path)?;
+
+        let mut adapters = HashMap::new();
+        for (chain_id, rpc_url) in &config.chain_rpc_urls {
+            let adapter =
+                EvmAdapter::new(rpc_url).map_err(|e| ServerError::EvmAdapter(e.to_string()))?;
+            adapters.insert(*chain_id, adapter);
+        }
+
+        let skills_dir = std::env::var("CLAWLET_SKILLS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("skills"));
+
+        let state = Arc::new(AppState {
+            policy: Arc::new(policy),
+            audit: Arc::new(Mutex::new(audit)),
+            adapters: Arc::new(adapters),
+            session_store: Arc::new(RwLock::new(session_store)),
+            auth_config: config.auth.clone(),
+            signer: Arc::new(signer),
+            skills_dir,
+            keystore_path: config.keystore_path.clone(),
+        });
+
+        let server_config = ServerConfig {
+            addr: addr.unwrap_or_else(|| DEFAULT_ADDR.parse().unwrap()),
+        };
+
+        let server = RpcServer::new(server_config, state);
+        server.run_notify(ready_fd).await
     }
 
     /// Run the HTTP server.
     pub async fn run(&self) -> Result<(), ServerError> {
+        self.run_notify(None).await
+    }
+
+    /// Run the HTTP server with optional ready notification fd.
+    ///
+    /// If `ready_fd` is provided, "ok\n" will be written to it after the server
+    /// successfully binds (after `.build()` succeeds), signaling daemon readiness
+    /// to the parent process.
+    pub async fn run_notify(&self, ready_fd: Option<i32>) -> Result<(), ServerError> {
         // Build HTTP middleware that extracts Authorization header into per-request extensions
         let http_middleware =
             tower::ServiceBuilder::new().map_request(move |mut req: http::Request<_>| {
@@ -585,6 +697,12 @@ impl RpcServer {
             .build(self.config.addr)
             .await
             .map_err(|e| ServerError::Bind(e.to_string()))?;
+
+        // Signal readiness after successful bind
+        #[cfg(unix)]
+        if let Some(fd) = ready_fd {
+            signal_daemon_ready(fd);
+        }
 
         // Create the RPC implementation (token accessed via task-local set by RPC middleware)
         let rpc_impl = RpcServerImpl::new(Arc::clone(&self.state));

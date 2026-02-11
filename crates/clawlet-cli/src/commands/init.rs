@@ -59,6 +59,8 @@ chain_rpc_urls:
   137: "https://polygon-rpc.com"
   # BNB Smart Chain
   56: "https://bsc-dataseed.binance.org"
+  # Sepolia (testnet)
+  11155111: "https://ethereum-sepolia-rpc.publicnode.com"
 
 # Authentication configuration
 # Password verification uses your keystore password - no separate auth password needed.
@@ -93,7 +95,15 @@ pub fn run(
 
     // Ensure directory structure exists
     let keystore_dir = data_dir.join("keystore");
+    std::fs::create_dir_all(&data_dir)?;
     std::fs::create_dir_all(&keystore_dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(&keystore_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     // Prompt for keystore password (also used for auth)
     eprintln!("== Keystore & Authentication Setup ==");
@@ -101,13 +111,54 @@ pub fn run(
     eprintln!("This password encrypts your private key AND authenticates API requests.");
     eprintln!("When granting session tokens to AI agents, you'll use this same password.");
     eprintln!();
-    eprint!("Enter password: ");
-    let password = rpassword::read_password()?;
-    eprint!("Confirm password: ");
-    let confirm = rpassword::read_password()?;
-    if password != confirm {
-        return Err("passwords do not match".into());
-    }
+    let mut attempts: usize = 0;
+    let password = loop {
+        attempts += 1;
+        if attempts > 5 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "password entry failed: too many attempts",
+            )
+            .into());
+        }
+
+        eprint!("Enter password: ");
+        let password = rpassword::read_password()?;
+        if password.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "password entry aborted (empty input/EOF)",
+            )
+            .into());
+        }
+
+        let issues = validate_password_strength(&password);
+        if !issues.is_empty() {
+            eprintln!("Password does not meet requirements:");
+            for issue in &issues {
+                eprintln!("  - {issue}");
+            }
+            eprintln!();
+            continue;
+        }
+
+        eprint!("Confirm password: ");
+        let confirm = rpassword::read_password()?;
+        if confirm.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "password confirmation aborted (empty input/EOF)",
+            )
+            .into());
+        }
+        if password != confirm {
+            eprintln!("Passwords do not match. Please try again.");
+            eprintln!();
+            continue;
+        }
+
+        break password;
+    };
 
     let address = if from_mnemonic {
         // Prompt for existing mnemonic
@@ -146,12 +197,22 @@ pub fn run(
     let policy_path = data_dir.join("policy.yaml");
     if !policy_path.exists() {
         std::fs::write(&policy_path, DEFAULT_POLICY)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
 
     // Write default config.yaml
     let config_path = data_dir.join("config.yaml");
     if !config_path.exists() {
         std::fs::write(&config_path, default_config(&data_dir))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
 
     eprintln!();
@@ -169,6 +230,27 @@ pub fn run(
     Ok(())
 }
 
+/// Validate password strength, returning a list of unmet requirements.
+pub(crate) fn validate_password_strength(password: &str) -> Vec<&'static str> {
+    let mut issues = Vec::new();
+    if password.chars().count() < 8 {
+        issues.push("must be at least 8 characters");
+    }
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        issues.push("must contain at least 1 uppercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_lowercase()) {
+        issues.push("must contain at least 1 lowercase letter");
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        issues.push("must contain at least 1 digit");
+    }
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        issues.push("must contain at least 1 symbol (non-alphanumeric character)");
+    }
+    issues
+}
+
 /// Set keystore files to 0600.
 #[cfg(unix)]
 fn set_keystore_file_permissions(
@@ -182,4 +264,55 @@ fn set_keystore_file_permissions(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_password_strength;
+
+    #[test]
+    fn password_strength_empty() {
+        let issues = validate_password_strength("");
+        assert!(issues.contains(&"must be at least 8 characters"));
+        assert!(issues.contains(&"must contain at least 1 uppercase letter"));
+        assert!(issues.contains(&"must contain at least 1 lowercase letter"));
+        assert!(issues.contains(&"must contain at least 1 digit"));
+        assert!(issues.contains(&"must contain at least 1 symbol (non-alphanumeric character)"));
+    }
+
+    #[test]
+    fn password_strength_too_short() {
+        let issues = validate_password_strength("Aa1!aaa"); // 7 chars
+        assert_eq!(issues, vec!["must be at least 8 characters"]);
+    }
+
+    #[test]
+    fn password_strength_missing_uppercase() {
+        let issues = validate_password_strength("aa1!aaaa");
+        assert!(issues.contains(&"must contain at least 1 uppercase letter"));
+    }
+
+    #[test]
+    fn password_strength_missing_lowercase() {
+        let issues = validate_password_strength("AA1!AAAA");
+        assert!(issues.contains(&"must contain at least 1 lowercase letter"));
+    }
+
+    #[test]
+    fn password_strength_missing_digit() {
+        let issues = validate_password_strength("Aa!aaaaa");
+        assert!(issues.contains(&"must contain at least 1 digit"));
+    }
+
+    #[test]
+    fn password_strength_missing_symbol() {
+        let issues = validate_password_strength("Aa1aaaaa");
+        assert!(issues.contains(&"must contain at least 1 symbol (non-alphanumeric character)"));
+    }
+
+    #[test]
+    fn password_strength_valid() {
+        let issues = validate_password_strength("Aa1!aaaa");
+        assert!(issues.is_empty());
+    }
 }

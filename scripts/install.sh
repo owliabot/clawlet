@@ -4,26 +4,23 @@
 # https://github.com/owliabot/clawlet
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
 #   ./install.sh [OPTIONS]
 #
 # Options:
-#   --prefix DIR       Install to DIR instead of /usr/local (default: /usr/local)
-#   --version VER      Install specific version (default: latest)
-#   --from-source      Build from source instead of downloading binary
-#   --isolated         Install in isolated mode with dedicated clawlet user
-#   --skip-service     Skip service installation (for Docker/testing)
-#   --help             Show this help message
+#   --isolated      Install in isolated user mode (creates clawlet system user)
+#   --prefix DIR    Install binary to DIR/bin (default: /usr/local)
+#   --skip-build    Skip cargo build (use existing binary in target/release)
+#   --yes           Skip confirmation prompts
+#   --help          Show this help message
 #
 
 set -euo pipefail
 
 # === Configuration ===
-GITHUB_REPO="owliabot/clawlet"
 DEFAULT_PREFIX="/usr/local"
-CONFIG_DIR="$HOME/.clawlet"
 CLAWLET_USER="clawlet"
 CLAWLET_GROUP="clawlet"
+BINARY_NAME="clawlet"
 
 # === Colors ===
 RED='\033[0;31m'
@@ -31,29 +28,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # === Helpers ===
-info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
-
-success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-error() {
-    echo -e "${RED}✗${NC} $1" >&2
-}
-
-die() {
-    error "$1"
-    exit 1
-}
+info()    { echo -e "${BLUE}ℹ${NC} $1"; }
+success() { echo -e "${GREEN}✓${NC} $1"; }
+warn()    { echo -e "${YELLOW}⚠${NC} $1"; }
+error()   { echo -e "${RED}✗${NC} $1" >&2; }
+die()     { error "$1"; exit 1; }
 
 show_help() {
     cat << 'EOF'
@@ -63,52 +45,81 @@ USAGE:
     install.sh [OPTIONS]
 
 OPTIONS:
-    --prefix DIR       Install to DIR/bin instead of /usr/local/bin
-                       Binary will be placed at DIR/bin/clawlet
-    --version VER      Install specific version (e.g., v0.1.0). Default: latest
-    --from-source      Build from source instead of downloading binary
-    --isolated         Install in isolated mode with dedicated 'clawlet' system user
-                       - Creates clawlet system user for key isolation
-                       - Sets up systemd (Linux) or launchd (macOS) service
-                       - Configures secure file permissions (700)
-    --skip-service     Skip systemd/launchd service installation (useful for Docker)
-    --help             Show this help message
+    --isolated      Install in isolated user mode:
+                    - Creates clawlet system user (nologin shell)
+                    - Sets binary ownership to root:clawlet (750)
+                    - Initializes keystore under clawlet user's home
+                    - Sets all data file permissions to 600
+    --prefix DIR    Install binary to DIR/bin (default: /usr/local)
+    --skip-build    Skip cargo build, use existing target/release binary
+    --yes, -y       Skip confirmation prompts
+    --help          Show this help message
+
+MODES:
+    Standard mode (default):
+        Builds and installs the binary to PREFIX/bin with standard permissions.
+        User manages their own ~/.clawlet directory.
+
+    Isolated mode (--isolated):
+        Creates a dedicated clawlet system user for UID isolation.
+        All wallet data is owned by clawlet user (600), inaccessible to
+        the current user or AI agents. See docs/security-boundary-analysis.md.
 
 EXAMPLES:
-    # Install latest release binary (user mode)
+    # Standard install
     ./install.sh
 
-    # Install in isolated mode (recommended for production)
+    # Isolated mode (recommended for production)
     sudo ./install.sh --isolated
 
-    # Install specific version
-    ./install.sh --version v0.1.0
-
-    # Install to custom prefix
-    ./install.sh --prefix ~/.local
-
-    # Build from source
-    ./install.sh --from-source
-
-    # Pipe from curl
-    curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
-
-    # Isolated mode via curl (requires sudo)
-    curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | sudo bash -s -- --isolated
+    # Custom prefix, no prompts
+    ./install.sh --prefix ~/.local --yes
 
 EOF
     exit 0
 }
 
+confirm() {
+    local prompt="$1"
+    if [[ "$SKIP_CONFIRM" == "true" ]]; then
+        return 0
+    fi
+    echo -en "${YELLOW}?${NC} $prompt [y/N] "
+    read -r response
+    case "$response" in
+        [yY][eE][sS]|[yY]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+detect_os() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "darwin" ;;
+        *)       die "Unsupported operating system: $os" ;;
+    esac
+}
+
+ensure_root() {
+    if [[ $EUID -ne 0 ]]; then
+        die "Isolated mode requires root privileges. Please run with sudo."
+    fi
+}
+
 # === Argument Parsing ===
 PREFIX="$DEFAULT_PREFIX"
-VERSION=""
-FROM_SOURCE=false
-ISOLATED=false
-SKIP_SERVICE=false
+ISOLATED="false"
+SKIP_BUILD="false"
+SKIP_CONFIRM="false"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --isolated)
+            ISOLATED="true"
+            shift
+            ;;
         --prefix)
             PREFIX="${2:-}"
             if [[ -z "$PREFIX" ]]; then
@@ -116,23 +127,12 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        --version)
-            VERSION="${2:-}"
-            if [[ -z "$VERSION" ]]; then
-                die "--version requires a version argument"
-            fi
-            shift 2
-            ;;
-        --from-source)
-            FROM_SOURCE=true
+        --skip-build)
+            SKIP_BUILD="true"
             shift
             ;;
-        --isolated)
-            ISOLATED=true
-            shift
-            ;;
-        --skip-service)
-            SKIP_SERVICE=true
+        --yes|-y)
+            SKIP_CONFIRM="true"
             shift
             ;;
         --help|-h)
@@ -145,670 +145,372 @@ while [[ $# -gt 0 ]]; do
 done
 
 BIN_DIR="$PREFIX/bin"
+BINARY_PATH="$BIN_DIR/$BINARY_NAME"
 
-# === System Detection ===
-detect_os() {
-    local os
-    os="$(uname -s)"
-    case "$os" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
-        *)       die "Unsupported operating system: $os" ;;
-    esac
-}
+# === Build ===
 
 detect_arch() {
     local arch
     arch="$(uname -m)"
     case "$arch" in
-        x86_64|amd64)   echo "x86_64" ;;
-        aarch64|arm64)  echo "aarch64" ;;
-        *)              die "Unsupported architecture: $arch" ;;
+        x86_64)  echo "x86_64" ;;
+        aarch64|arm64) echo "aarch64" ;;
+        *)       die "Unsupported architecture: $arch" ;;
     esac
 }
 
-# === Dependency Checks ===
-check_command() {
-    command -v "$1" &> /dev/null
-}
+download_binary() {
+    local os arch
+    os=$(detect_os)
+    arch=$(detect_arch)
 
-ensure_curl() {
-    if ! check_command curl; then
-        die "curl is required but not installed. Please install curl first."
+    info "Detecting latest release..."
+
+    # Use GitHub API to find the latest release asset matching our OS/arch
+    local api_url="https://api.github.com/repos/owliabot/clawlet/releases/latest"
+    local release_json
+    release_json=$(curl -fsSL "$api_url") || die "Failed to fetch latest release info"
+
+    # Find the asset URL matching our platform: clawlet-{version}-{arch}-{os}.tar.gz
+    local asset_url
+    asset_url=$(echo "$release_json" | grep -o "\"browser_download_url\": *\"[^\"]*${arch}-${os}\\.tar\\.gz\"" | head -1 | sed 's/.*"browser_download_url": *"//;s/"$//')
+
+    if [[ -z "$asset_url" ]]; then
+        die "No release binary found for ${os}/${arch}. You may need to build from source."
     fi
-}
 
-ensure_git() {
-    if ! check_command git; then
-        die "git is required but not installed. Please install git first."
+    info "Downloading $BINARY_NAME for ${os}/${arch}..."
+    info "URL: $asset_url"
+
+    mkdir -p target/release
+    local tmpfile
+    tmpfile=$(mktemp)
+    curl -fsSL -o "$tmpfile" "$asset_url" || die "Download failed"
+    tar -xzf "$tmpfile" -C target/release || die "Extraction failed"
+    rm -f "$tmpfile"
+
+    if [[ ! -f "target/release/$BINARY_NAME" ]]; then
+        die "Downloaded archive did not contain '$BINARY_NAME'"
     fi
+    chmod +x "target/release/$BINARY_NAME"
+    success "Downloaded $BINARY_NAME for ${os}/${arch}"
 }
 
-ensure_rust() {
-    if check_command cargo; then
-        local version
-        version=$(cargo --version)
-        success "Rust toolchain found: $version"
+build_binary() {
+    if [[ "$SKIP_BUILD" == "true" ]]; then
+        if [[ ! -f "target/release/$BINARY_NAME" ]]; then
+            die "No binary found at target/release/$BINARY_NAME (--skip-build requires a pre-built binary)"
+        fi
+        info "Using existing binary at target/release/$BINARY_NAME"
         return 0
     fi
 
-    warn "Rust toolchain not found"
-    info "Installing Rust via rustup..."
-
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-
-    # Source cargo env for current session
-    # shellcheck source=/dev/null
-    source "$HOME/.cargo/env" 2>/dev/null || true
-
-    if ! check_command cargo; then
-        die "Rust installation failed. Please install manually: https://rustup.rs"
-    fi
-
-    success "Rust installed successfully"
-}
-
-ensure_root() {
-    if [[ $EUID -ne 0 ]]; then
-        die "Isolated mode requires root privileges. Please run with sudo."
-    fi
-}
-
-# === Release Download ===
-get_latest_version() {
-    local version
-    version=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' \
-        | sed -E 's/.*"([^"]+)".*/\1/')
-    
-    if [[ -z "$version" ]]; then
-        return 1
-    fi
-    echo "$version"
-}
-
-download_release() {
-    local os="$1"
-    local arch="$2"
-    local version="$3"
-    local tmp_dir="$4"
-
-    # Construct download URL
-    # Expected asset name: clawlet-<version>-<arch>-<os>.tar.gz
-    # e.g., clawlet-v0.1.0-x86_64-linux.tar.gz
-    local asset_name="clawlet-${version}-${arch}-${os}.tar.gz"
-    local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset_name}"
-
-    # Use >&2 for info messages since stdout is captured by caller
-    info "Downloading ${asset_name}..." >&2
-    
-    local archive_path="${tmp_dir}/${asset_name}"
-    if ! curl -fsSL -o "$archive_path" "$download_url" 2>/dev/null; then
-        return 1
-    fi
-
-    info "Extracting..." >&2
-    tar -xzf "$archive_path" -C "$tmp_dir" || return 1
-
-    # Find the binary
-    local binary_path="${tmp_dir}/clawlet"
-    if [[ ! -f "$binary_path" ]]; then
-        # Try in subdirectory (use -perm +111 for macOS compatibility)
-        binary_path=$(find "$tmp_dir" -name "clawlet" -type f | head -1)
-        if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
-            return 1
-        fi
-    fi
-
-    echo "$binary_path"
-}
-
-# === Build from Source ===
-build_from_source() {
-    local tmp_dir="$1"
-
-    ensure_git
-    ensure_rust
-
-    # Use >&2 for info messages since stdout is captured by caller
-    info "Cloning clawlet repository..." >&2
-    git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "$tmp_dir/clawlet" || die "Failed to clone repository"
-
-    info "Building clawlet (this may take a few minutes)..." >&2
-    cd "$tmp_dir/clawlet"
-    cargo build --release --package clawlet-cli || die "Build failed"
-
-    local binary_path="$tmp_dir/clawlet/target/release/clawlet"
-    if [[ ! -f "$binary_path" ]]; then
-        # Try the crate name if different
-        binary_path="$tmp_dir/clawlet/target/release/clawlet-cli"
-        if [[ ! -f "$binary_path" ]]; then
-            die "Binary not found after build"
-        fi
-    fi
-
-    echo "$binary_path"
-}
-
-# === Installation ===
-install_binary() {
-    local binary_path="$1"
-    local os="${2:-}"
-    local dest="$BIN_DIR/clawlet"
-
-    info "Installing to $dest..."
-
-    # Create bin directory if needed
-    if [[ ! -d "$BIN_DIR" ]]; then
-        if [[ "$PREFIX" == "$DEFAULT_PREFIX" ]]; then
-            sudo mkdir -p "$BIN_DIR" || die "Failed to create $BIN_DIR (try running with sudo)"
-        else
-            mkdir -p "$BIN_DIR" || die "Failed to create $BIN_DIR"
-        fi
-    fi
-
-    # Copy binary
-    if [[ "$PREFIX" == "$DEFAULT_PREFIX" && ! -w "$BIN_DIR" ]]; then
-        sudo cp "$binary_path" "$dest" || die "Failed to install binary"
-        sudo chmod 755 "$dest"
+    # Prefer building from local source when in a repo checkout
+    if [[ -f "Cargo.toml" ]] && command -v cargo >/dev/null 2>&1; then
+        info "Building from local source..."
+        cargo build --release -p clawlet-cli || die "Build failed"
+        success "Build complete"
+    elif download_binary; then
+        # Fallback to downloading pre-built binary (works with curl | bash flow)
+        :
     else
-        cp "$binary_path" "$dest" || die "Failed to install binary"
-        chmod 755 "$dest"
+        die "Cannot build from source (Cargo.toml or cargo not found) and failed to download pre-built binary"
     fi
-
-    # On macOS, clear quarantine flag and ad-hoc sign so Gatekeeper doesn't kill it
-    if [[ "$os" == "darwin" ]]; then
-        if [[ "$PREFIX" == "$DEFAULT_PREFIX" && ! -w "$BIN_DIR" ]]; then
-            sudo xattr -c "$dest" 2>/dev/null || true
-            sudo codesign -s - -f "$dest" 2>/dev/null || true
-        else
-            xattr -c "$dest" 2>/dev/null || true
-            codesign -s - -f "$dest" 2>/dev/null || true
-        fi
-    fi
-
-    success "Binary installed to $dest"
 }
 
-create_config_dir() {
-    info "Creating configuration directory at $CONFIG_DIR..."
-    mkdir -p "$CONFIG_DIR"/{keys,logs}
-    chmod 700 "$CONFIG_DIR"
-    chmod 700 "$CONFIG_DIR/keys"
+# === Standard Install ===
 
-    # Create default policy if it doesn't exist
-    if [[ ! -f "$CONFIG_DIR/policy.yaml" ]]; then
-        cat > "$CONFIG_DIR/policy.yaml" << 'POLICY'
-# Clawlet Policy Configuration
-# See: https://github.com/owliabot/clawlet/blob/main/config/policy.example.yaml
-
-# Maximum total USD value of transfers per day
-daily_transfer_limit_usd: 100.0
-
-# Maximum USD value per single transfer
-per_tx_limit_usd: 50.0
-
-# Allowed token symbols or addresses (empty = all allowed)
-allowed_tokens: []
-
-# Allowed chain IDs (empty = all allowed)
-allowed_chains: []
-
-# Transfers above this USD value require human approval
-require_approval_above_usd: 50.0
-POLICY
-        success "Created default policy at $CONFIG_DIR/policy.yaml"
+install_standard() {
+    info "Installing to $BINARY_PATH..."
+    if mkdir -p "$BIN_DIR" 2>/dev/null; then
+        :
     else
-        warn "Policy file already exists, skipping"
+        sudo mkdir -p "$BIN_DIR"
     fi
+    if cp "target/release/$BINARY_NAME" "$BINARY_PATH" 2>/dev/null; then
+        chmod 755 "$BINARY_PATH"
+    else
+        sudo cp "target/release/$BINARY_NAME" "$BINARY_PATH"
+        sudo chmod 755 "$BINARY_PATH"
+    fi
+    success "Binary installed to $BINARY_PATH (755)"
 
-    success "Configuration directory ready"
+    echo ""
+    info "Standard mode installed. Quick start:"
+    echo ""
+    echo "    $BINARY_NAME start --agent owliabot    # Init + grant token + start server"
+    echo ""
+    echo "  For more options, see: $BINARY_NAME start --help"
+    echo ""
 }
 
-# === Isolated Mode Functions ===
+# === Isolated Mode Install ===
 
-# Create clawlet system user
-create_clawlet_user_linux() {
+create_system_user_linux() {
+    local user_exists=false
     if id "$CLAWLET_USER" &>/dev/null; then
+        user_exists=true
         info "User '$CLAWLET_USER' already exists"
+    fi
+
+    if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
+        info "Creating system group '$CLAWLET_GROUP'..."
+        if groupadd --system "$CLAWLET_GROUP" 2>/dev/null; then
+            :
+        else
+            sudo groupadd --system "$CLAWLET_GROUP" || die "Failed to create group '$CLAWLET_GROUP'"
+        fi
+    fi
+
+    if [[ "$user_exists" == "true" ]]; then
+        info "Ensuring '$CLAWLET_USER' is a member of '$CLAWLET_GROUP'..."
+        if usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
+            :
+        else
+            sudo usermod -aG "$CLAWLET_GROUP" "$CLAWLET_USER" \
+                || die "Failed to add user '$CLAWLET_USER' to group '$CLAWLET_GROUP'"
+        fi
+        success "User '$CLAWLET_USER' group membership verified"
         return 0
     fi
 
     info "Creating system user '$CLAWLET_USER'..."
-    useradd \
-        --system \
-        --create-home \
-        --home-dir "/home/$CLAWLET_USER" \
-        --shell /usr/sbin/nologin \
-        --comment "Clawlet Wallet Engine" \
-        "$CLAWLET_USER" || die "Failed to create user"
-    
-    success "Created system user '$CLAWLET_USER'"
+    if useradd --system --create-home --shell /usr/sbin/nologin --gid "$CLAWLET_GROUP" "$CLAWLET_USER" 2>/dev/null; then
+        :
+    else
+        sudo useradd --system --create-home --shell /usr/sbin/nologin --gid "$CLAWLET_GROUP" "$CLAWLET_USER" \
+            || die "Failed to create user '$CLAWLET_USER'"
+    fi
+    success "System user '$CLAWLET_USER' created"
 }
 
-create_clawlet_user_macos() {
+create_system_user_macos() {
     if id "$CLAWLET_USER" &>/dev/null; then
         info "User '$CLAWLET_USER' already exists"
+
+        # Ensure group exists and user is a member even when reusing an existing user
+        if ! dscl . -read "/Groups/$CLAWLET_GROUP" &>/dev/null; then
+            info "Creating group '$CLAWLET_GROUP'..."
+            local gid=399
+            while dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -q "^${gid}$"; do
+                gid=$((gid - 1))
+                if [[ $gid -lt 300 ]]; then
+                    die "Could not find an available GID for system group"
+                fi
+            done
+            dscl . -create "/Groups/$CLAWLET_GROUP"
+            dscl . -create "/Groups/$CLAWLET_GROUP" PrimaryGroupID "$gid"
+            success "Group '$CLAWLET_GROUP' created (GID=$gid)"
+        fi
+
+        # Ensure user is a member of the group
+        local current_gid
+        current_gid=$(dscl . -read "/Groups/$CLAWLET_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')
+        local user_gid
+        user_gid=$(dscl . -read "/Users/$CLAWLET_USER" PrimaryGroupID 2>/dev/null | awk '{print $2}')
+        if [[ "$user_gid" != "$current_gid" ]]; then
+            dscl . -create "/Users/$CLAWLET_USER" PrimaryGroupID "$current_gid"
+            info "Updated '$CLAWLET_USER' primary group to '$CLAWLET_GROUP'"
+        fi
+
+        # Ensure home directory exists with correct permissions.
+        mkdir -p "/var/$CLAWLET_USER"
+        chown "$CLAWLET_USER:$CLAWLET_GROUP" "/var/$CLAWLET_USER" 2>/dev/null || true
+        chmod 700 "/var/$CLAWLET_USER" 2>/dev/null || true
+
+        success "User '$CLAWLET_USER' group membership verified"
         return 0
     fi
 
-    info "Creating system user '$CLAWLET_USER' on macOS..."
+    info "Creating system user '$CLAWLET_USER'..."
 
-    # Find next available UID (system users typically < 500 on macOS)
-    local next_uid=400
-    while dscl . -read "/Users/_$next_uid" &>/dev/null 2>&1 || \
-          dscl . -list /Users UniqueID | grep -q "\\b$next_uid\\b"; do
-        ((next_uid++))
-        if [[ $next_uid -ge 500 ]]; then
-            die "Could not find available system UID"
+    # Find an unused UID in the system range (< 500)
+    local uid=399
+    while dscl . -list /Users UniqueID 2>/dev/null | awk '{print $2}' | grep -q "^${uid}$"; do
+        uid=$((uid - 1))
+        if [[ $uid -lt 300 ]]; then
+            die "Could not find an available UID for system user"
         fi
     done
 
-    # Create user via dscl
-    dscl . -create "/Users/$CLAWLET_USER" || die "Failed to create user record"
+    # Find an unused GID (use same starting point as UID)
+    local gid="$uid"
+    while dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -q "^${gid}$"; do
+        gid=$((gid - 1))
+        if [[ $gid -lt 300 ]]; then
+            die "Could not find an available GID for system group"
+        fi
+    done
+
+    # Create group if it doesn't exist
+    if ! dscl . -read "/Groups/$CLAWLET_GROUP" &>/dev/null; then
+        dscl . -create "/Groups/$CLAWLET_GROUP"
+        dscl . -create "/Groups/$CLAWLET_GROUP" PrimaryGroupID "$gid"
+    fi
+
+    gid=$(dscl . -read "/Groups/$CLAWLET_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')
+
+    dscl . -create "/Users/$CLAWLET_USER"
     dscl . -create "/Users/$CLAWLET_USER" UserShell /usr/bin/false
-    dscl . -create "/Users/$CLAWLET_USER" RealName "Clawlet Wallet Engine"
-    dscl . -create "/Users/$CLAWLET_USER" UniqueID "$next_uid"
-    dscl . -create "/Users/$CLAWLET_USER" PrimaryGroupID 20  # staff group
-    dscl . -create "/Users/$CLAWLET_USER" NFSHomeDirectory "/Users/$CLAWLET_USER"
-    dscl . -create "/Users/$CLAWLET_USER" IsHidden 1
+    dscl . -create "/Users/$CLAWLET_USER" UniqueID "$uid"
+    dscl . -create "/Users/$CLAWLET_USER" PrimaryGroupID "$gid"
+    dscl . -create "/Users/$CLAWLET_USER" NFSHomeDirectory "/var/$CLAWLET_USER"
 
-    # Create home directory
-    mkdir -p "/Users/$CLAWLET_USER"
-    chown "$CLAWLET_USER:staff" "/Users/$CLAWLET_USER"
-    chmod 700 "/Users/$CLAWLET_USER"
+    mkdir -p "/var/$CLAWLET_USER"
+    chown "$CLAWLET_USER:$CLAWLET_GROUP" "/var/$CLAWLET_USER"
+    chmod 700 "/var/$CLAWLET_USER"
 
-    success "Created system user '$CLAWLET_USER' (UID: $next_uid)"
+    success "System user '$CLAWLET_USER' created (UID=$uid)"
 }
 
-create_clawlet_user() {
-    local os="$1"
+install_binary_isolated() {
+    info "Installing binary to $BINARY_PATH (root:$CLAWLET_GROUP 750)..."
+
+    if mkdir -p "$BIN_DIR" 2>/dev/null; then
+        :
+    else
+        sudo mkdir -p "$BIN_DIR"
+    fi
+
+    # Ensure group exists (Linux)
+    if [[ "$(detect_os)" == "linux" ]]; then
+        if ! getent group "$CLAWLET_GROUP" >/dev/null 2>&1; then
+            # User creation above should have created the group, but check anyway
+            groupadd "$CLAWLET_GROUP" 2>/dev/null || true
+        fi
+    fi
+
+    cp "target/release/$BINARY_NAME" "$BINARY_PATH"
+    chown "root:$CLAWLET_GROUP" "$BINARY_PATH"
+    chmod 750 "$BINARY_PATH"
+
+    success "Binary installed (root:$CLAWLET_GROUP, 750)"
+}
+
+verify_data_permissions() {
+    local clawlet_home
+    local os
+    os=$(detect_os)
+
     case "$os" in
-        linux)  create_clawlet_user_linux ;;
-        darwin) create_clawlet_user_macos ;;
+        linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
+        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
     esac
-}
 
-# Get home directory for clawlet user
-get_clawlet_home() {
-    local os="$1"
-    case "$os" in
-        linux)  echo "/home/$CLAWLET_USER" ;;
-        darwin) echo "/Users/$CLAWLET_USER" ;;
-    esac
-}
-
-# Create data directory for isolated mode
-create_isolated_data_dir() {
-    local clawlet_home="$1"
     local data_dir="$clawlet_home/.clawlet"
 
-    info "Creating data directory at $data_dir..."
-    mkdir -p "$data_dir"/{keystore,logs}
-    
-    # Create default config
-    if [[ ! -f "$data_dir/config.yaml" ]]; then
-        cat > "$data_dir/config.yaml" << 'CONFIG'
-# Clawlet Configuration
-# See: https://github.com/owliabot/clawlet/blob/main/docs/usage.md
+    if [[ -d "$data_dir" ]]; then
+        info "Verifying data directory permissions..."
 
-# RPC server bind address (127.0.0.1 for local only)
-bind_address: "127.0.0.1:9100"
+        # Ensure directory is 700
+        chmod 700 "$data_dir"
+        chown "$CLAWLET_USER:$CLAWLET_GROUP" "$data_dir"
 
-# Chain RPC endpoints (add your own)
-# chain_rpc_urls:
-#   1: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
-#   8453: "https://mainnet.base.org"
-CONFIG
-        success "Created config at $data_dir/config.yaml"
-    fi
+        # Ensure all files are 600
+        find "$data_dir" -type f -exec chmod 600 {} \;
+        find "$data_dir" -type d -exec chmod 700 {} \;
+        find "$data_dir" \( -type f -o -type d \) -exec chown "$CLAWLET_USER:$CLAWLET_GROUP" {} \;
 
-    # Create default policy
-    if [[ ! -f "$data_dir/policy.yaml" ]]; then
-        cat > "$data_dir/policy.yaml" << 'POLICY'
-# Clawlet Policy Configuration
-# See: https://github.com/owliabot/clawlet/blob/main/config/policy.example.yaml
-
-# Maximum total USD value of transfers per day
-daily_transfer_limit_usd: 100.0
-
-# Maximum USD value per single transfer
-per_tx_limit_usd: 50.0
-
-# Allowed token symbols or addresses (empty = all allowed)
-allowed_tokens: []
-
-# Allowed chain IDs (empty = all allowed)
-allowed_chains: []
-
-# Transfers above this USD value require human approval
-require_approval_above_usd: 50.0
-POLICY
-        success "Created policy at $data_dir/policy.yaml"
-    fi
-
-    # Set secure permissions
-    chown -R "$CLAWLET_USER:$(id -gn $CLAWLET_USER 2>/dev/null || echo staff)" "$data_dir"
-    chmod 700 "$data_dir"
-    chmod 700 "$data_dir/keystore"
-    chmod 700 "$data_dir/logs"
-    chmod 600 "$data_dir/config.yaml" 2>/dev/null || true
-    chmod 600 "$data_dir/policy.yaml" 2>/dev/null || true
-
-    success "Data directory ready with secure permissions (700)"
-}
-
-# Install systemd service (Linux)
-install_systemd_service() {
-    local clawlet_home="$1"
-    local service_file="/etc/systemd/system/clawlet.service"
-
-    info "Installing systemd service..."
-
-    cat > "$service_file" << EOF
-[Unit]
-Description=Clawlet Wallet Engine
-Documentation=https://github.com/owliabot/clawlet
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$CLAWLET_USER
-Group=$CLAWLET_GROUP
-
-# Environment
-Environment=RUST_LOG=info
-Environment=CLAWLET_HOME=$clawlet_home/.clawlet
-
-# Execution
-ExecStart=${PREFIX}/bin/clawlet serve
-Restart=on-failure
-RestartSec=5
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=$clawlet_home/.clawlet
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-MemoryDenyWriteExecute=true
-LockPersonality=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    chmod 644 "$service_file"
-    
-    # Reload systemd
-    systemctl daemon-reload
-    
-    success "Installed systemd service at $service_file"
-    info "Enable with: sudo systemctl enable --now clawlet"
-}
-
-# Install launchd plist (macOS)
-install_launchd_plist() {
-    local clawlet_home="$1"
-    local plist_file="/Library/LaunchDaemons/com.openclaw.clawlet.plist"
-    local log_dir="$clawlet_home/.clawlet/logs"
-
-    info "Installing launchd plist..."
-
-    cat > "$plist_file" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.openclaw.clawlet</string>
-    
-    <key>ProgramArguments</key>
-    <array>
-        <string>${PREFIX}/bin/clawlet</string>
-        <string>serve</string>
-    </array>
-    
-    <key>UserName</key>
-    <string>$CLAWLET_USER</string>
-    
-    <key>GroupName</key>
-    <string>staff</string>
-    
-    <key>WorkingDirectory</key>
-    <string>$clawlet_home</string>
-    
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>CLAWLET_HOME</key>
-        <string>$clawlet_home/.clawlet</string>
-        <key>RUST_LOG</key>
-        <string>info</string>
-    </dict>
-    
-    <key>RunAtLoad</key>
-    <true/>
-    
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    
-    <key>StandardOutPath</key>
-    <string>$log_dir/clawlet.stdout.log</string>
-    
-    <key>StandardErrorPath</key>
-    <string>$log_dir/clawlet.stderr.log</string>
-    
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-EOF
-
-    chmod 644 "$plist_file"
-    chown root:wheel "$plist_file"
-
-    success "Installed launchd plist at $plist_file"
-    info "Load with: sudo launchctl load $plist_file"
-}
-
-print_post_install() {
-    local installed_version="$1"
-
-    echo ""
-    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║          Clawlet installed successfully! 🐾              ║${NC}"
-    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    if [[ -n "$installed_version" ]]; then
-        echo -e "  Version: ${BOLD}${installed_version}${NC}"
-        echo ""
-    fi
-
-    # Check if bin dir is in PATH
-    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-        warn "NOTE: $BIN_DIR is not in your PATH"
-        echo ""
-        echo "    Add it to your shell profile:"
-        echo ""
-        echo -e "    ${BOLD}export PATH=\"$BIN_DIR:\$PATH\"${NC}"
-        echo ""
-    fi
-
-    echo "  Next steps:"
-    echo ""
-    echo -e "    ${BOLD}1.${NC} Initialize clawlet:"
-    echo -e "       ${BLUE}clawlet init${NC}"
-    echo ""
-    echo -e "    ${BOLD}2.${NC} Start the RPC server:"
-    echo -e "       ${BLUE}clawlet serve${NC}"
-    echo ""
-    echo -e "    ${BOLD}3.${NC} Configure your policy:"
-    echo -e "       ${BLUE}$CONFIG_DIR/policy.yaml${NC}"
-    echo ""
-    echo "  For help, run: clawlet --help"
-    echo "  Documentation: https://github.com/${GITHUB_REPO}"
-    echo ""
-}
-
-print_post_install_isolated() {
-    local installed_version="$1"
-    local os="$2"
-    local clawlet_home="$3"
-
-    echo ""
-    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║    Clawlet installed in isolated mode! 🐾🔒              ║${NC}"
-    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    if [[ -n "$installed_version" ]]; then
-        echo -e "  Version: ${BOLD}${installed_version}${NC}"
-    fi
-    echo -e "  Mode:    ${BOLD}Isolated (dedicated user)${NC}"
-    echo -e "  User:    ${BOLD}$CLAWLET_USER${NC}"
-    echo -e "  Home:    ${BOLD}$clawlet_home/.clawlet${NC}"
-    echo ""
-
-    echo -e "  ${BOLD}Security:${NC}"
-    echo "    - Keystore isolated from agent users"
-    echo "    - Data directory: 700 permissions"
-    echo "    - RPC binds to 127.0.0.1 only"
-    echo ""
-
-    echo -e "  ${BOLD}Quick start (init + grant token + serve):${NC}"
-    echo ""
-    echo -e "    ${BLUE}sudo -u $CLAWLET_USER clawlet start --agent owliabot${NC}"
-    echo ""
-    echo "    This will:"
-    echo "      • Create keystore (prompts for password)"
-    echo "      • Grant a session token to 'owliabot'"
-    echo "      • Start the RPC server on 127.0.0.1:9100"
-    echo ""
-
-    echo -e "  ${BOLD}Or step-by-step:${NC}"
-    echo ""
-    echo -e "    ${BOLD}1.${NC} Initialize keystore:"
-    echo -e "       ${BLUE}sudo -u $CLAWLET_USER clawlet init${NC}"
-    echo ""
-    echo -e "    ${BOLD}2.${NC} Grant token to agent:"
-    echo -e "       ${BLUE}sudo -u $CLAWLET_USER clawlet auth grant --agent owliabot --scope trade${NC}"
-    echo ""
-
-    if [[ "$os" == "linux" ]]; then
-        echo -e "    ${BOLD}3.${NC} Enable service (auto-start on boot):"
-        echo -e "       ${BLUE}sudo systemctl enable --now clawlet${NC}"
-        echo ""
-        echo -e "    ${BOLD}4.${NC} View logs:"
-        echo -e "       ${BLUE}sudo journalctl -u clawlet -f${NC}"
+        success "Data directory permissions verified ($data_dir)"
     else
-        echo -e "    ${BOLD}3.${NC} Enable service (auto-start on boot):"
-        echo -e "       ${BLUE}sudo launchctl load /Library/LaunchDaemons/com.openclaw.clawlet.plist${NC}"
-        echo ""
-        echo -e "    ${BOLD}4.${NC} View logs:"
-        echo -e "       ${BLUE}tail -f $clawlet_home/.clawlet/logs/clawlet.stderr.log${NC}"
+        info "Data directory not yet created ($data_dir)"
+        info "It will be created when you run: sudo -H -u $CLAWLET_USER $BINARY_NAME init"
     fi
+}
+
+print_isolated_post_install() {
+    local clawlet_home
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
+        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
+    esac
+
+    echo ""
+    echo -e "${BOLD}Isolated mode installed successfully!${NC}"
+    echo ""
+    echo "Quick start:"
+    echo ""
+    echo "  1. Init + grant token + start daemon:"
+    echo "     sudo -H -u $CLAWLET_USER $BINARY_NAME start --agent owliabot --daemon"
+    echo ""
+    echo "  2. View logs / stop daemon:"
+    echo "     sudo tail -f $clawlet_home/.clawlet/clawlet.log"
+    echo "     sudo sh -c 'kill \$(cat $clawlet_home/.clawlet/clawlet.pid)'"
+    echo ""
+    echo "  3. Clear sudo cache (security best practice):"
+    echo "     sudo -k"
+    echo ""
+    echo "Security verification:"
+    echo ""
+    echo "  # Binary should be root:$CLAWLET_GROUP 750"
+    echo "  ls -la $BINARY_PATH"
+    echo ""
+    echo "  # Data dir should be $CLAWLET_USER:$CLAWLET_GROUP 700, files 600"
+    echo "  sudo ls -la $clawlet_home/.clawlet/"
+    echo ""
+    echo "  # Current user should NOT be able to read data"
+    echo "  cat $clawlet_home/.clawlet/policy.yaml  # Should fail with permission denied"
+    echo ""
+    echo "See docs/security-boundary-analysis.md for the full security model."
+    echo ""
+}
+
+install_isolated() {
+    local os
+    os=$(detect_os)
+
+    echo ""
+    echo -e "${BOLD}Isolated Mode Installation${NC}"
+    echo "=========================="
+    echo ""
+    info "This will:"
+    echo "    - Create system user '$CLAWLET_USER' (nologin shell)"
+    echo "    - Install binary as root:$CLAWLET_GROUP with mode 750"
+    echo "    - Verify data directory permissions (if exists)"
     echo ""
 
-    echo "  For help, run: clawlet --help"
-    echo "  Documentation: https://github.com/${GITHUB_REPO}/blob/main/docs/deployment.md"
-    echo ""
+    if ! confirm "Proceed with isolated mode install?"; then
+        info "Installation cancelled"
+        exit 0
+    fi
+
+    # Create system user
+    case "$os" in
+        linux)  create_system_user_linux ;;
+        darwin) create_system_user_macos ;;
+    esac
+
+    # Install binary with restricted permissions
+    install_binary_isolated
+
+    # Verify existing data permissions (if upgrading)
+    verify_data_permissions
+
+    # Print post-install instructions
+    print_isolated_post_install
 }
 
 # === Main ===
+
 main() {
     echo ""
     echo -e "${BOLD}Clawlet Installer${NC}"
-    echo "================="
+    echo "=================="
     echo ""
 
-    local os arch
-    os=$(detect_os)
-    arch=$(detect_arch)
-    info "Detected: $os ($arch)"
-
-    if [[ "$ISOLATED" == true ]]; then
-        info "Installing in isolated mode"
+    if [[ "$ISOLATED" == "true" ]]; then
         ensure_root
     fi
 
-    ensure_curl
+    build_binary
 
-    local tmp_dir=""
-    tmp_dir=$(mktemp -d)
-    trap 'rm -rf "${tmp_dir:-}"' EXIT
-
-    local binary_path=""
-    local installed_version=""
-
-    if [[ "$FROM_SOURCE" == true ]]; then
-        info "Building from source (--from-source specified)..."
-        binary_path=$(build_from_source "$tmp_dir")
-        installed_version="(built from source)"
+    if [[ "$ISOLATED" == "true" ]]; then
+        install_isolated
     else
-        # Try to download pre-built binary
-        if [[ -z "$VERSION" ]]; then
-            info "Fetching latest release version..."
-            VERSION=$(get_latest_version) || true
-        fi
-
-        if [[ -z "$VERSION" ]]; then
-            die "No releases found. Use --from-source to build manually, or check https://github.com/${GITHUB_REPO}/releases"
-        fi
-
-        info "Version: $VERSION"
-        binary_path=$(download_release "$os" "$arch" "$VERSION" "$tmp_dir") || true
-        installed_version="$VERSION"
-
-        if [[ -z "$binary_path" || ! -f "$binary_path" ]]; then
-            echo ""
-            warn "No pre-built binary available for $os/$arch (version: ${VERSION:-unknown})"
-            echo ""
-            info "You can install from source instead:"
-            echo ""
-            echo "    $0 --from-source"
-            echo ""
-            info "Or check for available releases at:"
-            echo "    https://github.com/${GITHUB_REPO}/releases"
-            echo ""
-            die "Installation failed. See above for alternatives."
-        fi
-    fi
-
-    install_binary "$binary_path" "$os"
-
-    if [[ "$ISOLATED" == true ]]; then
-        # Isolated mode setup
-        create_clawlet_user "$os"
-        
-        local clawlet_home
-        clawlet_home=$(get_clawlet_home "$os")
-        
-        create_isolated_data_dir "$clawlet_home"
-
-        if [[ "$SKIP_SERVICE" != true ]]; then
-            if [[ "$os" == "linux" ]]; then
-                install_systemd_service "$clawlet_home"
-            else
-                install_launchd_plist "$clawlet_home"
-            fi
-        else
-            info "Skipping service installation (--skip-service)"
-        fi
-
-        print_post_install_isolated "$installed_version" "$os" "$clawlet_home"
-    else
-        # Standard user mode
-        create_config_dir
-        print_post_install "$installed_version"
+        install_standard
     fi
 }
 

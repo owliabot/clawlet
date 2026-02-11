@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.22] - 2026-02-11
+
+### Added
+- feat(cli): add export-mnemonic command (#68)
+- feat(cli): crossterm alternate screen for sensitive display (#67)
+- feat(start): interactive prompt to create or import mnemonic (#63)
+- feat(rpc): add chains endpoint to list supported chains (#72)
+- feat(chains): add testnet boolean field to ChainInfo
+
+### Fixed
+- fix(auth): change default token expiry from 24h to 7d (#69)
+- fix(auth): use append mode for sessions + 7-day expiry cleanup
+- fix(install): read user input from /dev/tty for curl|bash compatibility (#70)
+- fix(start): gate show_sensitive on generated mnemonic
+
 ## [0.1.15] - 2026-02-10
 
 ### Fixed

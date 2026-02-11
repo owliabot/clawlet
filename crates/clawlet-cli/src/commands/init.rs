@@ -163,12 +163,7 @@ pub fn run(
             .into());
         }
 
-        // Validate mnemonic before proceeding
-        if let Err(e) = hd::derive_key(&mnemonic, 0) {
-            return Err(format!("Invalid BIP-39 mnemonic: {e}").into());
-        }
-
-        // Store the mnemonic in the keystore
+        // Store the mnemonic in the keystore (validates internally)
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
 
         #[cfg(unix)]

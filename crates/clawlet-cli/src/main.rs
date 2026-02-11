@@ -154,62 +154,6 @@ enum Commands {
 // Daemon helpers
 // ---------------------------------------------------------------------------
 
-/// Best-effort check that a running PID really looks like a `clawlet` process.
-///
-/// Returns:
-/// - `Some(true)` if we could verify it's clawlet
-/// - `Some(false)` if we could verify it's not clawlet (PID reuse / unrelated process)
-/// - `None` if we couldn't determine (conservatively treat as clawlet)
-#[cfg(unix)]
-fn pid_is_clawlet(pid: i32) -> Option<bool> {
-    #[cfg(target_os = "linux")]
-    {
-        let exe_path = format!("/proc/{pid}/exe");
-        if let Ok(exe) = std::fs::read_link(&exe_path) {
-            let name = exe.file_name().and_then(|s| s.to_str());
-            return Some(name == Some("clawlet"));
-        }
-
-        let cmdline_path = format!("/proc/{pid}/cmdline");
-        if let Ok(cmdline) = std::fs::read(&cmdline_path) {
-            let first = cmdline.split(|b| *b == 0).next().unwrap_or(&[]);
-            let first = String::from_utf8_lossy(first);
-            let first = first.trim();
-            if first.is_empty() {
-                return Some(false);
-            }
-            return Some(first == "clawlet" || first.ends_with("/clawlet"));
-        }
-
-        None
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-
-        let out = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "comm="])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let s = String::from_utf8_lossy(&out.stdout);
-        let comm = s.trim();
-        if comm.is_empty() {
-            return None;
-        }
-        Some(comm == "clawlet" || comm.ends_with("/clawlet"))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
 /// Guard that removes the PID file when dropped.
 ///
 /// This ensures the PID file is cleaned up when the daemon exits,
@@ -358,21 +302,20 @@ fn daemonize(
                                 err.raw_os_error() == Some(libc::EPERM)
                             };
                             if process_alive {
-                                match pid_is_clawlet(existing_pid) {
-                                    Some(false) => true, // PID reused by non-clawlet
-                                    Some(true) | None => {
-                                        let msg = format!(
-                                            "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
-                                            pid_path.display()
-                                        );
-                                        write_pipe_all(pipe_write, msg.as_bytes());
-                                        unsafe { libc::close(pipe_write) };
-                                        return Err(format!(
-                                            "another daemon already running (PID {existing_pid})"
-                                        )
-                                        .into());
-                                    }
-                                }
+                                // pid_is_clawlet is conservative: it only
+                                // returns Some(true) on positive match, and
+                                // None otherwise. Either way, if the process
+                                // is alive we refuse to start.
+                                let msg = format!(
+                                    "err: another daemon is already running (PID {existing_pid}, pid file {})\n",
+                                    pid_path.display()
+                                );
+                                write_pipe_all(pipe_write, msg.as_bytes());
+                                unsafe { libc::close(pipe_write) };
+                                return Err(format!(
+                                    "another daemon already running (PID {existing_pid})"
+                                )
+                                .into());
                             } else {
                                 true // Process dead — stale
                             }

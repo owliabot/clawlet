@@ -123,6 +123,25 @@ enum Commands {
         addr: Option<String>,
     },
 
+    /// Sign a message using EIP-191 personal sign.
+    SignMessage {
+        /// Message to sign (text or hex with 0x prefix).
+        #[arg(long)]
+        message: String,
+
+        /// Message encoding: "utf8" or "hex" (default: utf8).
+        #[arg(long)]
+        encoding: Option<String>,
+
+        /// Bearer auth token (or set CLAWLET_AUTH_TOKEN env var).
+        #[arg(long, env = "CLAWLET_AUTH_TOKEN")]
+        auth_token: String,
+
+        /// RPC server address (default: 127.0.0.1:9100).
+        #[arg(long)]
+        addr: Option<String>,
+    },
+
     /// Export (display) the BIP-39 mnemonic from the encrypted keystore.
     ExportMnemonic {
         /// Data directory (default: ~/.clawlet).
@@ -523,6 +542,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             chain_id,
             addr,
         } => commands::transfer::run(to, amount, asset, chain_id, addr, auth_token).await,
+        Commands::SignMessage {
+            message,
+            encoding,
+            auth_token,
+            addr,
+        } => commands::sign_message::run(message, encoding, addr, auth_token).await,
         Commands::Send {
             to,
             value,

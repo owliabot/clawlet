@@ -5,6 +5,7 @@ members = [
     "crates/clawlet-evm",
     "crates/clawlet-rpc",
     "crates/clawlet-cli",
+    "crates/clawlet-solana",
     "tests/integration",
 ]
 resolver = "2"

@@ -94,7 +94,6 @@ pub struct PreparedStart {
 pub fn prepare(
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
-    from_mnemonic: bool,
 ) -> Result<PreparedStart, Box<dyn std::error::Error>> {
     let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
@@ -148,7 +147,36 @@ pub fn prepare(
             return Err(msg.into());
         }
 
-        let mnemonic = if from_mnemonic {
+        // Interactive prompt — require a TTY
+        if !atty::is(atty::Stream::Stdin) {
+            return Err(
+                "Interactive terminal required for wallet initialization (stdin is not a TTY)"
+                    .into(),
+            );
+        }
+
+        eprintln!();
+        eprintln!("🔑 未找到密钥库，请选择 (No keystore found, choose an option):");
+        eprintln!("  1) 创建新钱包 (Create new wallet)");
+        eprintln!("  2) 导入已有助记词 (Import existing mnemonic)");
+
+        let choice = loop {
+            eprintln!();
+            eprint!("请选择 (Enter choice) [1/2]: ");
+            let input = super::read_line_or_default("")?;
+            if input.is_empty() {
+                return Err("EOF on stdin — wallet initialization aborted".into());
+            }
+            let trimmed = input.trim();
+            if trimmed == "1" || trimmed == "2" {
+                break trimmed.to_string();
+            }
+            eprintln!("⚠️  请输入 1 或 2 (Please enter 1 or 2)");
+        };
+
+        let import = choice == "2";
+
+        let mnemonic = if import {
             eprintln!();
             eprint!("请输入 BIP-39 助记词 (Enter your BIP-39 mnemonic phrase): ");
             let mnemonic_input = super::read_line_or_default("")?;
@@ -160,9 +188,7 @@ pub fn prepare(
             mnemonic_input
         } else {
             eprintln!();
-            eprintln!(
-                "🔑 未找到密钥库，正在创建新钱包 (No keystore found, creating new wallet)..."
-            );
+            eprintln!("🔑 正在创建新钱包 (Creating new wallet)...");
             hd::generate_mnemonic()
         };
 
@@ -171,15 +197,12 @@ pub fn prepare(
 
         // If mnemonic was generated (not imported), show it in alternate screen.
         // The alternate screen ensures it's not in scroll-back.
-        if !from_mnemonic {
-            crate::tui::show_sensitive(
-                &[
-                    "🔑 您的助记词 (WRITE THIS DOWN — it will NOT be shown again):",
-                    "",
-                    &format!("  {mnemonic}"),
-                ],
-                "确认已保存后按回车继续 (Press Enter when you have saved the mnemonic)...",
-            )?;
+        if !import {
+            crate::tui::show_sensitive(&[
+                "🔑 您的助记词 (WRITE THIS DOWN — it will NOT be shown again):",
+                "",
+                &format!("  {mnemonic}"),
+            ])?;
         }
 
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;
@@ -287,9 +310,8 @@ pub async fn start_notify(
 pub async fn run(
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
-    from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare(data_dir, addr, from_mnemonic)?;
+    let prepared = prepare(data_dir, addr)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.

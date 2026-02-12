@@ -65,11 +65,12 @@ where
     f()
 }
 
-/// Display sensitive text in the alternate screen, wait for Enter, then clear.
+/// Display sensitive text in the alternate screen, wait for Y/y confirmation, then clear.
 ///
-/// The text is only visible while the alternate screen is active. Once the user
-/// presses Enter the screen switches back and no trace remains in scroll-back.
-pub fn show_sensitive(lines: &[&str], footer: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// The text is only visible while the alternate screen is active. The user must
+/// type Y or y to confirm they have saved the content. Once confirmed the
+/// screen switches back and no trace remains in scroll-back.
+pub fn show_sensitive(lines: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
     with_alternate_screen(|| {
         let mut out = stdout();
         let _raw = RawModeGuard::enable()?;
@@ -80,18 +81,24 @@ pub fn show_sensitive(lines: &[&str], footer: &str) -> Result<(), Box<dyn std::e
         for line in lines {
             execute!(out, Print(line), Print("\r\n"))?;
         }
-        execute!(out, Print("\r\n"), Print(footer), Print("\r\n"))?;
+
+        let prompt = "⚠️  请确认已保存助记词 (Confirm you have saved the mnemonic)\r\n输入 Y 继续 (Type Y to continue): ";
+        let retry = "❌ 请输入 Y 确认已保存助记词 (Please type Y to confirm)\r\n输入 Y 继续 (Type Y to continue): ";
+
+        execute!(out, Print("\r\n"), Print(prompt))?;
         out.flush()?;
 
-        // Wait for Enter or Ctrl+C
         loop {
             if let Event::Key(key_event) = event::read()? {
                 match key_event.code {
-                    KeyCode::Enter => break,
+                    KeyCode::Char('y' | 'Y') => break,
                     KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break
+                        return Err("aborted by user".into());
                     }
-                    _ => {}
+                    _ => {
+                        execute!(out, Print("\r\n"), Print(retry))?;
+                        out.flush()?;
+                    }
                 }
             }
         }

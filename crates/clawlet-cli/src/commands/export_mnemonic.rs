@@ -23,16 +23,13 @@ pub fn run(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> 
 
     let mnemonic = Keystore::unlock(keystore_path, &password)?;
 
-    crate::tui::show_sensitive(
-        &[
-            "⚠️  Anyone with this mnemonic can access your funds. Never share it.",
-            "",
-            "Your mnemonic phrase:",
-            "",
-            &format!("  {mnemonic}"),
-        ],
-        "Press Enter to clear and return...",
-    )?;
+    crate::tui::show_sensitive(&[
+        "⚠️  Anyone with this mnemonic can access your funds. Never share it.",
+        "",
+        "Your mnemonic phrase:",
+        "",
+        &format!("  {mnemonic}"),
+    ])?;
 
     Ok(())
 }

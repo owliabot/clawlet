@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
@@ -519,9 +518,6 @@ impl ClawletApiServer for RpcServerImpl {
             .parse()
             .map_err(|e: AuthError| auth_error_to_rpc(e))?;
 
-        // Calculate expiration (None = never expires)
-        let expires_in = params.expires_hours.map(|h| Duration::from_secs(h * 3600));
-
         // Get current Unix UID
         #[cfg(unix)]
         let uid = unsafe { libc::getuid() };
@@ -533,7 +529,7 @@ impl ClawletApiServer for RpcServerImpl {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
         })?;
 
-        let grant = store.grant(&params.agent_id, scope, expires_in, uid);
+        let grant = store.grant(&params.agent_id, scope, None, uid);
 
         let response = AuthGrantResponse {
             token: grant.token,

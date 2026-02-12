@@ -163,7 +163,7 @@ async fn run_grant(
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
 
     // Prompt for password
-    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
+    let password = super::read_password("Enter wallet password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthGrantRequest {
@@ -192,7 +192,7 @@ async fn run_grant(
 /// List all active sessions.
 async fn run_list(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
+    let password = super::read_password("Enter wallet password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthListRequest { password };
@@ -229,7 +229,7 @@ async fn run_revoke(
     addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
+    let password = super::read_password("Enter wallet password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthRevokeRequest {
@@ -254,7 +254,7 @@ async fn run_revoke(
 /// Revoke all sessions.
 async fn run_revoke_all(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
+    let password = super::read_password("Enter wallet password: ", "CLAWLET_PASSWORD")?;
 
     // Confirm
     eprint!("Are you sure you want to revoke ALL sessions? [y/N]: ");

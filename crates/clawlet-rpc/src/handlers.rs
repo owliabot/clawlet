@@ -19,7 +19,8 @@ use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ChainInfo, ChainsResponse,
     ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse,
-    SkillSummary, SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
+    SignMessageRequest, SignMessageResponse, SkillSummary, SkillsResponse, TokenSpec,
+    TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -53,6 +54,47 @@ pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError>
     let address = state.signer.address();
 
     Ok(AddressResponse { address })
+}
+
+/// Sign a message using EIP-191 personal sign.
+///
+/// If the message starts with "0x", it is decoded as hex bytes;
+/// otherwise it is used as raw UTF-8 bytes.
+pub fn handle_sign_message(
+    state: &AppState,
+    params: SignMessageRequest,
+) -> Result<SignMessageResponse, HandlerError> {
+    let bytes = if let Some(hex_str) = params.message.strip_prefix("0x") {
+        hex::decode(hex_str)
+            .map_err(|e| HandlerError::BadRequest(format!("invalid hex message: {e}")))?
+    } else {
+        params.message.as_bytes().to_vec()
+    };
+
+    let sig = state
+        .signer
+        .sign_message(&bytes)
+        .map_err(|e| HandlerError::Internal(format!("signing error: {e}")))?;
+
+    let signature = format!("0x{}", hex::encode(sig.to_bytes()));
+    let address = format!("{}", state.signer.address());
+
+    // Audit
+    {
+        let event = AuditEvent::new(
+            "sign_message",
+            json!({
+                "address": &address,
+                "message_len": bytes.len(),
+            }),
+            "ok",
+        );
+        if let Ok(mut audit) = state.audit.lock() {
+            let _ = audit.log_event(event);
+        }
+    }
+
+    Ok(SignMessageResponse { signature, address })
 }
 
 /// Query ETH balance for the given address and chain.

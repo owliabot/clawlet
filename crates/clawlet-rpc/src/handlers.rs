@@ -3,9 +3,11 @@
 //! Each handler processes a deserialized request and returns a serialized response.
 //! Handlers are transport-agnostic — they work with `&AppState` and serde types.
 
+use std::str::FromStr;
+
 use serde_json::json;
 
-use alloy::primitives::U256;
+use alloy::primitives::{Bytes, U256};
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
@@ -18,9 +20,9 @@ use clawlet_signer::Signer;
 use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ChainInfo, ChainsResponse,
-    ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse,
-    SignMessageRequest, SignMessageResponse, SkillSummary, SkillsResponse, TokenSpec,
-    TransferRequest, TransferResponse, TransferStatus,
+    ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, MessageEncoding, SendRawRequest,
+    SendRawResponse, SignMessageRequest, SignMessageResponse, SkillSummary, SkillsResponse,
+    TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -65,10 +67,9 @@ pub fn handle_sign_message(
     state: &AppState,
     params: SignMessageRequest,
 ) -> Result<SignMessageResponse, HandlerError> {
-    let bytes = match params.encoding.as_str() {
-        "hex" => {
-            let hex_str = params.message.strip_prefix("0x").unwrap_or(&params.message);
-            hex::decode(hex_str).map_err(|e| {
+    let bytes = match params.encoding {
+        MessageEncoding::Hex => {
+            let b = Bytes::from_str(&params.message).map_err(|e| {
                 // Audit: bad hex decode
                 {
                     let event = AuditEvent::new(
@@ -84,14 +85,10 @@ pub fn handle_sign_message(
                     }
                 }
                 HandlerError::BadRequest(format!("invalid hex message: {e}"))
-            })?
+            })?;
+            b.to_vec()
         }
-        "utf8" => params.message.as_bytes().to_vec(),
-        other => {
-            return Err(HandlerError::BadRequest(format!(
-                "unsupported encoding: {other} (expected \"utf8\" or \"hex\")"
-            )));
-        }
+        MessageEncoding::Utf8 => params.message.as_bytes().to_vec(),
     };
 
     let sig = state.signer.sign_message(&bytes).map_err(|e| {
@@ -121,7 +118,7 @@ pub fn handle_sign_message(
             json!({
                 "address": &address,
                 "message_len": bytes.len(),
-                "encoding": &params.encoding,
+                "encoding": params.encoding,
             }),
             "ok",
         );
@@ -679,7 +676,7 @@ mod tests {
         let state = test_app_state();
         let req = crate::types::SignMessageRequest {
             message: "hello world".to_string(),
-            encoding: "utf8".to_string(),
+            encoding: crate::types::MessageEncoding::Utf8,
         };
         let resp = handle_sign_message(&state, req).unwrap();
         assert!(resp.signature.starts_with("0x"));
@@ -693,7 +690,7 @@ mod tests {
         // "hello" = 68656c6c6f
         let req = crate::types::SignMessageRequest {
             message: "0x68656c6c6f".to_string(),
-            encoding: "hex".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
         };
         let resp = handle_sign_message(&state, req).unwrap();
         assert!(resp.signature.starts_with("0x"));
@@ -702,7 +699,7 @@ mod tests {
         // Same result without 0x prefix
         let req2 = crate::types::SignMessageRequest {
             message: "68656c6c6f".to_string(),
-            encoding: "hex".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
         };
         let resp2 = handle_sign_message(&state, req2).unwrap();
         assert_eq!(resp.signature, resp2.signature);
@@ -713,7 +710,7 @@ mod tests {
         let state = test_app_state();
         let req = crate::types::SignMessageRequest {
             message: "0xZZZZ".to_string(),
-            encoding: "hex".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
         };
         let err = handle_sign_message(&state, req).unwrap_err();
         assert!(matches!(err, HandlerError::BadRequest(_)));
@@ -724,7 +721,7 @@ mod tests {
         let state = test_app_state();
         let req = crate::types::SignMessageRequest {
             message: "test".to_string(),
-            encoding: "utf8".to_string(),
+            encoding: crate::types::MessageEncoding::Utf8,
         };
         let resp = handle_sign_message(&state, req).unwrap();
         // Verify JSON serialization shape

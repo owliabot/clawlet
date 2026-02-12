@@ -379,19 +379,26 @@ pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
     }
 }
 
+/// Message encoding for sign_message requests.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageEncoding {
+    /// Raw UTF-8 bytes.
+    #[default]
+    Utf8,
+    /// Hex-encoded bytes (optional `0x`/`0X` prefix).
+    Hex,
+}
+
 /// Request body for signing a message (EIP-191 personal sign).
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SignMessageRequest {
     /// Message to sign — interpreted according to the `encoding` field.
     pub message: String,
     /// Encoding of the message: `"utf8"` (default) or `"hex"`.
-    /// When `"hex"`, an optional `0x` prefix is stripped before decoding.
-    #[serde(default = "default_encoding")]
-    pub encoding: String,
-}
-
-fn default_encoding() -> String {
-    "utf8".to_string()
+    /// When `"hex"`, an optional `0x`/`0X` prefix is stripped before decoding.
+    #[serde(default)]
+    pub encoding: MessageEncoding,
 }
 
 /// Response for sign_message.
@@ -717,6 +724,36 @@ mod tests {
     fn transfer_request_invalid_amount() {
         let res = serde_json::from_str::<TransferRequest>(
             r#"{"to":"0x742D35CC6634c0532925A3b844bc9E7595f5B5e2","amount":"not_a_number","token":"ETH","chain_id":1}"#,
+        );
+        assert!(res.is_err());
+    }
+
+    // ---- MessageEncoding / SignMessageRequest tests ----
+
+    #[test]
+    fn sign_message_request_default_encoding() {
+        let req: SignMessageRequest = serde_json::from_str(r#"{"message":"hello"}"#).unwrap();
+        assert_eq!(req.encoding, MessageEncoding::Utf8);
+    }
+
+    #[test]
+    fn sign_message_request_explicit_utf8() {
+        let req: SignMessageRequest =
+            serde_json::from_str(r#"{"message":"hello","encoding":"utf8"}"#).unwrap();
+        assert_eq!(req.encoding, MessageEncoding::Utf8);
+    }
+
+    #[test]
+    fn sign_message_request_explicit_hex() {
+        let req: SignMessageRequest =
+            serde_json::from_str(r#"{"message":"0xdead","encoding":"hex"}"#).unwrap();
+        assert_eq!(req.encoding, MessageEncoding::Hex);
+    }
+
+    #[test]
+    fn sign_message_request_invalid_encoding_rejected() {
+        let res = serde_json::from_str::<SignMessageRequest>(
+            r#"{"message":"hello","encoding":"base64"}"#,
         );
         assert!(res.is_err());
     }

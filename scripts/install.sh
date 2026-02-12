@@ -47,7 +47,7 @@ USAGE:
 OPTIONS:
     --isolated      Install in isolated user mode:
                     - Creates clawlet system user (nologin shell)
-                    - Sets binary ownership to root:clawlet (750)
+                    - Sets binary ownership to root:clawlet (751)
                     - Initializes keystore under clawlet user's home
                     - Sets all data file permissions to 600
     --prefix DIR    Install binary to DIR/bin (default: /usr/local)
@@ -192,7 +192,7 @@ download_binary() {
     if [[ ! -f "target/release/$BINARY_NAME" ]]; then
         die "Downloaded archive did not contain '$BINARY_NAME'"
     fi
-    chmod +x "target/release/$BINARY_NAME"
+    chmod 751 "target/release/$BINARY_NAME"
     success "Downloaded $BINARY_NAME for ${os}/${arch}"
 }
 
@@ -228,20 +228,19 @@ install_standard() {
         sudo mkdir -p "$BIN_DIR"
     fi
     if cp "target/release/$BINARY_NAME" "$BINARY_PATH" 2>/dev/null; then
-        chmod 755 "$BINARY_PATH"
+        chmod 751 "$BINARY_PATH"
     else
         sudo cp "target/release/$BINARY_NAME" "$BINARY_PATH"
-        sudo chmod 755 "$BINARY_PATH"
+        sudo chmod 751 "$BINARY_PATH"
     fi
-    success "Binary installed to $BINARY_PATH (755)"
+    success "Binary installed to $BINARY_PATH (751)"
+}
 
+start_standard() {
     echo ""
-    info "Dev mode installed. Quick start:"
+    info "Starting clawlet..."
     echo ""
-    echo "    $BINARY_NAME start --agent owliabot    # Init + grant token + start server"
-    echo ""
-    echo "  For more options, see: $BINARY_NAME start --help"
-    echo ""
+    "$BINARY_PATH" start --agent owliabot
 }
 
 # === Isolated Mode Install ===
@@ -364,7 +363,7 @@ create_system_user_macos() {
 }
 
 install_binary_isolated() {
-    info "Installing binary to $BINARY_PATH (root:$CLAWLET_GROUP 750)..."
+    info "Installing binary to $BINARY_PATH (root:$CLAWLET_GROUP 751)..."
 
     if mkdir -p "$BIN_DIR" 2>/dev/null; then
         :
@@ -382,9 +381,9 @@ install_binary_isolated() {
 
     cp "target/release/$BINARY_NAME" "$BINARY_PATH"
     chown "root:$CLAWLET_GROUP" "$BINARY_PATH"
-    chmod 750 "$BINARY_PATH"
+    chmod 751 "$BINARY_PATH"
 
-    success "Binary installed (root:$CLAWLET_GROUP, 750)"
+    success "Binary installed (root:$CLAWLET_GROUP, 751)"
 }
 
 verify_data_permissions() {
@@ -431,30 +430,33 @@ print_isolated_post_install() {
     echo ""
     echo -e "${BOLD}Isolated mode installed successfully!${NC}"
     echo ""
-    echo "Quick start:"
+}
+
+start_isolated() {
+    local clawlet_home
+    local os
+    os=$(detect_os)
+
+    case "$os" in
+        linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
+        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
+    esac
+
+    info "Starting clawlet daemon..."
     echo ""
-    echo "  1. Init + grant token + start daemon:"
-    echo "     sudo -H -u $CLAWLET_USER $BINARY_NAME start --agent owliabot --daemon"
+    sudo -H -u "$CLAWLET_USER" "$BINARY_PATH" start --agent owliabot --daemon
+
     echo ""
-    echo "  2. View logs / stop daemon:"
-    echo "     sudo tail -f $clawlet_home/.clawlet/clawlet.log"
-    echo "     sudo sh -c 'kill \$(cat $clawlet_home/.clawlet/clawlet.pid)'"
+    echo "Useful commands:"
     echo ""
-    echo "  3. Clear sudo cache (security best practice):"
-    echo "     sudo -k"
+    echo "  # View logs:"
+    echo "  sudo tail -f $clawlet_home/.clawlet/clawlet.log"
     echo ""
-    echo "Security verification:"
+    echo "  # Stop daemon:"
+    echo "  sudo -H -u $CLAWLET_USER $BINARY_NAME stop"
     echo ""
-    echo "  # Binary should be root:$CLAWLET_GROUP 750"
-    echo "  ls -la $BINARY_PATH"
-    echo ""
-    echo "  # Data dir should be $CLAWLET_USER:$CLAWLET_GROUP 700, files 600"
-    echo "  sudo ls -la $clawlet_home/.clawlet/"
-    echo ""
-    echo "  # Current user should NOT be able to read data"
-    echo "  cat $clawlet_home/.clawlet/policy.yaml  # Should fail with permission denied"
-    echo ""
-    echo "See docs/security-boundary-analysis.md for the full security model."
+    echo "  # Clear sudo cache (security best practice):"
+    echo "  sudo -k"
     echo ""
 }
 
@@ -468,7 +470,7 @@ install_isolated() {
     echo ""
     info "This will:"
     echo "    - Create system user '$CLAWLET_USER' (nologin shell)"
-    echo "    - Install binary as root:$CLAWLET_GROUP with mode 750"
+    echo "    - Install binary as root:$CLAWLET_GROUP with mode 751"
     echo "    - Verify data directory permissions (if exists)"
     echo ""
 
@@ -489,8 +491,11 @@ install_isolated() {
     # Verify existing data permissions (if upgrading)
     verify_data_permissions
 
-    # Print post-install instructions
+    # Print post-install message
     print_isolated_post_install
+
+    # Auto-start daemon
+    start_isolated
 }
 
 # === Main ===
@@ -511,6 +516,7 @@ main() {
         install_isolated
     else
         install_standard
+        start_standard
     fi
 }
 

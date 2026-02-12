@@ -165,6 +165,84 @@ done
 BIN_DIR="$PREFIX/bin"
 BINARY_PATH="$BIN_DIR/clawlet"
 
+# === Stop Running Daemon ===
+
+stop_daemon() {
+    # Try using `clawlet stop` if binary exists
+    if [[ -f "$BINARY_PATH" ]]; then
+        info "Stopping clawlet daemon..."
+        if "$BINARY_PATH" stop 2>/dev/null; then
+            success "Daemon stopped"
+            return 0
+        fi
+    fi
+
+    # Fallback: check PID file
+    local pid_file="$CONFIG_DIR/clawlet.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            info "Stopping clawlet daemon (PID $pid)..."
+            kill "$pid" 2>/dev/null || true
+            # Wait up to 5 seconds for clean exit
+            local i=0
+            while [[ $i -lt 10 ]] && kill -0 "$pid" 2>/dev/null; do
+                sleep 0.5
+                i=$((i + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                warn "Daemon did not exit gracefully, sending SIGKILL..."
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            success "Daemon stopped"
+        fi
+        rm -f "$pid_file"
+    fi
+}
+
+stop_daemon_isolated() {
+    local os
+    os=$(detect_os)
+    local clawlet_home
+
+    case "$os" in
+        linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
+        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
+    esac
+
+    # Try using `clawlet stop` as the clawlet user
+    if [[ -f "$BINARY_PATH" ]]; then
+        info "Stopping clawlet daemon..."
+        if sudo -H -u "$CLAWLET_USER" "$BINARY_PATH" stop 2>/dev/null; then
+            success "Daemon stopped"
+            return 0
+        fi
+    fi
+
+    # Fallback: check PID file
+    local pid_file="$clawlet_home/.clawlet/clawlet.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            info "Stopping clawlet daemon (PID $pid)..."
+            kill "$pid" 2>/dev/null || true
+            local i=0
+            while [[ $i -lt 10 ]] && kill -0 "$pid" 2>/dev/null; do
+                sleep 0.5
+                i=$((i + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                warn "Daemon did not exit gracefully, sending SIGKILL..."
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            success "Daemon stopped"
+        fi
+        rm -f "$pid_file"
+    fi
+}
+
 # === Uninstallation Functions ===
 
 remove_binary() {
@@ -380,6 +458,9 @@ uninstall_isolated() {
     info "Uninstalling isolated mode installation..."
     echo ""
 
+    # Stop running daemon (PID-file based)
+    stop_daemon_isolated
+
     # Stop and remove service
     if [[ "$SKIP_SERVICE" != "true" ]]; then
         if [[ "$os" == "linux" ]]; then
@@ -450,6 +531,7 @@ main() {
             exit 0
         fi
 
+        stop_daemon
         remove_binary
 
         if [[ "$PURGE" == "true" ]]; then

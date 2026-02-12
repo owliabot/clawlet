@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 pub mod auth;
+pub mod connect;
 pub mod export_mnemonic;
 pub mod init;
 pub mod send;

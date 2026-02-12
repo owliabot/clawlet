@@ -141,6 +141,25 @@ enum Commands {
         force: bool,
     },
 
+    /// Connect OwliaBot to this clawlet instance (one-click setup).
+    Connect {
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
+
+        /// Agent identifier (default: "owliabot").
+        #[arg(long, default_value = "owliabot")]
+        agent: String,
+
+        /// Token scope: read, trade, or admin (default: trade).
+        #[arg(long, default_value = "trade")]
+        scope: String,
+
+        /// Session duration (default: 7d).
+        #[arg(long, default_value = "7d")]
+        expires: String,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -166,6 +185,11 @@ enum Commands {
         /// Detach and run as a background daemon after password input.
         #[arg(long, short)]
         daemon: bool,
+
+        /// Import an existing BIP-39 mnemonic instead of generating a new one.
+        /// Without this flag, a new wallet is created automatically.
+        #[arg(long)]
+        from_mnemonic: bool,
     },
 }
 
@@ -461,8 +485,9 @@ fn run_start_daemon(
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
+    from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
+    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
@@ -500,6 +525,7 @@ fn run_start_daemon(
     _expires: String,
     _data_dir: Option<PathBuf>,
     _addr: Option<SocketAddr>,
+    _from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Err("--daemon is only supported on Unix targets".into())
 }
@@ -533,6 +559,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             addr,
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
+        Commands::Connect {
+            addr,
+            agent,
+            scope,
+            expires,
+        } => commands::connect::run(addr, agent, scope, expires).await,
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {
@@ -541,8 +573,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             expires,
             data_dir,
             addr,
+            from_mnemonic,
             ..
-        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
+        } => commands::start::run(agent, scope, expires, data_dir, addr, from_mnemonic).await,
     }
 }
 
@@ -568,12 +601,14 @@ fn main() {
             data_dir,
             addr,
             daemon: true,
+            from_mnemonic,
         } => Some(run_start_daemon(
             agent.clone(),
             scope.clone(),
             expires.clone(),
             data_dir.clone(),
             *addr,
+            *from_mnemonic,
         )),
         _ => None,
     };

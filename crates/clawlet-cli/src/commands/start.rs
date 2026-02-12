@@ -124,6 +124,7 @@ pub fn prepare(
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
+    from_mnemonic: bool,
 ) -> Result<PreparedStart, Box<dyn std::error::Error>> {
     let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
@@ -145,7 +146,8 @@ pub fn prepare(
 
     let (signing_key, _address) = if already_initialized {
         // Already initialized - ask for password
-        let password: String = rpassword::prompt_password_stderr("🔐 Enter wallet password: ")?;
+        let password: String =
+            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
 
         let keys = Keystore::list(&keystore_dir)?;
         let key_path = &keys[0];
@@ -154,17 +156,19 @@ pub fn prepare(
         let addr = clawlet_signer::keystore::public_key_to_address(&key);
 
         eprintln!();
-        eprintln!("✅ Using existing keystore");
+        eprintln!("✅ 使用已有密钥库 (Using existing keystore)");
         eprintln!("   Address: {addr}");
 
         (key, addr)
     } else {
         // New init — password in normal terminal, mnemonic in alternate screen
-        let password: String = rpassword::prompt_password_stderr("🔐 Enter wallet password: ")?;
-        let confirm: String = rpassword::prompt_password_stderr("🔐 Confirm wallet password: ")?;
+        let password: String =
+            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
+        let confirm: String =
+            rpassword::prompt_password_stderr("🔐 确认钱包密码 (Confirm wallet password): ")?;
 
         if password != confirm {
-            return Err("passwords do not match".into());
+            return Err("密码不匹配 (passwords do not match)".into());
         }
 
         let issues = super::init::validate_password_strength(&password);
@@ -176,19 +180,9 @@ pub fn prepare(
             return Err(msg.into());
         }
 
-        eprintln!();
-        eprintln!("🔑 No existing keystore found. Choose an option:");
-        eprintln!("  1) Create new wallet (generate mnemonic)");
-        eprintln!("  2) Import existing mnemonic");
-        eprintln!();
-        eprint!("Enter choice [1/2]: ");
-        let mut choice = String::new();
-        std::io::stdin().read_line(&mut choice)?;
-        let choice = choice.trim().to_string();
-
-        let mnemonic = if choice == "2" {
+        let mnemonic = if from_mnemonic {
             eprintln!();
-            eprint!("Enter your BIP-39 mnemonic phrase: ");
+            eprint!("请输入 BIP-39 助记词 (Enter your BIP-39 mnemonic phrase): ");
             let mut mnemonic_input = String::new();
             std::io::stdin().read_line(&mut mnemonic_input)?;
             let mnemonic_input = mnemonic_input.trim().to_string();
@@ -196,9 +190,13 @@ pub fn prepare(
                 return Err("mnemonic cannot be empty".into());
             }
             eprintln!();
-            eprintln!("📥 Importing mnemonic...");
+            eprintln!("📥 正在导入助记词 (Importing mnemonic)...");
             mnemonic_input
         } else {
+            eprintln!();
+            eprintln!(
+                "🔑 未找到密钥库，正在创建新钱包 (No keystore found, creating new wallet)..."
+            );
             hd::generate_mnemonic()
         };
 
@@ -207,14 +205,14 @@ pub fn prepare(
 
         // If mnemonic was generated (not imported), show it in alternate screen.
         // The alternate screen ensures it's not in scroll-back.
-        if choice == "1" {
+        if !from_mnemonic {
             crate::tui::show_sensitive(
                 &[
-                    "🔑 Your mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
+                    "🔑 您的助记词 (WRITE THIS DOWN — it will NOT be shown again):",
                     "",
                     &format!("  {mnemonic}"),
                 ],
-                "Press Enter when you have saved the mnemonic...",
+                "确认已保存后按回车继续 (Press Enter when you have saved the mnemonic)...",
             )?;
         }
 
@@ -243,7 +241,7 @@ pub fn prepare(
             }
         }
 
-        eprintln!("✅ Initialized {}", data_dir.display());
+        eprintln!("✅ 初始化完成 (Initialized) {}", data_dir.display());
         eprintln!("   Address: {address}");
 
         (key, address)
@@ -269,7 +267,7 @@ pub fn prepare(
 
     eprintln!();
     eprintln!(
-        "🎫 Token for \"{}\" (scope: {}, expires: {})",
+        "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: {})",
         agent,
         scope,
         expires_at.format("%Y-%m-%d")
@@ -346,8 +344,9 @@ pub async fn run(
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
+    from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare(agent, scope, expires, data_dir, addr)?;
+    let prepared = prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.

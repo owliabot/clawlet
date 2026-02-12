@@ -189,46 +189,23 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
     None
 }
 
-/// Rewrite a clawlet URL for use inside a Docker container.
-///
-/// Inside a container, `127.0.0.1` and `0.0.0.0` refer to the container itself,
-/// not the host where clawlet is listening. We replace loopback addresses with
-/// `host.docker.internal`, which Docker Desktop (macOS/Windows) resolves
-/// automatically. On Linux, the container must be started with
-/// `--add-host=host.docker.internal:host-gateway`.
-fn rewrite_url_for_docker(url: &str) -> String {
-    url.replace("127.0.0.1", "host.docker.internal")
-        .replace("0.0.0.0", "host.docker.internal")
-        .replace("localhost", "host.docker.internal")
-}
-
 /// Run `owliabot wallet connect` for the given runtime.
 ///
 /// The token is passed via environment variable or stdin pipe rather than
 /// command-line arguments to prevent exposure in `ps` output.
 fn run_owliabot_command(
     runtime: &OwliabotRuntime,
-    clawlet_url: &str,
     token: &str,
 ) -> std::io::Result<std::process::ExitStatus> {
+    // Don't pass --base-url; owliabot resolves the clawlet endpoint via its
+    // own config. This avoids Docker networking issues where 127.0.0.1 inside
+    // a container doesn't reach the host.
     match runtime {
-        OwliabotRuntime::Binary => {
-            // Token passed via env var, invisible to `ps aux`
-            std::process::Command::new("sh")
-                .env("_CLAWLET_TOKEN", token)
-                .args([
-                    "-c",
-                    &format!(
-                        "owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
-                        clawlet_url
-                    ),
-                ])
-                .status()
-        }
+        OwliabotRuntime::Binary => std::process::Command::new("sh")
+            .env("_CLAWLET_TOKEN", token)
+            .args(["-c", "owliabot wallet connect --token \"$_CLAWLET_TOKEN\""])
+            .status(),
         OwliabotRuntime::Docker(container) => {
-            // Inside Docker, 127.0.0.1 refers to the container — rewrite to host.docker.internal
-            let docker_url = rewrite_url_for_docker(clawlet_url);
-            // Pipe token via stdin to avoid exposure in docker process args
             let mut child = std::process::Command::new("docker")
                 .args([
                     "exec",
@@ -236,10 +213,7 @@ fn run_owliabot_command(
                     container,
                     "sh",
                     "-c",
-                    &format!(
-                        "read _TOKEN && owliabot wallet connect --base-url '{}' --token \"$_TOKEN\"",
-                        docker_url
-                    ),
+                    "read _TOKEN && owliabot wallet connect --token \"$_TOKEN\"",
                 ])
                 .stdin(std::process::Stdio::piped())
                 .spawn()?;
@@ -253,10 +227,7 @@ fn run_owliabot_command(
             .env("_CLAWLET_TOKEN", token)
             .args([
                 "-c",
-                &format!(
-                    "npx owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
-                    clawlet_url
-                ),
+                "npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"",
             ])
             .status(),
     }
@@ -331,16 +302,7 @@ pub async fn run(
                 OwliabotRuntime::Npx => "npx owliabot".to_string(),
             };
             eprintln!("🔗 正在连接 OwliaBot (Connecting to OwliaBot via {label})...");
-            if matches!(runtime, OwliabotRuntime::Docker(_)) {
-                let docker_url = rewrite_url_for_docker(&clawlet_url);
-                if docker_url != clawlet_url {
-                    eprintln!(
-                        "   📦 Docker 模式：地址已重写为 {docker_url} (rewritten for container access)"
-                    );
-                }
-            }
-
-            let status = run_owliabot_command(&runtime, &clawlet_url, &resp.token);
+            let status = run_owliabot_command(&runtime, &resp.token);
 
             match status {
                 Ok(s) if s.success() => {
@@ -348,45 +310,37 @@ pub async fn run(
                 }
                 Ok(s) => {
                     eprintln!("⚠️  owliabot wallet connect 退出码 (exit code): {s}");
-                    print_manual_instructions(&clawlet_url, &resp.token);
+                    print_manual_instructions(&resp.token);
                     return Err(
                         format!("owliabot wallet connect failed with exit code: {s}").into(),
                     );
                 }
                 Err(e) => {
                     eprintln!("⚠️  无法执行 (Failed to execute): {e}");
-                    print_manual_instructions(&clawlet_url, &resp.token);
+                    print_manual_instructions(&resp.token);
                     return Err(format!("failed to execute owliabot wallet connect: {e}").into());
                 }
             }
         }
         None => {
             eprintln!("ℹ️  未检测到 owliabot (Not found in PATH / Docker / npx)，请手动连接 (connect manually):");
-            print_manual_instructions(&clawlet_url, &resp.token);
+            print_manual_instructions(&resp.token);
         }
     }
 
     Ok(())
 }
 
-fn print_manual_instructions(clawlet_url: &str, token: &str) {
-    let docker_url = rewrite_url_for_docker(clawlet_url);
+fn print_manual_instructions(token: &str) {
     eprintln!();
     eprintln!("  # 直接运行 (Run directly):");
-    eprintln!(
-        "  _CLAWLET_TOKEN='<token>' owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
-    );
+    eprintln!("  _CLAWLET_TOKEN='<token>' owliabot wallet connect --token \"$_CLAWLET_TOKEN\"");
     eprintln!();
     eprintln!("  # 或通过 Docker (Or via Docker):");
-    eprintln!(
-        "  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --base-url {docker_url} --token \"$T\"'"
-    );
-    eprintln!("  # ⚠️  Linux 需要启动容器时加 --add-host=host.docker.internal:host-gateway");
+    eprintln!("  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --token \"$T\"'");
     eprintln!();
     eprintln!("  # 或通过 npx (Or via npx):");
-    eprintln!(
-        "  _CLAWLET_TOKEN='<token>' npx owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
-    );
+    eprintln!("  _CLAWLET_TOKEN='<token>' npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"");
     eprintln!();
     eprintln!("Token (使用后请清除终端历史 / clear terminal history after use):");
     println!("{token}");

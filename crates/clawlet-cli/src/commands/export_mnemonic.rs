@@ -16,7 +16,7 @@ pub fn run(data_dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> 
 
     let keystore_path = &entries[0];
 
-    let password = rpassword::prompt_password_stderr("Enter keystore password: ")?;
+    let password = super::read_password("Enter keystore password: ", "CLAWLET_PASSWORD")?;
     if password.is_empty() {
         return Err("password entry aborted".into());
     }

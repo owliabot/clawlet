@@ -189,6 +189,19 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
     None
 }
 
+/// Rewrite a clawlet URL for use inside a Docker container.
+///
+/// Inside a container, `127.0.0.1` and `0.0.0.0` refer to the container itself,
+/// not the host where clawlet is listening. We replace loopback addresses with
+/// `host.docker.internal`, which Docker Desktop (macOS/Windows) resolves
+/// automatically. On Linux, the container must be started with
+/// `--add-host=host.docker.internal:host-gateway`.
+fn rewrite_url_for_docker(url: &str) -> String {
+    url.replace("127.0.0.1", "host.docker.internal")
+        .replace("0.0.0.0", "host.docker.internal")
+        .replace("localhost", "host.docker.internal")
+}
+
 /// Run `owliabot wallet connect` for the given runtime.
 ///
 /// The token is passed via environment variable or stdin pipe rather than
@@ -213,6 +226,8 @@ fn run_owliabot_command(
                 .status()
         }
         OwliabotRuntime::Docker(container) => {
+            // Inside Docker, 127.0.0.1 refers to the container — rewrite to host.docker.internal
+            let docker_url = rewrite_url_for_docker(clawlet_url);
             // Pipe token via stdin to avoid exposure in docker process args
             let mut child = std::process::Command::new("docker")
                 .args([
@@ -223,7 +238,7 @@ fn run_owliabot_command(
                     "-c",
                     &format!(
                         "read _TOKEN && owliabot wallet connect --base-url '{}' --token \"$_TOKEN\"",
-                        clawlet_url
+                        docker_url
                     ),
                 ])
                 .stdin(std::process::Stdio::piped())
@@ -316,6 +331,14 @@ pub async fn run(
                 OwliabotRuntime::Npx => "npx owliabot".to_string(),
             };
             eprintln!("🔗 正在连接 OwliaBot (Connecting to OwliaBot via {label})...");
+            if matches!(runtime, OwliabotRuntime::Docker(_)) {
+                let docker_url = rewrite_url_for_docker(&clawlet_url);
+                if docker_url != clawlet_url {
+                    eprintln!(
+                        "   📦 Docker 模式：地址已重写为 {docker_url} (rewritten for container access)"
+                    );
+                }
+            }
 
             let status = run_owliabot_command(&runtime, &clawlet_url, &resp.token);
 
@@ -347,6 +370,7 @@ pub async fn run(
 }
 
 fn print_manual_instructions(clawlet_url: &str, token: &str) {
+    let docker_url = rewrite_url_for_docker(clawlet_url);
     eprintln!();
     eprintln!("  # 直接运行 (Run directly):");
     eprintln!(
@@ -355,8 +379,9 @@ fn print_manual_instructions(clawlet_url: &str, token: &str) {
     eprintln!();
     eprintln!("  # 或通过 Docker (Or via Docker):");
     eprintln!(
-        "  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --base-url {clawlet_url} --token \"$T\"'"
+        "  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --base-url {docker_url} --token \"$T\"'"
     );
+    eprintln!("  # ⚠️  Linux 需要启动容器时加 --add-host=host.docker.internal:host-gateway");
     eprintln!();
     eprintln!("  # 或通过 npx (Or via npx):");
     eprintln!(

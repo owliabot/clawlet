@@ -145,7 +145,7 @@ enum OwliabotRuntime {
     Npx,
 }
 
-/// Detect how OwliaBot is running. Priority: Docker > PATH > npx.
+/// Detect how OwliaBot is running. Priority: Docker > npx > PATH.
 fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
     // 1. Running Docker container named "owliabot" (highest priority)
     if which::which("docker").is_ok() {
@@ -160,14 +160,14 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
         }
     }
 
-    // 2. Direct binary in PATH
-    if which::which("owliabot").is_ok() {
-        return Some(OwliabotRuntime::Binary);
-    }
-
-    // 3. npx available
+    // 2. npx (npm package)
     if which::which("npx").is_ok() {
         return Some(OwliabotRuntime::Npx);
+    }
+
+    // 3. Direct binary in PATH
+    if which::which("owliabot").is_ok() {
+        return Some(OwliabotRuntime::Binary);
     }
 
     None
@@ -184,12 +184,22 @@ fn run_owliabot_command(
     // Don't pass --base-url; owliabot resolves the clawlet endpoint via its
     // own config. This avoids Docker networking issues where 127.0.0.1 inside
     // a container doesn't reach the host.
+    let masked = if token.len() > 8 {
+        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+    } else {
+        "****".to_string()
+    };
+
     match runtime {
-        OwliabotRuntime::Binary => std::process::Command::new("sh")
-            .env("_CLAWLET_TOKEN", token)
-            .args(["-c", "owliabot wallet connect --token \"$_CLAWLET_TOKEN\""])
-            .status(),
+        OwliabotRuntime::Binary => {
+            eprintln!("  $ owliabot wallet connect --token {masked}");
+            std::process::Command::new("sh")
+                .env("_CLAWLET_TOKEN", token)
+                .args(["-c", "owliabot wallet connect --token \"$_CLAWLET_TOKEN\""])
+                .status()
+        }
         OwliabotRuntime::Docker(container) => {
+            eprintln!("  $ docker exec -i {container} owliabot wallet connect --token {masked}");
             let mut child = std::process::Command::new("docker")
                 .args([
                     "exec",
@@ -207,13 +217,16 @@ fn run_owliabot_command(
             }
             child.wait()
         }
-        OwliabotRuntime::Npx => std::process::Command::new("sh")
-            .env("_CLAWLET_TOKEN", token)
-            .args([
-                "-c",
-                "npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"",
-            ])
-            .status(),
+        OwliabotRuntime::Npx => {
+            eprintln!("  $ npx owliabot wallet connect --token {masked}");
+            std::process::Command::new("sh")
+                .env("_CLAWLET_TOKEN", token)
+                .args([
+                    "-c",
+                    "npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"",
+                ])
+                .status()
+        }
     }
 }
 

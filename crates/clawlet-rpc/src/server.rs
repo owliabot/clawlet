@@ -482,7 +482,7 @@ impl ClawletApiServer for RpcServerImpl {
 
     async fn sign_message(&self, params: SignMessageRequest) -> Result<Value, ErrorObjectOwned> {
         let token = Self::get_token();
-        if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
+        if let Err(e) = check_auth(&self.state, &token, TokenScope::Trade) {
             return Err(auth_error_to_rpc(e));
         }
 

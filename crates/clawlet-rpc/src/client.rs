@@ -250,6 +250,24 @@ impl RpcClient {
         Ok(result)
     }
 
+    /// Sign a message using EIP-191 personal sign.
+    ///
+    /// `encoding` should be `"utf8"` or `"hex"`. If `None`, defaults to `"utf8"`.
+    pub async fn sign_message(
+        &self,
+        message: &str,
+        encoding: Option<&str>,
+    ) -> Result<crate::types::SignMessageResponse, ClientError> {
+        let client = self.build_client()?;
+        let mut req = serde_json::json!({ "message": message });
+        if let Some(enc) = encoding {
+            req["encoding"] = serde_json::Value::String(enc.to_string());
+        }
+        let result: crate::types::SignMessageResponse =
+            client.request("sign_message", rpc_params![req]).await?;
+        Ok(result)
+    }
+
     /// Send a raw JSON-RPC request.
     pub async fn call_raw(&self, method: &str, params: Value) -> Result<Value, ClientError> {
         let client = self.build_client()?;

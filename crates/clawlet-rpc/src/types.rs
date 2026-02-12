@@ -128,7 +128,7 @@ impl RpcMethod {
             RpcMethod::Transfer | RpcMethod::Execute | RpcMethod::SendRaw => {
                 Some(TokenScope::Trade)
             }
-            RpcMethod::SignMessage => Some(TokenScope::Read),
+            RpcMethod::SignMessage => Some(TokenScope::Trade),
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
@@ -382,8 +382,16 @@ pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
 /// Request body for signing a message (EIP-191 personal sign).
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SignMessageRequest {
-    /// Message to sign — hex-encoded (0x-prefixed) or raw UTF-8 string.
+    /// Message to sign — interpreted according to the `encoding` field.
     pub message: String,
+    /// Encoding of the message: `"utf8"` (default) or `"hex"`.
+    /// When `"hex"`, an optional `0x` prefix is stripped before decoding.
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+}
+
+fn default_encoding() -> String {
+    "utf8".to_string()
 }
 
 /// Response for sign_message.
@@ -559,7 +567,7 @@ mod tests {
         assert_eq!(RpcMethod::SendRaw.required_scope(), Some(TokenScope::Trade));
         assert_eq!(
             RpcMethod::SignMessage.required_scope(),
-            Some(TokenScope::Read)
+            Some(TokenScope::Trade)
         );
         assert_eq!(RpcMethod::AuthGrant.required_scope(), None);
         assert_eq!(RpcMethod::AuthList.required_scope(), None);

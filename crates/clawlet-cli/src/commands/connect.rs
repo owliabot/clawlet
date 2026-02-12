@@ -145,14 +145,9 @@ enum OwliabotRuntime {
     Npx,
 }
 
-/// Detect how OwliaBot is running. Priority: PATH > Docker > npx.
+/// Detect how OwliaBot is running. Priority: Docker > PATH > npx.
 fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
-    // 1. Direct binary in PATH
-    if which::which("owliabot").is_ok() {
-        return Some(OwliabotRuntime::Binary);
-    }
-
-    // 2. Running Docker container named "owliabot"
+    // 1. Running Docker container named "owliabot" (highest priority)
     if which::which("docker").is_ok() {
         if let Ok(output) = std::process::Command::new("docker")
             .args(["ps", "--filter", "name=owliabot", "--format", "{{.Names}}"])
@@ -163,6 +158,11 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
                 return Some(OwliabotRuntime::Docker(container.to_string()));
             }
         }
+    }
+
+    // 2. Direct binary in PATH
+    if which::which("owliabot").is_ok() {
+        return Some(OwliabotRuntime::Binary);
     }
 
     // 3. npx available

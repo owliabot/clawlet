@@ -173,10 +173,9 @@ fn encrypt_mnemonic(mnemonic: &str, password: &str) -> Result<KeystoreJson> {
     let mut nonce_bytes = [0u8; 12];
     rng.fill_bytes(&mut nonce_bytes);
 
-    // Derive key with scrypt — matches eth-keystore defaults: N=2^13=8192, r=8, p=1 (~8 MB).
-    // Previous N=2^17 used ~128 MB and caused OOM kills on constrained systems.
+    // Derive key with scrypt — N=2^17=131072, r=8, p=1 (~128 MB) per OWASP recommendations.
     let params =
-        scrypt::Params::new(13, 8, 1, 32).map_err(|e| KeystoreError::Crypto(e.to_string()))?;
+        scrypt::Params::new(17, 8, 1, 32).map_err(|e| KeystoreError::Crypto(e.to_string()))?;
     let mut derived_key = [0u8; 32];
     scrypt(password.as_bytes(), &salt, &params, &mut derived_key)
         .map_err(|e| KeystoreError::Crypto(e.to_string()))?;
@@ -201,7 +200,7 @@ fn encrypt_mnemonic(mnemonic: &str, password: &str) -> Result<KeystoreJson> {
         crypto: CryptoSection {
             kdf: "scrypt".to_string(),
             kdfparams: KdfParams {
-                n: 8192,
+                n: 131072,
                 r: 8,
                 p: 1,
                 dklen: 32,

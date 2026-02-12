@@ -1,7 +1,7 @@
 //! `clawlet connect` — one-click wallet connection for OwliaBot.
 //!
 //! Flow:
-//! 1. Prompt admin password via native UI dialog (or terminal fallback)
+//! 1. Prompt wallet password via native UI dialog (or terminal fallback)
 //! 2. Call auth.grant RPC to get a session token (scope: trade, never expires)
 //! 3. Call `owliabot wallet connect` to register the token
 //! 4. Print result
@@ -48,7 +48,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
         let child = tokio::process::Command::new("osascript")
             .args([
                 "-e",
-                r#"display dialog "请输入钱包管理员密码 (Enter admin password)" with title "Clawlet Connect" default answer "" with hidden answer with icon caution"#,
+                r#"display dialog "请输入钱包密码 (Enter wallet password)" with title "Clawlet Connect" default answer "" with hidden answer with icon caution"#,
             ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -102,7 +102,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
             let child = tokio::process::Command::new("kdialog")
                 .args([
                     "--password",
-                    "请输入钱包管理员密码 (Enter admin password)",
+                    "请输入钱包密码 (Enter wallet password)",
                     "--title",
                     "Clawlet Connect",
                 ])
@@ -128,7 +128,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
 
     // Terminal fallback
     let password = tokio::task::spawn_blocking(|| {
-        super::read_password("管理员密码 (Admin password): ", "CLAWLET_PASSWORD")
+        super::read_password("钱包密码 (Wallet password): ", "CLAWLET_PASSWORD")
             .map_err(|e| std::io::Error::other(e.to_string()))
     })
     .await??;
@@ -262,7 +262,7 @@ pub async fn run(
     }
 
     // Step 1: Prompt for password
-    eprintln!("🔐 请输入管理员密码以授权连接 (Enter admin password to authorize connection)...");
+    eprintln!("🔐 请输入钱包密码以授权连接 (Enter wallet password to authorize connection)...");
     let password = prompt_password_gui().await?;
 
     // Step 2: Call auth.grant RPC

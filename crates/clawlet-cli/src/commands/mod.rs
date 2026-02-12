@@ -7,6 +7,7 @@ pub mod export_mnemonic;
 pub mod init;
 pub mod send;
 pub mod serve;
+pub mod sign_message;
 pub mod start;
 pub mod stop;
 pub mod transfer;

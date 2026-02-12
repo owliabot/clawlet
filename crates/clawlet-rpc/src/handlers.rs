@@ -3,9 +3,11 @@
 //! Each handler processes a deserialized request and returns a serialized response.
 //! Handlers are transport-agnostic — they work with `&AppState` and serde types.
 
+use std::str::FromStr;
+
 use serde_json::json;
 
-use alloy::primitives::U256;
+use alloy::primitives::{Bytes, U256};
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
@@ -18,8 +20,9 @@ use clawlet_signer::Signer;
 use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ChainInfo, ChainsResponse,
-    ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse,
-    SkillSummary, SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
+    ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, MessageEncoding, SendRawRequest,
+    SendRawResponse, SignMessageRequest, SignMessageResponse, SkillSummary, SkillsResponse,
+    TokenSpec, TransferRequest, TransferResponse, TransferStatus,
 };
 
 // ---- Handlers ----
@@ -53,6 +56,78 @@ pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError>
     let address = state.signer.address();
 
     Ok(AddressResponse { address })
+}
+
+/// Sign a message using EIP-191 personal sign.
+///
+/// The `encoding` field on the request controls how `message` is interpreted:
+/// - `"utf8"` (default): raw UTF-8 bytes.
+/// - `"hex"`: hex-decode the string (optional `0x` prefix is stripped).
+pub fn handle_sign_message(
+    state: &AppState,
+    params: SignMessageRequest,
+) -> Result<SignMessageResponse, HandlerError> {
+    let bytes = match params.encoding {
+        MessageEncoding::Hex => {
+            let b = Bytes::from_str(&params.message).map_err(|e| {
+                // Audit: bad hex decode
+                {
+                    let event = AuditEvent::new(
+                        "sign_message",
+                        json!({
+                            "error": format!("invalid hex: {e}"),
+                            "encoding": "hex",
+                        }),
+                        "error",
+                    );
+                    if let Ok(mut audit) = state.audit.lock() {
+                        let _ = audit.log_event(event);
+                    }
+                }
+                HandlerError::BadRequest(format!("invalid hex message: {e}"))
+            })?;
+            b.to_vec()
+        }
+        MessageEncoding::Utf8 => params.message.as_bytes().to_vec(),
+    };
+
+    let sig = state.signer.sign_message(&bytes).map_err(|e| {
+        // Audit: signer failure
+        {
+            let event = AuditEvent::new(
+                "sign_message",
+                json!({
+                    "error": format!("signing error: {e}"),
+                }),
+                "error",
+            );
+            if let Ok(mut audit) = state.audit.lock() {
+                let _ = audit.log_event(event);
+            }
+        }
+        HandlerError::Internal(format!("signing error: {e}"))
+    })?;
+
+    let signature = format!("0x{}", hex::encode(sig.to_bytes()));
+    let address = format!("{}", state.signer.address());
+
+    // Audit: success
+    {
+        let event = AuditEvent::new(
+            "sign_message",
+            json!({
+                "address": &address,
+                "message_len": bytes.len(),
+                "encoding": params.encoding,
+            }),
+            "ok",
+        );
+        if let Ok(mut audit) = state.audit.lock() {
+            let _ = audit.log_event(event);
+        }
+    }
+
+    Ok(SignMessageResponse { signature, address })
 }
 
 /// Query ETH balance for the given address and chain.
@@ -557,5 +632,103 @@ mod tests {
     fn from_raw_usdc() {
         let amount = U256::from(1_000_000_000u64);
         assert_eq!(from_raw(amount, 6).to_string(), "1000");
+    }
+
+    // ---- handle_sign_message tests ----
+
+    /// Build a minimal `AppState` for sign_message handler tests.
+    fn test_app_state() -> AppState {
+        use clawlet_core::audit::AuditLogger;
+        use clawlet_core::auth::SessionStore;
+        use clawlet_core::config::AuthConfig;
+        use clawlet_core::policy::{Policy, PolicyEngine};
+        use clawlet_signer::signer::LocalSigner;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let key_bytes = [1u8; 32];
+        let signer = LocalSigner::from_bytes(&key_bytes).unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let audit = AuditLogger::new(tmp.path()).unwrap();
+
+        let policy = PolicyEngine::new(Policy {
+            daily_transfer_limit_usd: 1000.0,
+            per_tx_limit_usd: 100.0,
+            allowed_tokens: vec![],
+            allowed_chains: vec![],
+            require_approval_above_usd: None,
+        });
+
+        AppState {
+            policy: Arc::new(policy),
+            audit: Arc::new(Mutex::new(audit)),
+            adapters: Arc::new(std::collections::HashMap::new()),
+            session_store: Arc::new(RwLock::new(SessionStore::new())),
+            auth_config: AuthConfig::default(),
+            signer: Arc::new(signer),
+            skills_dir: std::path::PathBuf::from("/tmp/skills"),
+            keystore_path: std::path::PathBuf::from("/tmp/ks"),
+        }
+    }
+
+    #[test]
+    fn sign_message_utf8() {
+        let state = test_app_state();
+        let req = crate::types::SignMessageRequest {
+            message: "hello world".to_string(),
+            encoding: crate::types::MessageEncoding::Utf8,
+        };
+        let resp = handle_sign_message(&state, req).unwrap();
+        assert!(resp.signature.starts_with("0x"));
+        assert_eq!(resp.signature.len(), 2 + 130); // 0x + 65 bytes hex
+        assert!(!resp.address.is_empty());
+    }
+
+    #[test]
+    fn sign_message_hex_encoding() {
+        let state = test_app_state();
+        // "hello" = 68656c6c6f
+        let req = crate::types::SignMessageRequest {
+            message: "0x68656c6c6f".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
+        };
+        let resp = handle_sign_message(&state, req).unwrap();
+        assert!(resp.signature.starts_with("0x"));
+        assert_eq!(resp.signature.len(), 2 + 130);
+
+        // Same result without 0x prefix
+        let req2 = crate::types::SignMessageRequest {
+            message: "68656c6c6f".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
+        };
+        let resp2 = handle_sign_message(&state, req2).unwrap();
+        assert_eq!(resp.signature, resp2.signature);
+    }
+
+    #[test]
+    fn sign_message_invalid_hex() {
+        let state = test_app_state();
+        let req = crate::types::SignMessageRequest {
+            message: "0xZZZZ".to_string(),
+            encoding: crate::types::MessageEncoding::Hex,
+        };
+        let err = handle_sign_message(&state, req).unwrap_err();
+        assert!(matches!(err, HandlerError::BadRequest(_)));
+    }
+
+    #[test]
+    fn sign_message_response_shape() {
+        let state = test_app_state();
+        let req = crate::types::SignMessageRequest {
+            message: "test".to_string(),
+            encoding: crate::types::MessageEncoding::Utf8,
+        };
+        let resp = handle_sign_message(&state, req).unwrap();
+        // Verify JSON serialization shape
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val.get("signature").is_some());
+        assert!(val.get("address").is_some());
+        assert!(val["signature"].as_str().unwrap().starts_with("0x"));
+        assert!(val["address"].as_str().unwrap().starts_with("0x"));
     }
 }

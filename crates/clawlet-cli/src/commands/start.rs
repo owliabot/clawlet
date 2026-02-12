@@ -1,14 +1,15 @@
-//! `clawlet start` — quick start combining init, auth grant, and serve.
+//! `clawlet start` — quick start combining init and serve.
 //!
 //! This command provides a streamlined flow for getting started:
 //! 1. Initialize keystore if needed (or unlock existing)
-//! 2. Grant a session token to the specified agent
-//! 3. Start the HTTP JSON-RPC server
+//! 2. Start the HTTP JSON-RPC server
+//!
+//! Authentication is handled separately via the `connect` command.
 //!
 //! Like `serve`, the command is split into [`prepare`] (synchronous) and
 //! [`start`] (asynchronous) so that daemon mode can fork in between.
 
-use clawlet_core::auth::{SessionStore, TokenScope};
+use clawlet_core::auth::SessionStore;
 use clawlet_core::config::Config;
 use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::hd;
@@ -87,12 +88,10 @@ pub struct PreparedStart {
     pub session_store: SessionStore,
 }
 
-/// Synchronous preparation: init/unlock keystore, grant token, load config.
+/// Synchronous preparation: init/unlock keystore, load config.
 ///
 /// Must run before daemonizing (needs interactive terminal for password prompt).
 pub fn prepare(
-    agent: String,
-    scope: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
@@ -100,11 +99,6 @@ pub fn prepare(
     let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
     let config_path = data_dir.join("config.yaml");
-
-    // Parse scope
-    let token_scope: TokenScope = scope
-        .parse()
-        .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
 
     // Check if already initialized
     let already_initialized = keystore_dir.exists() && {
@@ -220,24 +214,7 @@ pub fn prepare(
 
     // Create session store with disk persistence
     let sessions_path = data_dir.join("sessions.json");
-    let mut session_store = SessionStore::with_persistence(sessions_path);
-
-    // Get current Unix UID
-    #[cfg(unix)]
-    let uid = unsafe { libc::getuid() };
-    #[cfg(not(unix))]
-    let uid = 0u32;
-
-    // Grant the token
-    let grant = session_store.grant(&agent, token_scope, None, uid);
-    let token = &grant.token;
-
-    eprintln!();
-    eprintln!(
-        "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: never)",
-        agent, scope
-    );
-    println!("   {token}");
+    let session_store = SessionStore::with_persistence(sessions_path);
 
     // Determine listen address
     let listen_addr = addr.unwrap_or_else(|| {
@@ -304,13 +281,11 @@ pub async fn start_notify(
 
 /// Run the `start` subcommand (non-daemon mode).
 pub async fn run(
-    agent: String,
-    scope: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare(agent, scope, data_dir, addr, from_mnemonic)?;
+    let prepared = prepare(data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.

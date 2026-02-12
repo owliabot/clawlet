@@ -160,16 +160,8 @@ enum Commands {
         expires: String,
     },
 
-    /// Quick start: init (if needed) + grant token + serve.
+    /// Quick start: init (if needed) + serve.
     Start {
-        /// Agent identifier to grant token to.
-        #[arg(long)]
-        agent: String,
-
-        /// Token scope: read, trade, or admin (default: trade).
-        #[arg(long, default_value = "trade")]
-        scope: String,
-
         /// Data directory (default: ~/.clawlet).
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -476,13 +468,11 @@ fn run_serve_daemon(
 /// Daemon path for `start --daemon`.
 #[cfg(unix)]
 fn run_start_daemon(
-    agent: String,
-    scope: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = commands::start::prepare(agent, scope, data_dir, addr, from_mnemonic)?;
+    let prepared = commands::start::prepare(data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
@@ -515,8 +505,6 @@ fn run_start_daemon(
 
 #[cfg(not(unix))]
 fn run_start_daemon(
-    _agent: String,
-    _scope: String,
     _data_dir: Option<PathBuf>,
     _addr: Option<SocketAddr>,
     _from_mnemonic: bool,
@@ -562,13 +550,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {
-            agent,
-            scope,
             data_dir,
             addr,
             from_mnemonic,
             ..
-        } => commands::start::run(agent, scope, data_dir, addr, from_mnemonic).await,
+        } => commands::start::run(data_dir, addr, from_mnemonic).await,
     }
 }
 
@@ -588,19 +574,12 @@ fn main() {
             daemon: true,
         } => Some(run_serve_daemon(config.clone(), *addr)),
         Commands::Start {
-            agent,
-            scope,
             data_dir,
             addr,
             daemon: true,
             from_mnemonic,
-        } => Some(run_start_daemon(
-            agent.clone(),
-            scope.clone(),
-            data_dir.clone(),
-            *addr,
-            *from_mnemonic,
-        )),
+            ..
+        } => Some(run_start_daemon(data_dir.clone(), *addr, *from_mnemonic)),
         _ => None,
     };
 

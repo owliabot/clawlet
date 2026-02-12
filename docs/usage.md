@@ -42,7 +42,7 @@ curl -X POST http://127.0.0.1:9100/rpc \
 
 ```bash
 # 创建独立 clawlet 系统用户，密钥隔离
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | sudo bash -s -- --isolated
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh -o /tmp/clawlet-install.sh && sudo bash /tmp/clawlet-install.sh --isolated
 
 # 安装后一键启动
 sudo -H -u clawlet clawlet start --agent owliabot --daemon
@@ -54,7 +54,7 @@ sudo -H -u clawlet clawlet start --agent owliabot --daemon
 
 ```bash
 # 下载预编译二进制（当前用户目录）
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/install.sh -o /tmp/clawlet-install.sh && bash /tmp/clawlet-install.sh
 
 # 或者指定选项
 ./scripts/install.sh --prefix ~/.local    # 自定义安装路径
@@ -85,7 +85,7 @@ cargo install --git https://github.com/owliabot/clawlet clawlet-cli
 ### 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/owliabot/clawlet/main/scripts/uninstall.sh -o /tmp/clawlet-uninstall.sh && bash /tmp/clawlet-uninstall.sh
 ```
 
 ### 验证安装

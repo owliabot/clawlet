@@ -154,10 +154,6 @@ enum Commands {
         /// Token scope: read, trade, or admin (default: trade).
         #[arg(long, default_value = "trade")]
         scope: String,
-
-        /// Session duration (default: 7d).
-        #[arg(long, default_value = "7d")]
-        expires: String,
     },
 
     /// Quick start: init (if needed) + grant token + serve.
@@ -553,12 +549,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             addr,
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
-        Commands::Connect {
-            addr,
-            agent,
-            scope,
-            expires,
-        } => commands::connect::run(addr, agent, scope, expires).await,
+        Commands::Connect { addr, agent, scope } => {
+            commands::connect::run(addr, agent, scope).await
+        }
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {

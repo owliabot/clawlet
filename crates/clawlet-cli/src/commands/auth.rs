@@ -196,7 +196,7 @@ async fn run_grant(
     let expires_hours = parse_duration_hours(&expires)?;
 
     // Prompt for password
-    let password = rpassword::prompt_password_stderr("Enter admin password: ")?;
+    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthGrantRequest {
@@ -226,7 +226,7 @@ async fn run_grant(
 /// List all active sessions.
 async fn run_list(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = rpassword::prompt_password_stderr("Enter admin password: ")?;
+    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthListRequest { password };
@@ -263,7 +263,7 @@ async fn run_revoke(
     addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = rpassword::prompt_password_stderr("Enter admin password: ")?;
+    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
 
     // Build request
     let req = AuthRevokeRequest {
@@ -288,13 +288,12 @@ async fn run_revoke(
 /// Revoke all sessions.
 async fn run_revoke_all(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
-    let password = rpassword::prompt_password_stderr("Enter admin password: ")?;
+    let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
 
     // Confirm
     eprint!("Are you sure you want to revoke ALL sessions? [y/N]: ");
-    let mut confirm = String::new();
-    std::io::stdin().read_line(&mut confirm)?;
-    if !confirm.trim().eq_ignore_ascii_case("y") {
+    let confirm = super::read_line_or_default("n")?;
+    if !confirm.eq_ignore_ascii_case("y") {
         eprintln!("Cancelled.");
         return Ok(());
     }

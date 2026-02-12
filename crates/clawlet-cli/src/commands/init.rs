@@ -114,7 +114,7 @@ pub fn run(
                 .into());
             }
 
-            let password = rpassword::prompt_password_stderr("Enter password: ")?;
+            let password = super::read_password("Enter password: ", "CLAWLET_PASSWORD")?;
             if password.is_empty() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -133,7 +133,7 @@ pub fn run(
                 continue;
             }
 
-            let confirm = rpassword::prompt_password_stderr("Confirm password: ")?;
+            let confirm = super::read_password("Confirm password: ", "CLAWLET_PASSWORD")?;
             if confirm.is_empty() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -155,9 +155,9 @@ pub fn run(
         // Prompt for existing mnemonic in alternate screen
         let mnemonic = crate::tui::with_alternate_screen(|| {
             eprintln!("Enter your BIP-39 mnemonic phrase:");
-            let mut mnemonic = String::new();
-            std::io::stdin().read_line(&mut mnemonic)?;
-            Ok(mnemonic.trim().to_string())
+            let mnemonic = super::read_line_or_default("")
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok(mnemonic)
         })?;
 
         // Store the mnemonic in the keystore

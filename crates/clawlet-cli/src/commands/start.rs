@@ -146,8 +146,10 @@ pub fn prepare(
 
     let (signing_key, _address) = if already_initialized {
         // Already initialized - ask for password
-        let password: String =
-            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
+        let password: String = super::read_password(
+            "🔐 请输入钱包密码 (Enter wallet password): ",
+            "CLAWLET_PASSWORD",
+        )?;
 
         let keys = Keystore::list(&keystore_dir)?;
         let key_path = &keys[0];
@@ -162,10 +164,14 @@ pub fn prepare(
         (key, addr)
     } else {
         // New init — password in normal terminal, mnemonic in alternate screen
-        let password: String =
-            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
-        let confirm: String =
-            rpassword::prompt_password_stderr("🔐 确认钱包密码 (Confirm wallet password): ")?;
+        let password: String = super::read_password(
+            "🔐 请输入钱包密码 (Enter wallet password): ",
+            "CLAWLET_PASSWORD",
+        )?;
+        let confirm: String = super::read_password(
+            "🔐 确认钱包密码 (Confirm wallet password): ",
+            "CLAWLET_PASSWORD",
+        )?;
 
         if password != confirm {
             return Err("密码不匹配 (passwords do not match)".into());
@@ -183,9 +189,7 @@ pub fn prepare(
         let mnemonic = if from_mnemonic {
             eprintln!();
             eprint!("请输入 BIP-39 助记词 (Enter your BIP-39 mnemonic phrase): ");
-            let mut mnemonic_input = String::new();
-            std::io::stdin().read_line(&mut mnemonic_input)?;
-            let mnemonic_input = mnemonic_input.trim().to_string();
+            let mnemonic_input = super::read_line_or_default("")?;
             if mnemonic_input.is_empty() {
                 return Err("mnemonic cannot be empty".into());
             }

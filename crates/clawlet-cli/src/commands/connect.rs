@@ -128,7 +128,8 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
 
     // Terminal fallback
     let password = tokio::task::spawn_blocking(|| {
-        rpassword::prompt_password_stderr("管理员密码 (Admin password): ")
+        super::read_password("管理员密码 (Admin password): ", "CLAWLET_PASSWORD")
+            .map_err(|e| std::io::Error::other(e.to_string()))
     })
     .await??;
     Ok(password)

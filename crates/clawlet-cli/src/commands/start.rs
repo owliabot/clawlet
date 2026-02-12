@@ -136,7 +136,7 @@ pub fn prepare(
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
 
     // Parse expiry duration
-    let expires_duration = parse_duration(&expires)?;
+    let _expires_duration = parse_duration(&expires)?;
 
     // Check if already initialized
     let already_initialized = keystore_dir.exists() && {
@@ -261,16 +261,18 @@ pub fn prepare(
     let uid = 0u32;
 
     // Grant the token
-    let grant = session_store.grant(&agent, token_scope, expires_duration, uid);
+    let grant = session_store.grant(&agent, token_scope, None, uid);
     let token = &grant.token;
-    let expires_at = grant.expires_at;
 
     eprintln!();
     eprintln!(
         "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: {})",
         agent,
         scope,
-        expires_at.format("%Y-%m-%d")
+        match grant.expires_at {
+            Some(exp) => exp.format("%Y-%m-%d").to_string(),
+            None => "never".to_string(),
+        }
     );
     println!("   {token}");
 

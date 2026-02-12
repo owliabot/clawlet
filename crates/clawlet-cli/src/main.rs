@@ -170,10 +170,6 @@ enum Commands {
         #[arg(long, default_value = "trade")]
         scope: String,
 
-        /// Token expiry duration (default: 7d).
-        #[arg(long, default_value = "7d")]
-        expires: String,
-
         /// Data directory (default: ~/.clawlet).
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -482,12 +478,11 @@ fn run_serve_daemon(
 fn run_start_daemon(
     agent: String,
     scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
+    let prepared = commands::start::prepare(agent, scope, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
@@ -522,7 +517,6 @@ fn run_start_daemon(
 fn run_start_daemon(
     _agent: String,
     _scope: String,
-    _expires: String,
     _data_dir: Option<PathBuf>,
     _addr: Option<SocketAddr>,
     _from_mnemonic: bool,
@@ -570,12 +564,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Start {
             agent,
             scope,
-            expires,
             data_dir,
             addr,
             from_mnemonic,
             ..
-        } => commands::start::run(agent, scope, expires, data_dir, addr, from_mnemonic).await,
+        } => commands::start::run(agent, scope, data_dir, addr, from_mnemonic).await,
     }
 }
 
@@ -597,7 +590,6 @@ fn main() {
         Commands::Start {
             agent,
             scope,
-            expires,
             data_dir,
             addr,
             daemon: true,
@@ -605,7 +597,6 @@ fn main() {
         } => Some(run_start_daemon(
             agent.clone(),
             scope.clone(),
-            expires.clone(),
             data_dir.clone(),
             *addr,
             *from_mnemonic,

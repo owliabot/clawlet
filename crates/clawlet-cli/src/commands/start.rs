@@ -8,16 +8,14 @@
 //! Like `serve`, the command is split into [`prepare`] (synchronous) and
 //! [`start`] (asynchronous) so that daemon mode can fork in between.
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::time::Duration;
-
 use clawlet_core::auth::{SessionStore, TokenScope};
 use clawlet_core::config::Config;
 use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Default policy YAML template.
 const DEFAULT_POLICY: &str = r#"# Clawlet transfer policy
@@ -81,32 +79,6 @@ auth:
     )
 }
 
-/// Parse a duration string like "1y", "30d", "24h" into a Duration.
-fn parse_duration(s: &str) -> Result<Duration, Box<dyn std::error::Error>> {
-    let s = s.trim().to_lowercase();
-
-    if let Some(years) = s.strip_suffix('y') {
-        let years: u64 = years.parse()?;
-        return Ok(Duration::from_secs(years * 365 * 24 * 3600));
-    }
-    if let Some(days) = s.strip_suffix('d') {
-        let days: u64 = days.parse()?;
-        return Ok(Duration::from_secs(days * 24 * 3600));
-    }
-    if let Some(hours) = s.strip_suffix('h') {
-        let hours: u64 = hours.parse()?;
-        return Ok(Duration::from_secs(hours * 3600));
-    }
-    if let Some(weeks) = s.strip_suffix('w') {
-        let weeks: u64 = weeks.parse()?;
-        return Ok(Duration::from_secs(weeks * 7 * 24 * 3600));
-    }
-
-    // Try parsing as plain seconds
-    let secs: u64 = s.parse()?;
-    Ok(Duration::from_secs(secs))
-}
-
 /// Everything needed to start the server, produced by [`prepare`].
 pub struct PreparedStart {
     pub config: Config,
@@ -121,7 +93,6 @@ pub struct PreparedStart {
 pub fn prepare(
     agent: String,
     scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
@@ -134,9 +105,6 @@ pub fn prepare(
     let token_scope: TokenScope = scope
         .parse()
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
-
-    // Parse expiry duration
-    let _expires_duration = parse_duration(&expires)?;
 
     // Check if already initialized
     let already_initialized = keystore_dir.exists() && {
@@ -266,13 +234,8 @@ pub fn prepare(
 
     eprintln!();
     eprintln!(
-        "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: {})",
-        agent,
-        scope,
-        match grant.expires_at {
-            Some(exp) => exp.format("%Y-%m-%d").to_string(),
-            None => "never".to_string(),
-        }
+        "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: never)",
+        agent, scope
     );
     println!("   {token}");
 
@@ -343,12 +306,11 @@ pub async fn start_notify(
 pub async fn run(
     agent: String,
     scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
+    let prepared = prepare(agent, scope, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.

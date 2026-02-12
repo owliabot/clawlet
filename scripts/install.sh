@@ -236,13 +236,6 @@ install_standard() {
     success "Binary installed to $BINARY_PATH (751)"
 }
 
-start_standard() {
-    echo ""
-    info "Starting clawlet..."
-    echo ""
-    "$BINARY_PATH" start --agent owliabot
-}
-
 # === Isolated Mode Install ===
 
 create_system_user_linux() {
@@ -432,34 +425,6 @@ print_isolated_post_install() {
     echo ""
 }
 
-start_isolated() {
-    local clawlet_home
-    local os
-    os=$(detect_os)
-
-    case "$os" in
-        linux)  clawlet_home=$(eval echo "~$CLAWLET_USER") ;;
-        darwin) clawlet_home="/var/$CLAWLET_USER" ;;
-    esac
-
-    info "Starting clawlet daemon..."
-    echo ""
-    sudo -H -u "$CLAWLET_USER" "$BINARY_PATH" start --agent owliabot --daemon
-
-    echo ""
-    echo "Useful commands:"
-    echo ""
-    echo "  # View logs:"
-    echo "  sudo tail -f $clawlet_home/.clawlet/clawlet.log"
-    echo ""
-    echo "  # Stop daemon:"
-    echo "  sudo -H -u $CLAWLET_USER $BINARY_NAME stop"
-    echo ""
-    echo "  # Clear sudo cache (security best practice):"
-    echo "  sudo -k"
-    echo ""
-}
-
 install_isolated() {
     local os
     os=$(detect_os)
@@ -493,9 +458,6 @@ install_isolated() {
 
     # Print post-install message
     print_isolated_post_install
-
-    # Auto-start daemon
-    start_isolated
 }
 
 # === Main ===
@@ -516,7 +478,6 @@ main() {
         install_isolated
     else
         install_standard
-        start_standard
     fi
 }
 

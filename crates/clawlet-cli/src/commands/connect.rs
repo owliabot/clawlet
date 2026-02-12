@@ -104,8 +104,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
             if let Ok(child) = child {
                 match timeout(DIALOG_TIMEOUT, child.wait_with_output()).await {
                     Ok(Ok(output)) if output.status.success() => {
-                        let password =
-                            String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         return Ok(password);
                     }
                     Err(_) => {
@@ -132,8 +131,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
             if let Ok(child) = child {
                 match timeout(DIALOG_TIMEOUT, child.wait_with_output()).await {
                     Ok(Ok(output)) if output.status.success() => {
-                        let password =
-                            String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         return Ok(password);
                     }
                     Err(_) => {
@@ -146,9 +144,10 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
     }
 
     // Terminal fallback
-    let password =
-        tokio::task::spawn_blocking(|| rpassword::prompt_password_stderr("管理员密码 (Admin password): "))
-            .await??;
+    let password = tokio::task::spawn_blocking(|| {
+        rpassword::prompt_password_stderr("管理员密码 (Admin password): ")
+    })
+    .await??;
     Ok(password)
 }
 
@@ -235,18 +234,16 @@ fn run_owliabot_command(
             }
             child.wait()
         }
-        OwliabotRuntime::Npx => {
-            std::process::Command::new("sh")
-                .env("_CLAWLET_TOKEN", token)
-                .args([
-                    "-c",
-                    &format!(
-                        "npx owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
-                        clawlet_url
-                    ),
-                ])
-                .status()
-        }
+        OwliabotRuntime::Npx => std::process::Command::new("sh")
+            .env("_CLAWLET_TOKEN", token)
+            .args([
+                "-c",
+                &format!(
+                    "npx owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
+                    clawlet_url
+                ),
+            ])
+            .status(),
     }
 }
 
@@ -278,7 +275,9 @@ pub async fn run(
         if !a.ip().is_loopback() {
             eprintln!("⚠️  警告 (Warning): 目标地址 {a} 不是 localhost，密码和 token 将通过未加密的 HTTP 传输！");
             eprintln!("   (Address {a} is not localhost — password and token will be sent over unencrypted HTTP!)");
-            eprintln!("   建议通过 SSH 隧道连接 (Recommended: use SSH tunnel): ssh -L 9100:{a} user@host");
+            eprintln!(
+                "   建议通过 SSH 隧道连接 (Recommended: use SSH tunnel): ssh -L 9100:{a} user@host"
+            );
             eprintln!();
         }
     }

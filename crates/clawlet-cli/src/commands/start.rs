@@ -146,7 +146,8 @@ pub fn prepare(
 
     let (signing_key, _address) = if already_initialized {
         // Already initialized - ask for password
-        let password: String = rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
+        let password: String =
+            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
 
         let keys = Keystore::list(&keystore_dir)?;
         let key_path = &keys[0];
@@ -161,8 +162,10 @@ pub fn prepare(
         (key, addr)
     } else {
         // New init — password in normal terminal, mnemonic in alternate screen
-        let password: String = rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
-        let confirm: String = rpassword::prompt_password_stderr("🔐 确认钱包密码 (Confirm wallet password): ")?;
+        let password: String =
+            rpassword::prompt_password_stderr("🔐 请输入钱包密码 (Enter wallet password): ")?;
+        let confirm: String =
+            rpassword::prompt_password_stderr("🔐 确认钱包密码 (Confirm wallet password): ")?;
 
         if password != confirm {
             return Err("密码不匹配 (passwords do not match)".into());
@@ -191,7 +194,9 @@ pub fn prepare(
             mnemonic_input
         } else {
             eprintln!();
-            eprintln!("🔑 未找到密钥库，正在创建新钱包 (No keystore found, creating new wallet)...");
+            eprintln!(
+                "🔑 未找到密钥库，正在创建新钱包 (No keystore found, creating new wallet)..."
+            );
             hd::generate_mnemonic()
         };
 

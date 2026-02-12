@@ -141,6 +141,25 @@ enum Commands {
         force: bool,
     },
 
+    /// Connect OwliaBot to this clawlet instance (one-click setup).
+    Connect {
+        /// Server address (default: 127.0.0.1:9100).
+        #[arg(long, short)]
+        addr: Option<SocketAddr>,
+
+        /// Agent identifier (default: "owliabot").
+        #[arg(long, default_value = "owliabot")]
+        agent: String,
+
+        /// Token scope: read, trade, or admin (default: trade).
+        #[arg(long, default_value = "trade")]
+        scope: String,
+
+        /// Session duration (default: 7d).
+        #[arg(long, default_value = "7d")]
+        expires: String,
+    },
+
     /// Quick start: init (if needed) + grant token + serve.
     Start {
         /// Agent identifier to grant token to.
@@ -533,6 +552,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             addr,
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
+        Commands::Connect {
+            addr,
+            agent,
+            scope,
+            expires,
+        } => commands::connect::run(addr, agent, scope, expires).await,
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {

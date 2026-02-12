@@ -129,7 +129,7 @@ fn derive_solana_seed(mnemonic: &str, index: u32) -> Result<[u8; 32]> {
         44u32 | 0x8000_0000,
         501u32 | 0x8000_0000,
         index | 0x8000_0000,
-        0u32 | 0x8000_0000,
+        0x8000_0000,
     ];
 
     for child_index in path_indices {

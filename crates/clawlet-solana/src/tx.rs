@@ -1,8 +1,8 @@
 //! Transaction building for Solana SOL and SPL token transfers.
 
-use solana_sdk::hash::Hash;
 use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
+#[allow(deprecated)]
 use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
 use spl_associated_token_account::get_associated_token_address;

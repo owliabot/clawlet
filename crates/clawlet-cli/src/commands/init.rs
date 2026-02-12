@@ -227,22 +227,13 @@ pub fn run(
 }
 
 /// Validate password strength, returning a list of unmet requirements.
+///
+/// Following MetaMask's approach, only a minimum length of 8 characters is
+/// required. No uppercase, lowercase, digit, or symbol constraints.
 pub(crate) fn validate_password_strength(password: &str) -> Vec<&'static str> {
     let mut issues = Vec::new();
     if password.chars().count() < 8 {
         issues.push("must be at least 8 characters");
-    }
-    if !password.chars().any(|c| c.is_ascii_uppercase()) {
-        issues.push("must contain at least 1 uppercase letter");
-    }
-    if !password.chars().any(|c| c.is_ascii_lowercase()) {
-        issues.push("must contain at least 1 lowercase letter");
-    }
-    if !password.chars().any(|c| c.is_ascii_digit()) {
-        issues.push("must contain at least 1 digit");
-    }
-    if !password.chars().any(|c| !c.is_alphanumeric()) {
-        issues.push("must contain at least 1 symbol (non-alphanumeric character)");
     }
     issues
 }
@@ -269,45 +260,29 @@ mod tests {
     #[test]
     fn password_strength_empty() {
         let issues = validate_password_strength("");
-        assert!(issues.contains(&"must be at least 8 characters"));
-        assert!(issues.contains(&"must contain at least 1 uppercase letter"));
-        assert!(issues.contains(&"must contain at least 1 lowercase letter"));
-        assert!(issues.contains(&"must contain at least 1 digit"));
-        assert!(issues.contains(&"must contain at least 1 symbol (non-alphanumeric character)"));
-    }
-
-    #[test]
-    fn password_strength_too_short() {
-        let issues = validate_password_strength("Aa1!aaa"); // 7 chars
         assert_eq!(issues, vec!["must be at least 8 characters"]);
     }
 
     #[test]
-    fn password_strength_missing_uppercase() {
-        let issues = validate_password_strength("aa1!aaaa");
-        assert!(issues.contains(&"must contain at least 1 uppercase letter"));
+    fn password_strength_too_short() {
+        let issues = validate_password_strength("abcdefg"); // 7 chars
+        assert_eq!(issues, vec!["must be at least 8 characters"]);
     }
 
     #[test]
-    fn password_strength_missing_lowercase() {
-        let issues = validate_password_strength("AA1!AAAA");
-        assert!(issues.contains(&"must contain at least 1 lowercase letter"));
+    fn password_strength_exact_min() {
+        let issues = validate_password_strength("abcdefgh"); // 8 chars, lowercase only
+        assert!(issues.is_empty());
     }
 
     #[test]
-    fn password_strength_missing_digit() {
-        let issues = validate_password_strength("Aa!aaaaa");
-        assert!(issues.contains(&"must contain at least 1 digit"));
+    fn password_strength_valid_lowercase_only() {
+        let issues = validate_password_strength("abcdefghij");
+        assert!(issues.is_empty());
     }
 
     #[test]
-    fn password_strength_missing_symbol() {
-        let issues = validate_password_strength("Aa1aaaaa");
-        assert!(issues.contains(&"must contain at least 1 symbol (non-alphanumeric character)"));
-    }
-
-    #[test]
-    fn password_strength_valid() {
+    fn password_strength_valid_complex() {
         let issues = validate_password_strength("Aa1!aaaa");
         assert!(issues.is_empty());
     }

@@ -13,9 +13,6 @@ pub struct AuthGrantRequest {
     pub agent_id: String,
     /// Scope for the session (read, trade, admin).
     pub scope: String,
-    /// Session duration in hours (optional, uses default if not specified).
-    #[serde(default)]
-    pub expires_hours: Option<u64>,
 }
 
 /// Response for auth grant.

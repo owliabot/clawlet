@@ -154,10 +154,6 @@ enum Commands {
         /// Token scope: read, trade, or admin (default: trade).
         #[arg(long, default_value = "trade")]
         scope: String,
-
-        /// Session duration (default: 7d).
-        #[arg(long, default_value = "7d")]
-        expires: String,
     },
 
     /// Quick start: init (if needed) + grant token + serve.
@@ -169,10 +165,6 @@ enum Commands {
         /// Token scope: read, trade, or admin (default: trade).
         #[arg(long, default_value = "trade")]
         scope: String,
-
-        /// Token expiry duration (default: 7d).
-        #[arg(long, default_value = "7d")]
-        expires: String,
 
         /// Data directory (default: ~/.clawlet).
         #[arg(long)]
@@ -482,12 +474,11 @@ fn run_serve_daemon(
 fn run_start_daemon(
     agent: String,
     scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
+    let prepared = commands::start::prepare(agent, scope, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
@@ -522,7 +513,6 @@ fn run_start_daemon(
 fn run_start_daemon(
     _agent: String,
     _scope: String,
-    _expires: String,
     _data_dir: Option<PathBuf>,
     _addr: Option<SocketAddr>,
     _from_mnemonic: bool,
@@ -559,23 +549,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             addr,
         } => commands::send::run(to, value, data, chain_id, gas_limit, addr, auth_token).await,
         Commands::Auth { config, command } => commands::auth::run(command, config).await,
-        Commands::Connect {
-            addr,
-            agent,
-            scope,
-            expires,
-        } => commands::connect::run(addr, agent, scope, expires).await,
+        Commands::Connect { addr, agent, scope } => {
+            commands::connect::run(addr, agent, scope).await
+        }
         Commands::ExportMnemonic { data_dir } => commands::export_mnemonic::run(data_dir),
         Commands::Stop { data_dir, force } => commands::stop::run(data_dir, force),
         Commands::Start {
             agent,
             scope,
-            expires,
             data_dir,
             addr,
             from_mnemonic,
             ..
-        } => commands::start::run(agent, scope, expires, data_dir, addr, from_mnemonic).await,
+        } => commands::start::run(agent, scope, data_dir, addr, from_mnemonic).await,
     }
 }
 
@@ -597,7 +583,6 @@ fn main() {
         Commands::Start {
             agent,
             scope,
-            expires,
             data_dir,
             addr,
             daemon: true,
@@ -605,7 +590,6 @@ fn main() {
         } => Some(run_start_daemon(
             agent.clone(),
             scope.clone(),
-            expires.clone(),
             data_dir.clone(),
             *addr,
             *from_mnemonic,

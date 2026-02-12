@@ -2,7 +2,7 @@
 //!
 //! Flow:
 //! 1. Prompt admin password via native UI dialog (or terminal fallback)
-//! 2. Call auth.grant RPC to get a session token (scope: trade, expires: 7d)
+//! 2. Call auth.grant RPC to get a session token (scope: trade, never expires)
 //! 3. Call `owliabot wallet connect` to register the token
 //! 4. Print result
 
@@ -25,29 +25,12 @@ struct AuthGrantRequest {
     password: String,
     agent_id: String,
     scope: String,
-    expires_hours: Option<u64>,
 }
 
 /// Response for auth grant RPC.
 #[derive(Deserialize)]
 struct AuthGrantResponse {
     token: String,
-    expires_at: String,
-}
-
-/// Parse a duration string like "24h", "7d", "1w" into hours.
-fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let s = s.trim().to_lowercase();
-    if let Some(hours) = s.strip_suffix('h') {
-        return Ok(hours.parse()?);
-    }
-    if let Some(days) = s.strip_suffix('d') {
-        return Ok(days.parse::<u64>()? * 24);
-    }
-    if let Some(weeks) = s.strip_suffix('w') {
-        return Ok(weeks.parse::<u64>()? * 24 * 7);
-    }
-    Ok(s.parse()?)
 }
 
 /// Prompt for a password using a native GUI dialog, falling back to terminal.
@@ -260,15 +243,11 @@ pub async fn run(
     addr: Option<SocketAddr>,
     agent: String,
     scope: String,
-    expires: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate scope
     let _: TokenScope = scope
         .parse()
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
-
-    // Parse duration
-    let expires_hours = parse_duration_hours(&expires)?;
 
     // Warn if target is not localhost — password and token travel over plaintext HTTP
     if let Some(a) = addr {
@@ -291,7 +270,6 @@ pub async fn run(
         password,
         agent_id: agent.clone(),
         scope: scope.clone(),
-        expires_hours: Some(expires_hours),
     };
 
     let client = create_client(addr);
@@ -299,10 +277,7 @@ pub async fn run(
     let result = client.call_raw("auth.grant", params).await?;
     let resp: AuthGrantResponse = serde_json::from_value(result)?;
 
-    eprintln!(
-        "✅ 令牌已授予 (Token granted) — agent: {agent}, scope: {scope}, expires: {}",
-        resp.expires_at
-    );
+    eprintln!("✅ 令牌已授予 (Token granted) — agent: {agent}, scope: {scope}, expires: never");
 
     // Step 3: Call owliabot wallet connect
     let server_addr = addr.map_or_else(|| DEFAULT_ADDR.to_string(), |a| a.to_string());

@@ -1,23 +1,22 @@
-//! `clawlet start` — quick start combining init, auth grant, and serve.
+//! `clawlet start` — quick start combining init and serve.
 //!
 //! This command provides a streamlined flow for getting started:
 //! 1. Initialize keystore if needed (or unlock existing)
-//! 2. Grant a session token to the specified agent
-//! 3. Start the HTTP JSON-RPC server
+//! 2. Start the HTTP JSON-RPC server
+//!
+//! Authentication is handled separately via the `connect` command.
 //!
 //! Like `serve`, the command is split into [`prepare`] (synchronous) and
 //! [`start`] (asynchronous) so that daemon mode can fork in between.
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::time::Duration;
-
-use clawlet_core::auth::{SessionStore, TokenScope};
+use clawlet_core::auth::SessionStore;
 use clawlet_core::config::Config;
 use clawlet_rpc::server::{RpcServer, DEFAULT_ADDR};
 use clawlet_signer::hd;
 use clawlet_signer::keystore::Keystore;
 use clawlet_signer::signer::LocalSigner;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Default policy YAML template.
 const DEFAULT_POLICY: &str = r#"# Clawlet transfer policy
@@ -81,32 +80,6 @@ auth:
     )
 }
 
-/// Parse a duration string like "1y", "30d", "24h" into a Duration.
-fn parse_duration(s: &str) -> Result<Duration, Box<dyn std::error::Error>> {
-    let s = s.trim().to_lowercase();
-
-    if let Some(years) = s.strip_suffix('y') {
-        let years: u64 = years.parse()?;
-        return Ok(Duration::from_secs(years * 365 * 24 * 3600));
-    }
-    if let Some(days) = s.strip_suffix('d') {
-        let days: u64 = days.parse()?;
-        return Ok(Duration::from_secs(days * 24 * 3600));
-    }
-    if let Some(hours) = s.strip_suffix('h') {
-        let hours: u64 = hours.parse()?;
-        return Ok(Duration::from_secs(hours * 3600));
-    }
-    if let Some(weeks) = s.strip_suffix('w') {
-        let weeks: u64 = weeks.parse()?;
-        return Ok(Duration::from_secs(weeks * 7 * 24 * 3600));
-    }
-
-    // Try parsing as plain seconds
-    let secs: u64 = s.parse()?;
-    Ok(Duration::from_secs(secs))
-}
-
 /// Everything needed to start the server, produced by [`prepare`].
 pub struct PreparedStart {
     pub config: Config,
@@ -115,13 +88,10 @@ pub struct PreparedStart {
     pub session_store: SessionStore,
 }
 
-/// Synchronous preparation: init/unlock keystore, grant token, load config.
+/// Synchronous preparation: init/unlock keystore, load config.
 ///
 /// Must run before daemonizing (needs interactive terminal for password prompt).
 pub fn prepare(
-    agent: String,
-    scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
@@ -129,14 +99,6 @@ pub fn prepare(
     let data_dir = super::resolve_data_dir(data_dir)?;
     let keystore_dir = data_dir.join("keystore");
     let config_path = data_dir.join("config.yaml");
-
-    // Parse scope
-    let token_scope: TokenScope = scope
-        .parse()
-        .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
-
-    // Parse expiry duration
-    let expires_duration = parse_duration(&expires)?;
 
     // Check if already initialized
     let already_initialized = keystore_dir.exists() && {
@@ -256,27 +218,7 @@ pub fn prepare(
 
     // Create session store with disk persistence
     let sessions_path = data_dir.join("sessions.json");
-    let mut session_store = SessionStore::with_persistence(sessions_path);
-
-    // Get current Unix UID
-    #[cfg(unix)]
-    let uid = unsafe { libc::getuid() };
-    #[cfg(not(unix))]
-    let uid = 0u32;
-
-    // Grant the token
-    let grant = session_store.grant(&agent, token_scope, expires_duration, uid);
-    let token = &grant.token;
-    let expires_at = grant.expires_at;
-
-    eprintln!();
-    eprintln!(
-        "🎫 令牌 (Token) for \"{}\" (scope: {}, expires: {})",
-        agent,
-        scope,
-        expires_at.format("%Y-%m-%d")
-    );
-    println!("   {token}");
+    let session_store = SessionStore::with_persistence(sessions_path);
 
     // Determine listen address
     let listen_addr = addr.unwrap_or_else(|| {
@@ -343,14 +285,11 @@ pub async fn start_notify(
 
 /// Run the `start` subcommand (non-daemon mode).
 pub async fn run(
-    agent: String,
-    scope: String,
-    expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
     from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
+    let prepared = prepare(data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.

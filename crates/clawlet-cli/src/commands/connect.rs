@@ -2,7 +2,7 @@
 //!
 //! Flow:
 //! 1. Prompt admin password via native UI dialog (or terminal fallback)
-//! 2. Call auth.grant RPC to get a session token (scope: trade, expires: 7d)
+//! 2. Call auth.grant RPC to get a session token (scope: trade, never expires)
 //! 3. Call `owliabot wallet connect` to register the token
 //! 4. Print result
 
@@ -25,29 +25,12 @@ struct AuthGrantRequest {
     password: String,
     agent_id: String,
     scope: String,
-    expires_hours: Option<u64>,
 }
 
 /// Response for auth grant RPC.
 #[derive(Deserialize)]
 struct AuthGrantResponse {
     token: String,
-    expires_at: String,
-}
-
-/// Parse a duration string like "24h", "7d", "1w" into hours.
-fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let s = s.trim().to_lowercase();
-    if let Some(hours) = s.strip_suffix('h') {
-        return Ok(hours.parse()?);
-    }
-    if let Some(days) = s.strip_suffix('d') {
-        return Ok(days.parse::<u64>()? * 24);
-    }
-    if let Some(weeks) = s.strip_suffix('w') {
-        return Ok(weeks.parse::<u64>()? * 24 * 7);
-    }
-    Ok(s.parse()?)
 }
 
 /// Prompt for a password using a native GUI dialog, falling back to terminal.
@@ -196,25 +179,17 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
 /// command-line arguments to prevent exposure in `ps` output.
 fn run_owliabot_command(
     runtime: &OwliabotRuntime,
-    clawlet_url: &str,
     token: &str,
 ) -> std::io::Result<std::process::ExitStatus> {
+    // Don't pass --base-url; owliabot resolves the clawlet endpoint via its
+    // own config. This avoids Docker networking issues where 127.0.0.1 inside
+    // a container doesn't reach the host.
     match runtime {
-        OwliabotRuntime::Binary => {
-            // Token passed via env var, invisible to `ps aux`
-            std::process::Command::new("sh")
-                .env("_CLAWLET_TOKEN", token)
-                .args([
-                    "-c",
-                    &format!(
-                        "owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
-                        clawlet_url
-                    ),
-                ])
-                .status()
-        }
+        OwliabotRuntime::Binary => std::process::Command::new("sh")
+            .env("_CLAWLET_TOKEN", token)
+            .args(["-c", "owliabot wallet connect --token \"$_CLAWLET_TOKEN\""])
+            .status(),
         OwliabotRuntime::Docker(container) => {
-            // Pipe token via stdin to avoid exposure in docker process args
             let mut child = std::process::Command::new("docker")
                 .args([
                     "exec",
@@ -222,10 +197,7 @@ fn run_owliabot_command(
                     container,
                     "sh",
                     "-c",
-                    &format!(
-                        "read _TOKEN && owliabot wallet connect --base-url '{}' --token \"$_TOKEN\"",
-                        clawlet_url
-                    ),
+                    "read _TOKEN && owliabot wallet connect --token \"$_TOKEN\"",
                 ])
                 .stdin(std::process::Stdio::piped())
                 .spawn()?;
@@ -239,10 +211,7 @@ fn run_owliabot_command(
             .env("_CLAWLET_TOKEN", token)
             .args([
                 "-c",
-                &format!(
-                    "npx owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
-                    clawlet_url
-                ),
+                "npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"",
             ])
             .status(),
     }
@@ -261,15 +230,11 @@ pub async fn run(
     addr: Option<SocketAddr>,
     agent: String,
     scope: String,
-    expires: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate scope
     let _: TokenScope = scope
         .parse()
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
-
-    // Parse duration
-    let expires_hours = parse_duration_hours(&expires)?;
 
     // Warn if target is not localhost — password and token travel over plaintext HTTP
     if let Some(a) = addr {
@@ -292,7 +257,6 @@ pub async fn run(
         password,
         agent_id: agent.clone(),
         scope: scope.clone(),
-        expires_hours: Some(expires_hours),
     };
 
     let client = create_client(addr);
@@ -300,10 +264,7 @@ pub async fn run(
     let result = client.call_raw("auth.grant", params).await?;
     let resp: AuthGrantResponse = serde_json::from_value(result)?;
 
-    eprintln!(
-        "✅ 令牌已授予 (Token granted) — agent: {agent}, scope: {scope}, expires: {}",
-        resp.expires_at
-    );
+    eprintln!("✅ 令牌已授予 (Token granted) — agent: {agent}, scope: {scope}, expires: never");
 
     // Step 3: Call owliabot wallet connect
     let server_addr = addr.map_or_else(|| DEFAULT_ADDR.to_string(), |a| a.to_string());
@@ -317,8 +278,7 @@ pub async fn run(
                 OwliabotRuntime::Npx => "npx owliabot".to_string(),
             };
             eprintln!("🔗 正在连接 OwliaBot (Connecting to OwliaBot via {label})...");
-
-            let status = run_owliabot_command(&runtime, &clawlet_url, &resp.token);
+            let status = run_owliabot_command(&runtime, &resp.token);
 
             match status {
                 Ok(s) if s.success() => {
@@ -326,43 +286,37 @@ pub async fn run(
                 }
                 Ok(s) => {
                     eprintln!("⚠️  owliabot wallet connect 退出码 (exit code): {s}");
-                    print_manual_instructions(&clawlet_url, &resp.token);
+                    print_manual_instructions(&resp.token);
                     return Err(
                         format!("owliabot wallet connect failed with exit code: {s}").into(),
                     );
                 }
                 Err(e) => {
                     eprintln!("⚠️  无法执行 (Failed to execute): {e}");
-                    print_manual_instructions(&clawlet_url, &resp.token);
+                    print_manual_instructions(&resp.token);
                     return Err(format!("failed to execute owliabot wallet connect: {e}").into());
                 }
             }
         }
         None => {
             eprintln!("ℹ️  未检测到 owliabot (Not found in PATH / Docker / npx)，请手动连接 (connect manually):");
-            print_manual_instructions(&clawlet_url, &resp.token);
+            print_manual_instructions(&resp.token);
         }
     }
 
     Ok(())
 }
 
-fn print_manual_instructions(clawlet_url: &str, token: &str) {
+fn print_manual_instructions(token: &str) {
     eprintln!();
     eprintln!("  # 直接运行 (Run directly):");
-    eprintln!(
-        "  _CLAWLET_TOKEN='<token>' owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
-    );
+    eprintln!("  _CLAWLET_TOKEN='<token>' owliabot wallet connect --token \"$_CLAWLET_TOKEN\"");
     eprintln!();
     eprintln!("  # 或通过 Docker (Or via Docker):");
-    eprintln!(
-        "  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --base-url {clawlet_url} --token \"$T\"'"
-    );
+    eprintln!("  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --token \"$T\"'");
     eprintln!();
     eprintln!("  # 或通过 npx (Or via npx):");
-    eprintln!(
-        "  _CLAWLET_TOKEN='<token>' npx owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
-    );
+    eprintln!("  _CLAWLET_TOKEN='<token>' npx owliabot wallet connect --token \"$_CLAWLET_TOKEN\"");
     eprintln!();
     eprintln!("Token (使用后请清除终端历史 / clear terminal history after use):");
     println!("{token}");

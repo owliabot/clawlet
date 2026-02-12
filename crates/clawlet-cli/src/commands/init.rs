@@ -155,8 +155,7 @@ pub fn run(
         // Prompt for existing mnemonic in alternate screen
         let mnemonic = crate::tui::with_alternate_screen(|| {
             eprintln!("Enter your BIP-39 mnemonic phrase:");
-            let mnemonic = super::read_line_or_default("")
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mnemonic = super::read_line_or_default("")?;
             Ok(mnemonic)
         })?;
 

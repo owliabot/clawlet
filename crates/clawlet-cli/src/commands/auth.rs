@@ -24,10 +24,6 @@ pub enum AuthCommand {
         #[arg(long, default_value = "trade")]
         scope: String,
 
-        /// Session duration (e.g., "24h", "7d", "1w").
-        #[arg(long, default_value = "7d")]
-        expires: String,
-
         /// Server address (default: 127.0.0.1:9100).
         #[arg(long, short)]
         addr: Option<SocketAddr>,
@@ -65,14 +61,12 @@ struct AuthGrantRequest {
     password: String,
     agent_id: String,
     scope: String,
-    expires_hours: Option<u64>,
 }
 
 /// Response for auth grant RPC.
 #[derive(Deserialize)]
 struct AuthGrantResponse {
     token: String,
-    expires_at: String,
 }
 
 /// Request body for auth list RPC.
@@ -125,36 +119,13 @@ struct AuthRevokeAllResponse {
     count: usize,
 }
 
-/// Parse a duration string like "24h", "7d", "1w" into hours.
-fn parse_duration_hours(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let s = s.trim().to_lowercase();
-
-    if let Some(hours) = s.strip_suffix('h') {
-        return Ok(hours.parse()?);
-    }
-    if let Some(days) = s.strip_suffix('d') {
-        return Ok(days.parse::<u64>()? * 24);
-    }
-    if let Some(weeks) = s.strip_suffix('w') {
-        return Ok(weeks.parse::<u64>()? * 24 * 7);
-    }
-
-    // Try parsing as plain hours
-    Ok(s.parse()?)
-}
-
 /// Run an auth subcommand.
 pub async fn run(
     cmd: AuthCommand,
     _config_path: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        AuthCommand::Grant {
-            agent,
-            scope,
-            expires,
-            addr,
-        } => run_grant(agent, scope, expires, addr).await,
+        AuthCommand::Grant { agent, scope, addr } => run_grant(agent, scope, addr).await,
         AuthCommand::List { addr } => run_list(addr).await,
         AuthCommand::Revoke { agent, addr } => run_revoke(agent, addr).await,
         AuthCommand::RevokeAll { addr } => run_revoke_all(addr).await,
@@ -184,16 +155,12 @@ async fn send_request<R: for<'de> Deserialize<'de>>(
 async fn run_grant(
     agent: String,
     scope: String,
-    expires: String,
     addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate scope before prompting for password
     let _: TokenScope = scope
         .parse()
         .map_err(|_| format!("invalid scope: {scope}. Use 'read', 'trade', or 'admin'"))?;
-
-    // Parse duration
-    let expires_hours = parse_duration_hours(&expires)?;
 
     // Prompt for password
     let password = super::read_password("Enter admin password: ", "CLAWLET_PASSWORD")?;
@@ -203,7 +170,6 @@ async fn run_grant(
         password,
         agent_id: agent.clone(),
         scope: scope.clone(),
-        expires_hours: Some(expires_hours),
     };
 
     // Create client and send request
@@ -218,7 +184,7 @@ async fn run_grant(
     println!("{}", resp.token);
     eprintln!();
     eprintln!("Scope: {scope}");
-    eprintln!("Expires: {}", resp.expires_at);
+    eprintln!("Expires: never");
 
     Ok(())
 }

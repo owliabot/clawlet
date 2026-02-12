@@ -77,8 +77,8 @@ pub struct Session {
     pub scope: TokenScope,
     /// When the session was created.
     pub created_at: DateTime<Utc>,
-    /// When the session expires.
-    pub expires_at: DateTime<Utc>,
+    /// When the session expires (`None` = never).
+    pub expires_at: Option<DateTime<Utc>>,
     /// Unix UID of the human who authorized this session.
     pub created_by_uid: u32,
     /// When the session was last used.
@@ -95,8 +95,8 @@ pub struct Session {
 pub struct GrantResult {
     /// The plaintext session token to hand to the agent.
     pub token: String,
-    /// When the session expires.
-    pub expires_at: DateTime<Utc>,
+    /// When the session expires (`None` = never).
+    pub expires_at: Option<DateTime<Utc>>,
     /// Permission scope granted.
     pub scope: TokenScope,
     /// When the session was created.
@@ -213,7 +213,10 @@ impl SessionStore {
         Some(
             sessions
                 .into_iter()
-                .filter(|(_, s)| s.expires_at > cutoff)
+                .filter(|(_, s)| match s.expires_at {
+                    None => true,
+                    Some(exp) => exp > cutoff,
+                })
                 .collect(),
         )
     }
@@ -257,7 +260,7 @@ impl SessionStore {
         &mut self,
         id: &str,
         scope: TokenScope,
-        expires_in: Duration,
+        expires_in: Option<Duration>,
         created_by_uid: u32,
     ) -> GrantResult {
         // Generate random token bytes
@@ -272,7 +275,8 @@ impl SessionStore {
         let token_hash = hash_token(&token);
 
         let now = Utc::now();
-        let expires_at = now + chrono::Duration::from_std(expires_in).unwrap_or_default();
+        let expires_at =
+            expires_in.map(|d| now + chrono::Duration::from_std(d).unwrap_or_default());
         let session = Session {
             id: id.to_string(),
             token_hash,
@@ -315,9 +319,11 @@ impl SessionStore {
             .get_mut(&session_key)
             .ok_or(AuthError::InvalidToken)?;
 
-        // Check expiration
-        if Utc::now() > session.expires_at {
-            return Err(AuthError::TokenExpired);
+        // Check expiration (None = never expires)
+        if let Some(exp) = session.expires_at {
+            if Utc::now() > exp {
+                return Err(AuthError::TokenExpired);
+            }
         }
 
         // Update usage stats
@@ -389,8 +395,10 @@ impl SessionStore {
     pub fn cleanup_expired(&mut self) {
         let cutoff = Utc::now() - EXPIRY_GRACE_PERIOD;
         let before = self.sessions.len();
-        self.sessions
-            .retain(|_, session| session.expires_at > cutoff);
+        self.sessions.retain(|_, session| match session.expires_at {
+            None => true,
+            Some(exp) => exp > cutoff,
+        });
         if self.sessions.len() != before {
             self.persist();
         }
@@ -506,12 +514,7 @@ mod tests {
         let mut store = SessionStore::new();
 
         let token = store
-            .grant(
-                "test-agent",
-                TokenScope::Trade,
-                Duration::from_secs(3600),
-                1000,
-            )
+            .grant("test-agent", TokenScope::Trade, None, 1000)
             .token;
 
         // Token should have correct prefix
@@ -541,7 +544,7 @@ mod tests {
             .grant(
                 "expired-agent",
                 TokenScope::Read,
-                Duration::from_secs(0),
+                Some(Duration::from_secs(0)),
                 1000,
             )
             .token;
@@ -557,9 +560,7 @@ mod tests {
     fn test_session_revoke() {
         let mut store = SessionStore::new();
 
-        let token = store
-            .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
-            .token;
+        let token = store.grant("agent-1", TokenScope::Read, None, 1000).token;
 
         // Verify it works
         assert!(store.verify(&token).is_ok());
@@ -578,17 +579,8 @@ mod tests {
     fn test_multiple_sessions_per_agent() {
         let mut store = SessionStore::new();
 
-        let token1 = store
-            .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
-            .token;
-        let token2 = store
-            .grant(
-                "agent-1",
-                TokenScope::Trade,
-                Duration::from_secs(7200),
-                1000,
-            )
-            .token;
+        let token1 = store.grant("agent-1", TokenScope::Read, None, 1000).token;
+        let token2 = store.grant("agent-1", TokenScope::Trade, None, 1000).token;
 
         // Both tokens should be valid
         assert!(store.verify(&token1).is_ok());
@@ -613,9 +605,14 @@ mod tests {
 
         // Grant a session that expires immediately
         let token = store
-            .grant("agent-1", TokenScope::Read, Duration::from_secs(0), 1000)
+            .grant(
+                "agent-1",
+                TokenScope::Read,
+                Some(Duration::from_secs(0)),
+                1000,
+            )
             .token;
-        store.grant("agent-2", TokenScope::Read, Duration::from_secs(3600), 1000);
+        store.grant("agent-2", TokenScope::Read, None, 1000);
 
         std::thread::sleep(Duration::from_millis(10));
 
@@ -642,13 +639,13 @@ mod tests {
                 token_hash,
                 scope: TokenScope::Read,
                 created_at: now - chrono::Duration::days(30),
-                expires_at: now - chrono::Duration::days(8),
+                expires_at: Some(now - chrono::Duration::days(8)),
                 created_by_uid: 1000,
                 last_used_at: now - chrono::Duration::days(8),
                 request_count: 0,
             },
         );
-        store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+        store.grant("active", TokenScope::Read, None, 1000);
 
         assert_eq!(store.list().len(), 2);
         store.cleanup_expired();
@@ -662,12 +659,7 @@ mod tests {
 
         // Grant a read-only session
         let token = store
-            .grant(
-                "read-agent",
-                TokenScope::Read,
-                Duration::from_secs(3600),
-                1000,
-            )
+            .grant("read-agent", TokenScope::Read, None, 1000)
             .token;
 
         // Should work for Read scope
@@ -681,12 +673,7 @@ mod tests {
 
         // Grant an admin session
         let admin_token = store
-            .grant(
-                "admin-agent",
-                TokenScope::Admin,
-                Duration::from_secs(3600),
-                1000,
-            )
+            .grant("admin-agent", TokenScope::Admin, None, 1000)
             .token;
 
         // Admin should have access to all scopes
@@ -740,19 +727,9 @@ mod tests {
     fn test_revoke_all() {
         let mut store = SessionStore::new();
 
-        store.grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000);
-        store.grant(
-            "agent-2",
-            TokenScope::Trade,
-            Duration::from_secs(3600),
-            1000,
-        );
-        store.grant(
-            "agent-3",
-            TokenScope::Admin,
-            Duration::from_secs(3600),
-            1000,
-        );
+        store.grant("agent-1", TokenScope::Read, None, 1000);
+        store.grant("agent-2", TokenScope::Trade, None, 1000);
+        store.grant("agent-3", TokenScope::Admin, None, 1000);
 
         assert_eq!(store.list().len(), 3);
         assert_eq!(store.revoke_all(), 3);
@@ -764,8 +741,13 @@ mod tests {
         let mut store = SessionStore::new();
 
         // Grant one that expires immediately and one that doesn't
-        store.grant("expired", TokenScope::Read, Duration::from_secs(0), 1000);
-        store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+        store.grant(
+            "expired",
+            TokenScope::Read,
+            Some(Duration::from_secs(0)),
+            1000,
+        );
+        store.grant("active", TokenScope::Read, None, 1000);
 
         std::thread::sleep(Duration::from_millis(10));
 
@@ -780,9 +762,7 @@ mod tests {
     #[test]
     fn test_token_format() {
         let mut store = SessionStore::new();
-        let token = store
-            .grant("test", TokenScope::Read, Duration::from_secs(3600), 1000)
-            .token;
+        let token = store.grant("test", TokenScope::Read, None, 1000).token;
 
         // Should match expected format: clwt_ + base64url
         assert!(token.starts_with("clwt_"));
@@ -812,22 +792,8 @@ mod tests {
         let token2;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token1 = store
-                .grant(
-                    "agent-1",
-                    TokenScope::Trade,
-                    Duration::from_secs(3600),
-                    1000,
-                )
-                .token;
-            token2 = store
-                .grant(
-                    "agent-2",
-                    TokenScope::Admin,
-                    Duration::from_secs(7200),
-                    1001,
-                )
-                .token;
+            token1 = store.grant("agent-1", TokenScope::Trade, None, 1000).token;
+            token2 = store.grant("agent-2", TokenScope::Admin, None, 1001).token;
             assert_eq!(store.list().len(), 2);
         }
 
@@ -858,15 +824,8 @@ mod tests {
         let token;
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            token = store
-                .grant("agent-1", TokenScope::Read, Duration::from_secs(3600), 1000)
-                .token;
-            store.grant(
-                "agent-2",
-                TokenScope::Trade,
-                Duration::from_secs(3600),
-                1000,
-            );
+            token = store.grant("agent-1", TokenScope::Read, None, 1000).token;
+            store.grant("agent-2", TokenScope::Trade, None, 1000);
             store.revoke("agent-1");
         }
 
@@ -886,8 +845,13 @@ mod tests {
 
         {
             let mut store = SessionStore::with_persistence(path.clone());
-            store.grant("expired", TokenScope::Read, Duration::from_secs(0), 1000);
-            store.grant("active", TokenScope::Read, Duration::from_secs(3600), 1000);
+            store.grant(
+                "expired",
+                TokenScope::Read,
+                Some(Duration::from_secs(0)),
+                1000,
+            );
+            store.grant("active", TokenScope::Read, None, 1000);
         }
 
         std::thread::sleep(Duration::from_millis(10));

@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
@@ -519,12 +518,6 @@ impl ClawletApiServer for RpcServerImpl {
             .parse()
             .map_err(|e: AuthError| auth_error_to_rpc(e))?;
 
-        // Calculate expiration
-        let expires_hours = params
-            .expires_hours
-            .unwrap_or(self.state.auth_config.default_session_ttl_hours);
-        let expires_in = Duration::from_secs(expires_hours * 3600);
-
         // Get current Unix UID
         #[cfg(unix)]
         let uid = unsafe { libc::getuid() };
@@ -536,11 +529,14 @@ impl ClawletApiServer for RpcServerImpl {
             ErrorObjectOwned::owned(error_code::INTERNAL_ERROR, "lock error", None::<()>)
         })?;
 
-        let grant = store.grant(&params.agent_id, scope, expires_in, uid);
+        let grant = store.grant(&params.agent_id, scope, None, uid);
 
         let response = AuthGrantResponse {
             token: grant.token,
-            expires_at: grant.expires_at.to_rfc3339(),
+            expires_at: grant
+                .expires_at
+                .map(|e| e.to_rfc3339())
+                .unwrap_or_else(|| "never".to_string()),
         };
 
         serde_json::to_value(response).map_err(|e| {
@@ -570,10 +566,13 @@ impl ClawletApiServer for RpcServerImpl {
                 id: s.id.clone(),
                 scope: s.scope.to_string(),
                 created_at: s.created_at.to_rfc3339(),
-                expires_at: s.expires_at.to_rfc3339(),
+                expires_at: s
+                    .expires_at
+                    .map(|e| e.to_rfc3339())
+                    .unwrap_or_else(|| "never".to_string()),
                 last_used_at: s.last_used_at.to_rfc3339(),
                 request_count: s.request_count,
-                is_expired: s.expires_at < now,
+                is_expired: s.expires_at.is_some_and(|e| e < now),
             })
             .collect();
 

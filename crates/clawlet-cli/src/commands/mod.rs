@@ -41,17 +41,19 @@ pub(crate) fn read_password(
     Ok(rpassword::prompt_password_stderr(prompt)?)
 }
 
-/// Read a line from stdin, or return a default if stdin is not a terminal.
+/// Read a line from stdin, or return a default on EOF / empty input.
+///
+/// Always attempts to read from stdin first (even when piped / non-interactive)
+/// so that scripted input like `echo "yes" | clawlet ...` keeps working.
+/// The default is only used when stdin yields nothing (true EOF or empty line).
 pub(crate) fn read_line_or_default(default: &str) -> Result<String, Box<dyn std::error::Error>> {
-    use std::io::IsTerminal;
-
-    if !std::io::stdin().is_terminal() {
+    let mut input = String::new();
+    let bytes = std::io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+    if bytes == 0 || trimmed.is_empty() {
         return Ok(default.to_string());
     }
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_string())
+    Ok(trimmed.to_string())
 }
 
 pub(crate) fn resolve_data_dir(

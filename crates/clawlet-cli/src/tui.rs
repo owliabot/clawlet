@@ -70,7 +70,7 @@ where
 /// The text is only visible while the alternate screen is active. The user must
 /// type Y or y to confirm they have saved the content. Once confirmed the
 /// screen switches back and no trace remains in scroll-back.
-pub fn show_sensitive(lines: &[&str], _footer: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn show_sensitive(lines: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
     with_alternate_screen(|| {
         let mut out = stdout();
         let _raw = RawModeGuard::enable()?;

@@ -170,14 +170,11 @@ pub fn run(
         // Generate a new mnemonic and show it in alternate screen
         let mnemonic = hd::generate_mnemonic();
 
-        crate::tui::show_sensitive(
-            &[
-                "🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
-                "",
-                &format!("  {mnemonic}"),
-            ],
-            "Press Enter when you have saved the mnemonic...",
-        )?;
+        crate::tui::show_sensitive(&[
+            "🔑 Generated mnemonic (WRITE THIS DOWN — it will NOT be shown again):",
+            "",
+            &format!("  {mnemonic}"),
+        ])?;
 
         // Store the mnemonic in the keystore
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;

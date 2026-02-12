@@ -164,6 +164,9 @@ pub fn prepare(
             eprintln!();
             eprint!("请选择 (Enter choice) [1/2]: ");
             let input = super::read_line_or_default("")?;
+            if input.is_empty() {
+                return Err("EOF on stdin — wallet initialization aborted".into());
+            }
             let trimmed = input.trim();
             if trimmed == "1" || trimmed == "2" {
                 break trimmed.to_string();
@@ -195,14 +198,11 @@ pub fn prepare(
         // If mnemonic was generated (not imported), show it in alternate screen.
         // The alternate screen ensures it's not in scroll-back.
         if !import {
-            crate::tui::show_sensitive(
-                &[
-                    "🔑 您的助记词 (WRITE THIS DOWN — it will NOT be shown again):",
-                    "",
-                    &format!("  {mnemonic}"),
-                ],
-                "确认已保存后按回车继续 (Press Enter when you have saved the mnemonic)...",
-            )?;
+            crate::tui::show_sensitive(&[
+                "🔑 您的助记词 (WRITE THIS DOWN — it will NOT be shown again):",
+                "",
+                &format!("  {mnemonic}"),
+            ])?;
         }
 
         let (address, _path) = Keystore::create_from_mnemonic(&keystore_dir, &password, &mnemonic)?;

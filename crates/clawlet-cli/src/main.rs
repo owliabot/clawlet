@@ -185,6 +185,11 @@ enum Commands {
         /// Detach and run as a background daemon after password input.
         #[arg(long, short)]
         daemon: bool,
+
+        /// Import an existing BIP-39 mnemonic instead of generating a new one.
+        /// Without this flag, a new wallet is created automatically.
+        #[arg(long)]
+        from_mnemonic: bool,
     },
 }
 
@@ -480,8 +485,9 @@ fn run_start_daemon(
     expires: String,
     data_dir: Option<PathBuf>,
     addr: Option<SocketAddr>,
+    from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr)?;
+    let prepared = commands::start::prepare(agent, scope, expires, data_dir, addr, from_mnemonic)?;
 
     // Stop any existing instance *after* prepare succeeds, so a failed
     // prepare (wrong password, config error) doesn't kill the running daemon.
@@ -519,6 +525,7 @@ fn run_start_daemon(
     _expires: String,
     _data_dir: Option<PathBuf>,
     _addr: Option<SocketAddr>,
+    _from_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Err("--daemon is only supported on Unix targets".into())
 }
@@ -566,8 +573,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             expires,
             data_dir,
             addr,
+            from_mnemonic,
             ..
-        } => commands::start::run(agent, scope, expires, data_dir, addr).await,
+        } => commands::start::run(agent, scope, expires, data_dir, addr, from_mnemonic).await,
     }
 }
 
@@ -593,12 +601,14 @@ fn main() {
             data_dir,
             addr,
             daemon: true,
+            from_mnemonic,
         } => Some(run_start_daemon(
             agent.clone(),
             scope.clone(),
             expires.clone(),
             data_dir.clone(),
             *addr,
+            *from_mnemonic,
         )),
         _ => None,
     };

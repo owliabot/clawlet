@@ -65,7 +65,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
         let child = tokio::process::Command::new("osascript")
             .args([
                 "-e",
-                r#"display dialog "请输入钱包管理员密码" with title "Clawlet Connect" default answer "" with hidden answer with icon caution"#,
+                r#"display dialog "请输入钱包管理员密码 (Enter admin password)" with title "Clawlet Connect" default answer "" with hidden answer with icon caution"#,
             ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -83,7 +83,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
                     }
                 }
                 Err(_) => {
-                    eprintln!("⚠️  密码对话框超时，回退到终端输入");
+                    eprintln!("⚠️  密码对话框超时，回退到终端输入 (Dialog timed out, falling back to terminal)");
                 }
                 _ => {}
             }
@@ -109,7 +109,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
                         return Ok(password);
                     }
                     Err(_) => {
-                        eprintln!("⚠️  密码对话框超时，回退到终端输入");
+                        eprintln!("⚠️  密码对话框超时，回退到终端输入 (Dialog timed out, falling back to terminal)");
                     }
                     _ => {}
                 }
@@ -120,7 +120,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
             let child = tokio::process::Command::new("kdialog")
                 .args([
                     "--password",
-                    "请输入钱包管理员密码",
+                    "请输入钱包管理员密码 (Enter admin password)",
                     "--title",
                     "Clawlet Connect",
                 ])
@@ -137,7 +137,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
                         return Ok(password);
                     }
                     Err(_) => {
-                        eprintln!("⚠️  密码对话框超时，回退到终端输入");
+                        eprintln!("⚠️  密码对话框超时，回退到终端输入 (Dialog timed out, falling back to terminal)");
                     }
                     _ => {}
                 }
@@ -147,7 +147,7 @@ async fn prompt_password_gui() -> Result<String, Box<dyn std::error::Error>> {
 
     // Terminal fallback
     let password =
-        tokio::task::spawn_blocking(|| rpassword::prompt_password_stderr("管理员密码: "))
+        tokio::task::spawn_blocking(|| rpassword::prompt_password_stderr("管理员密码 (Admin password): "))
             .await??;
     Ok(password)
 }
@@ -190,30 +190,62 @@ fn detect_owliabot_runtime() -> Option<OwliabotRuntime> {
     None
 }
 
-/// Build the command to invoke `owliabot wallet connect` for the given runtime.
-fn build_owliabot_command(
+/// Run `owliabot wallet connect` for the given runtime.
+///
+/// The token is passed via environment variable or stdin pipe rather than
+/// command-line arguments to prevent exposure in `ps` output.
+fn run_owliabot_command(
     runtime: &OwliabotRuntime,
     clawlet_url: &str,
     token: &str,
-) -> std::process::Command {
-    let wallet_args = ["wallet", "connect", "--base-url", clawlet_url, "--token", token];
+) -> std::io::Result<std::process::ExitStatus> {
     match runtime {
         OwliabotRuntime::Binary => {
-            let mut cmd = std::process::Command::new("owliabot");
-            cmd.args(wallet_args);
-            cmd
+            // Token passed via env var, invisible to `ps aux`
+            std::process::Command::new("sh")
+                .env("_CLAWLET_TOKEN", token)
+                .args([
+                    "-c",
+                    &format!(
+                        "owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
+                        clawlet_url
+                    ),
+                ])
+                .status()
         }
         OwliabotRuntime::Docker(container) => {
-            let mut cmd = std::process::Command::new("docker");
-            cmd.args(["exec", container, "owliabot"]);
-            cmd.args(wallet_args);
-            cmd
+            // Pipe token via stdin to avoid exposure in docker process args
+            let mut child = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    "-i",
+                    container,
+                    "sh",
+                    "-c",
+                    &format!(
+                        "read _TOKEN && owliabot wallet connect --base-url '{}' --token \"$_TOKEN\"",
+                        clawlet_url
+                    ),
+                ])
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                writeln!(stdin, "{}", token)?;
+            }
+            child.wait()
         }
         OwliabotRuntime::Npx => {
-            let mut cmd = std::process::Command::new("npx");
-            cmd.args(["owliabot"]);
-            cmd.args(wallet_args);
-            cmd
+            std::process::Command::new("sh")
+                .env("_CLAWLET_TOKEN", token)
+                .args([
+                    "-c",
+                    &format!(
+                        "npx owliabot wallet connect --base-url '{}' --token \"$_CLAWLET_TOKEN\"",
+                        clawlet_url
+                    ),
+                ])
+                .status()
         }
     }
 }
@@ -241,8 +273,18 @@ pub async fn run(
     // Parse duration
     let expires_hours = parse_duration_hours(&expires)?;
 
+    // Warn if target is not localhost — password and token travel over plaintext HTTP
+    if let Some(a) = addr {
+        if !a.ip().is_loopback() {
+            eprintln!("⚠️  警告 (Warning): 目标地址 {a} 不是 localhost，密码和 token 将通过未加密的 HTTP 传输！");
+            eprintln!("   (Address {a} is not localhost — password and token will be sent over unencrypted HTTP!)");
+            eprintln!("   建议通过 SSH 隧道连接 (Recommended: use SSH tunnel): ssh -L 9100:{a} user@host");
+            eprintln!();
+        }
+    }
+
     // Step 1: Prompt for password
-    eprintln!("🔐 请输入管理员密码以授权连接...");
+    eprintln!("🔐 请输入管理员密码以授权连接 (Enter admin password to authorize connection)...");
     let password = prompt_password_gui().await?;
 
     // Step 2: Call auth.grant RPC
@@ -259,7 +301,7 @@ pub async fn run(
     let resp: AuthGrantResponse = serde_json::from_value(result)?;
 
     eprintln!(
-        "✅ Token granted (agent: {agent}, scope: {scope}, expires: {})",
+        "✅ 令牌已授予 (Token granted) — agent: {agent}, scope: {scope}, expires: {}",
         resp.expires_at
     );
 
@@ -274,28 +316,26 @@ pub async fn run(
                 OwliabotRuntime::Docker(c) => format!("docker exec {c}"),
                 OwliabotRuntime::Npx => "npx owliabot".to_string(),
             };
-            eprintln!("🔗 Connecting to OwliaBot via {label}...");
+            eprintln!("🔗 正在连接 OwliaBot (Connecting to OwliaBot via {label})...");
 
-            let status = build_owliabot_command(&runtime, &clawlet_url, &resp.token).status();
+            let status = run_owliabot_command(&runtime, &clawlet_url, &resp.token);
 
             match status {
                 Ok(s) if s.success() => {
-                    eprintln!("✅ OwliaBot 已连接到 clawlet ({clawlet_url})");
+                    eprintln!("✅ OwliaBot 已连接到 clawlet (Connected to {clawlet_url})");
                 }
                 Ok(s) => {
-                    eprintln!("⚠️  owliabot wallet connect 退出码: {s}");
-                    eprintln!();
-                    eprintln!("你可以手动运行:");
+                    eprintln!("⚠️  owliabot wallet connect 退出码 (exit code): {s}");
                     print_manual_instructions(&clawlet_url, &resp.token);
                 }
                 Err(e) => {
-                    eprintln!("⚠️  无法执行 owliabot: {e}");
+                    eprintln!("⚠️  无法执行 (Failed to execute): {e}");
                     print_manual_instructions(&clawlet_url, &resp.token);
                 }
             }
         }
         None => {
-            eprintln!("ℹ️  未检测到 owliabot (PATH / Docker / npx)，请手动连接:");
+            eprintln!("ℹ️  未检测到 owliabot (Not found in PATH / Docker / npx)，请手动连接 (connect manually):");
             print_manual_instructions(&clawlet_url, &resp.token);
         }
     }
@@ -305,15 +345,21 @@ pub async fn run(
 
 fn print_manual_instructions(clawlet_url: &str, token: &str) {
     eprintln!();
-    eprintln!("  # 直接运行:");
-    eprintln!("  owliabot wallet connect --base-url {clawlet_url} --token <token>");
+    eprintln!("  # 直接运行 (Run directly):");
+    eprintln!(
+        "  _CLAWLET_TOKEN='<token>' owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
+    );
     eprintln!();
-    eprintln!("  # 或通过 Docker:");
-    eprintln!("  docker exec owliabot owliabot wallet connect --base-url {clawlet_url} --token <token>");
+    eprintln!("  # 或通过 Docker (Or via Docker):");
+    eprintln!(
+        "  echo '<token>' | docker exec -i owliabot sh -c 'read T && owliabot wallet connect --base-url {clawlet_url} --token \"$T\"'"
+    );
     eprintln!();
-    eprintln!("  # 或通过 npx:");
-    eprintln!("  npx owliabot wallet connect --base-url {clawlet_url} --token <token>");
+    eprintln!("  # 或通过 npx (Or via npx):");
+    eprintln!(
+        "  _CLAWLET_TOKEN='<token>' npx owliabot wallet connect --base-url {clawlet_url} --token \"$_CLAWLET_TOKEN\""
+    );
     eprintln!();
-    eprintln!("Token:");
+    eprintln!("Token (使用后请清除终端历史 / clear terminal history after use):");
     println!("{token}");
 }

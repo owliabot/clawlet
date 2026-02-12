@@ -59,6 +59,10 @@ pub enum RpcMethod {
     Execute,
     /// Send a raw transaction bypassing the policy engine.
     SendRaw,
+    /// Sign a message using EIP-191 personal sign.
+    SignMessage,
+    /// Sign a raw 32-byte hash.
+    SignHash,
     /// Grant a new session token (Admin only).
     AuthGrant,
     /// List all sessions including expired ones in grace period (Admin only).
@@ -83,6 +87,8 @@ impl RpcMethod {
             "skills" => Some(Self::Skills),
             "execute" => Some(Self::Execute),
             "send_raw" => Some(Self::SendRaw),
+            "sign_message" => Some(Self::SignMessage),
+            "sign_hash" => Some(Self::SignHash),
             "auth.grant" => Some(Self::AuthGrant),
             "auth.list" => Some(Self::AuthList),
             "auth.revoke" => Some(Self::AuthRevoke),
@@ -103,6 +109,8 @@ impl RpcMethod {
             Self::Skills => "skills",
             Self::Execute => "execute",
             Self::SendRaw => "send_raw",
+            Self::SignMessage => "sign_message",
+            Self::SignHash => "sign_hash",
             Self::AuthGrant => "auth.grant",
             Self::AuthList => "auth.list",
             Self::AuthRevoke => "auth.revoke",
@@ -121,9 +129,11 @@ impl RpcMethod {
         match self {
             RpcMethod::Health | RpcMethod::Chains | RpcMethod::Address => None,
             RpcMethod::Balance | RpcMethod::Skills => Some(TokenScope::Read),
-            RpcMethod::Transfer | RpcMethod::Execute | RpcMethod::SendRaw => {
-                Some(TokenScope::Trade)
-            }
+            RpcMethod::Transfer
+            | RpcMethod::Execute
+            | RpcMethod::SendRaw
+            | RpcMethod::SignMessage
+            | RpcMethod::SignHash => Some(TokenScope::Trade),
             RpcMethod::AuthGrant
             | RpcMethod::AuthList
             | RpcMethod::AuthRevoke
@@ -374,6 +384,36 @@ pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
     }
 }
 
+/// Request body for signing a message (EIP-191 personal sign).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SignMessageRequest {
+    /// The message to sign (hex-encoded or UTF-8 string).
+    pub message: String,
+    /// Encoding of the message: `"utf8"` (default) or `"hex"`.
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+}
+
+fn default_encoding() -> String {
+    "utf8".to_string()
+}
+
+/// Request body for signing a raw 32-byte hash.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SignHashRequest {
+    /// The 32-byte hash to sign (hex-encoded, 0x-prefixed).
+    pub hash: String,
+}
+
+/// Response for sign operations.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignResponse {
+    /// The 65-byte signature (hex-encoded, 0x-prefixed).
+    pub signature: String,
+    /// The signer's Ethereum address (hex-encoded, 0x-prefixed).
+    pub address: String,
+}
+
 /// Errors returned by handlers.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
@@ -496,6 +536,14 @@ mod tests {
             RpcMethod::parse_method("auth.revoke_all"),
             Some(RpcMethod::AuthRevokeAll)
         );
+        assert_eq!(
+            RpcMethod::parse_method("sign_message"),
+            Some(RpcMethod::SignMessage)
+        );
+        assert_eq!(
+            RpcMethod::parse_method("sign_hash"),
+            Some(RpcMethod::SignHash)
+        );
         assert_eq!(RpcMethod::parse_method("unknown"), None);
     }
 
@@ -509,6 +557,8 @@ mod tests {
         assert_eq!(RpcMethod::Skills.as_str(), "skills");
         assert_eq!(RpcMethod::Execute.as_str(), "execute");
         assert_eq!(RpcMethod::SendRaw.as_str(), "send_raw");
+        assert_eq!(RpcMethod::SignMessage.as_str(), "sign_message");
+        assert_eq!(RpcMethod::SignHash.as_str(), "sign_hash");
         assert_eq!(RpcMethod::AuthGrant.as_str(), "auth.grant");
         assert_eq!(RpcMethod::AuthList.as_str(), "auth.list");
         assert_eq!(RpcMethod::AuthRevoke.as_str(), "auth.revoke");
@@ -531,6 +581,14 @@ mod tests {
         );
         assert_eq!(RpcMethod::Execute.required_scope(), Some(TokenScope::Trade));
         assert_eq!(RpcMethod::SendRaw.required_scope(), Some(TokenScope::Trade));
+        assert_eq!(
+            RpcMethod::SignMessage.required_scope(),
+            Some(TokenScope::Trade)
+        );
+        assert_eq!(
+            RpcMethod::SignHash.required_scope(),
+            Some(TokenScope::Trade)
+        );
         assert_eq!(RpcMethod::AuthGrant.required_scope(), None);
         assert_eq!(RpcMethod::AuthList.required_scope(), None);
         assert_eq!(RpcMethod::AuthRevoke.required_scope(), None);
@@ -548,6 +606,8 @@ mod tests {
             RpcMethod::Skills,
             RpcMethod::Execute,
             RpcMethod::SendRaw,
+            RpcMethod::SignMessage,
+            RpcMethod::SignHash,
             RpcMethod::AuthGrant,
             RpcMethod::AuthList,
             RpcMethod::AuthRevoke,

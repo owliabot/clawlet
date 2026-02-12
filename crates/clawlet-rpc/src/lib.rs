@@ -18,6 +18,7 @@ pub use server::{
 };
 pub use types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ExecuteRequest, ExecuteResponse,
-    ExecuteStatus, HandlerError, RpcMethod, SendRawRequest, SendRawResponse, SkillSummary,
-    SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
+    ExecuteStatus, HandlerError, RpcMethod, SendRawRequest, SendRawResponse, SignHashRequest,
+    SignMessageRequest, SignResponse, SkillSummary, SkillsResponse, TokenSpec, TransferRequest,
+    TransferResponse, TransferStatus,
 };

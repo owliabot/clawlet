@@ -326,10 +326,14 @@ pub async fn run(
                 Ok(s) => {
                     eprintln!("⚠️  owliabot wallet connect 退出码 (exit code): {s}");
                     print_manual_instructions(&clawlet_url, &resp.token);
+                    return Err(
+                        format!("owliabot wallet connect failed with exit code: {s}").into(),
+                    );
                 }
                 Err(e) => {
                     eprintln!("⚠️  无法执行 (Failed to execute): {e}");
                     print_manual_instructions(&clawlet_url, &resp.token);
+                    return Err(format!("failed to execute owliabot wallet connect: {e}").into());
                 }
             }
         }

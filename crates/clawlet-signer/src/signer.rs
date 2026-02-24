@@ -49,11 +49,6 @@ pub trait Signer {
 
     /// Signs a 32-byte hash directly.
     fn sign_hash(&self, hash: &[u8; 32]) -> Result<Signature>;
-
-    /// Signs a message using EIP-191 personal sign.
-    ///
-    /// Prepends `"\x19Ethereum Signed Message:\n{len}"` before hashing and signing.
-    fn sign_message(&self, message: &[u8]) -> Result<Signature>;
 }
 
 /// A local signer that wraps a `k256::ecdsa::SigningKey`.
@@ -98,17 +93,6 @@ impl Signer for LocalSigner {
 
     fn sign_hash(&self, hash: &[u8; 32]) -> Result<Signature> {
         self.sign_prehash(hash)
-    }
-
-    fn sign_message(&self, message: &[u8]) -> Result<Signature> {
-        // EIP-191 personal sign prefix
-        let prefix = format!("\x19Ethereum Signed Message:\n{}", message.len());
-        let mut hasher = Keccak256::new();
-        hasher.update(prefix.as_bytes());
-        hasher.update(message);
-        let hash: [u8; 32] = hasher.finalize().into();
-
-        self.sign_prehash(&hash)
     }
 }
 
@@ -170,25 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn sign_message_eip191() {
-        let signer = test_signer();
-        let message = b"Hello, Clawlet!";
-
-        let sig = signer.sign_message(message).unwrap();
-        assert!(sig.v == 27 || sig.v == 28);
-
-        // Manually compute the EIP-191 hash to verify recovery
-        let prefix = format!("\x19Ethereum Signed Message:\n{}", message.len());
-        let mut hasher = Keccak256::new();
-        hasher.update(prefix.as_bytes());
-        hasher.update(message);
-        let hash: [u8; 32] = hasher.finalize().into();
-
-        let recovered = recover_address(&hash, &sig).unwrap();
-        assert_eq!(recovered, signer.address());
-    }
-
-    #[test]
     fn signature_to_bytes_roundtrip() {
         let sig = Signature {
             r: [1u8; 32],
@@ -199,13 +164,5 @@ mod tests {
         assert_eq!(&bytes[..32], &[1u8; 32]);
         assert_eq!(&bytes[32..64], &[2u8; 32]);
         assert_eq!(bytes[64], 27);
-    }
-
-    #[test]
-    fn different_messages_produce_different_signatures() {
-        let signer = test_signer();
-        let sig1 = signer.sign_message(b"message 1").unwrap();
-        let sig2 = signer.sign_message(b"message 2").unwrap();
-        assert_ne!(sig1, sig2);
     }
 }

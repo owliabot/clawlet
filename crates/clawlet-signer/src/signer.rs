@@ -1,7 +1,7 @@
 //! Signing interface and local signer implementation.
 //!
-//! Provides the `Signer` trait and `LocalSigner` for signing hashes and
-//! EIP-191 personal messages using a secp256k1 private key.
+//! Provides the `Signer` trait and `LocalSigner` for signing hashes
+//! using a secp256k1 private key.
 
 use alloy::primitives::Address;
 use k256::ecdsa::{self, SigningKey, VerifyingKey};

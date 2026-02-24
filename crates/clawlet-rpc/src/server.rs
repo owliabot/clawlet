@@ -50,8 +50,7 @@ use crate::dispatch::{
 };
 use crate::handlers;
 use crate::types::{
-    BalanceQuery, ExecuteRequest, HandlerError, SendRawRequest, SignMessageRequest, TokenSpec,
-    TransferRequest,
+    BalanceQuery, ExecuteRequest, HandlerError, SendRawRequest, TokenSpec, TransferRequest,
 };
 
 // ---- Daemon Readiness Signal ----
@@ -288,10 +287,6 @@ pub trait ClawletApi {
     #[method(name = "send_raw")]
     async fn send_raw(&self, params: SendRawRequest) -> Result<Value, ErrorObjectOwned>;
 
-    /// Sign a message using EIP-191 personal sign.
-    #[method(name = "sign_message")]
-    async fn sign_message(&self, params: SignMessageRequest) -> Result<Value, ErrorObjectOwned>;
-
     /// Grant a new session token.
     #[method(name = "auth.grant")]
     async fn auth_grant(&self, params: AuthGrantRequest) -> Result<Value, ErrorObjectOwned>;
@@ -468,24 +463,6 @@ impl ClawletApiServer for RpcServerImpl {
         }
 
         match handlers::handle_send_raw(&self.state, params).await {
-            Ok(result) => serde_json::to_value(result).map_err(|e| {
-                ErrorObjectOwned::owned(
-                    error_code::INTERNAL_ERROR,
-                    format!("serialization error: {e}"),
-                    None::<()>,
-                )
-            }),
-            Err(e) => Err(handler_error_to_rpc(e)),
-        }
-    }
-
-    async fn sign_message(&self, params: SignMessageRequest) -> Result<Value, ErrorObjectOwned> {
-        let token = Self::get_token();
-        if let Err(e) = check_auth(&self.state, &token, TokenScope::Read) {
-            return Err(auth_error_to_rpc(e));
-        }
-
-        match handlers::handle_sign_message(&self.state, params) {
             Ok(result) => serde_json::to_value(result).map_err(|e| {
                 ErrorObjectOwned::owned(
                     error_code::INTERNAL_ERROR,

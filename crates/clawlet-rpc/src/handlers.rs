@@ -286,11 +286,7 @@ pub async fn handle_send_raw(
                     .into(),
             ));
         }
-        SwapValidation::MalformedArgs {
-            name,
-            expected_min,
-            actual,
-        } => {
+        SwapValidation::MalformedArgs { name, reason } => {
             {
                 let event = AuditEvent::new(
                     "send_raw",
@@ -298,8 +294,7 @@ pub async fn handle_send_raw(
                         "to": format!("{}", req.to),
                         "chain_id": chain_id,
                         "function": name,
-                        "expected_min_bytes": expected_min,
-                        "actual_bytes": actual,
+                        "decode_error": reason,
                     }),
                     format!("denied: malformed calldata for {name}"),
                 );
@@ -308,7 +303,7 @@ pub async fn handle_send_raw(
                 }
             }
             return Err(HandlerError::BadRequest(format!(
-                "malformed calldata for {name}: expected at least {expected_min} bytes, got {actual}"
+                "malformed calldata for {name}: ABI decode failed — {reason}"
             )));
         }
         SwapValidation::Denied { selector } => {

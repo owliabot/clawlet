@@ -9,6 +9,7 @@ use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
+use clawlet_evm::swap_validation::{validate_swap_calldata, SwapValidation};
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
@@ -232,25 +233,113 @@ pub async fn handle_transfer(
     }
 }
 
-/// Send a raw transaction bypassing the policy engine.
+/// Send a raw transaction with swap validation and policy checks.
 ///
-/// This is for advanced use cases where the caller wants to send arbitrary
-/// calldata to any address. Still audited, just not policy-gated.
+/// Only allows UniswapV3 SwapRouter functions:
+/// - `exactInputSingle` (`0x414bf389`)
+/// - `exactInput` (`0xc04b8d59`)
+/// - `exactOutputSingle` (`0xdb3e2198`)
+/// - `exactOutput` (`0xf28c0498`)
+///
+/// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
     state: &AppState,
     req: SendRawRequest,
 ) -> Result<SendRawResponse, HandlerError> {
     let chain_id = req.chain_id;
 
+    // ---- Swap calldata validation ----
+    let swap_fn = match validate_swap_calldata(&req.data) {
+        SwapValidation::Allowed(name) => name,
+        SwapValidation::NoSelector => {
+            return Err(HandlerError::BadRequest(
+                "send_raw requires calldata with a valid UniswapV3 SwapRouter function selector"
+                    .into(),
+            ));
+        }
+        SwapValidation::Denied { selector } => {
+            let sel_hex = format!(
+                "0x{:02x}{:02x}{:02x}{:02x}",
+                selector[0], selector[1], selector[2], selector[3]
+            );
+
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "selector": sel_hex,
+                    }),
+                    format!("denied: unsupported function selector {sel_hex}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+
+            return Err(HandlerError::BadRequest(format!(
+                "function selector {sel_hex} is not allowed; \
+                 only UniswapV3 SwapRouter functions are permitted \
+                 (exactInputSingle, exactInput, exactOutputSingle, exactOutput)"
+            )));
+        }
+    };
+
+    // ---- Policy check ----
+    // Use "swap" as the token identifier for policy; USD amount is unknown (no oracle).
+    let decision = state
+        .policy
+        .check_transfer(None, "swap", chain_id)
+        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
+
+    match decision {
+        PolicyDecision::Allowed => { /* proceed */ }
+        PolicyDecision::Denied(reason) => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "swap_fn": swap_fn,
+                    }),
+                    format!("denied: {reason}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            return Err(HandlerError::BadRequest(format!("policy denied: {reason}")));
+        }
+        PolicyDecision::RequiresApproval(reason) => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "swap_fn": swap_fn,
+                    }),
+                    format!("requires_approval: {reason}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            return Err(HandlerError::BadRequest(format!(
+                "policy requires approval: {reason}"
+            )));
+        }
+    }
+
+    // ---- Build and send ----
     let adapter = state
         .adapters
         .get(&chain_id)
         .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
 
-    // Value in wei (default 0)
     let value = req.value.unwrap_or(U256::ZERO);
-
-    // Use calldata directly (already Bytes)
     let data = req.data.clone().unwrap_or_default();
 
     let tx_req = build_raw_tx(&RawTxRequest {
@@ -283,6 +372,7 @@ pub async fn handle_send_raw(
                 "data": req.data.as_ref().map(|b| b.to_string()).unwrap_or_default(),
                 "chain_id": chain_id,
                 "gas_limit": req.gas_limit,
+                "swap_fn": swap_fn,
                 "tx_hash": format!("{tx_hash}"),
                 "audit_id": audit_id,
             }),

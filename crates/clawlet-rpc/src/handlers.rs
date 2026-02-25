@@ -10,7 +10,7 @@ use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_evm::swap_validation::{is_allowed_router, validate_swap_calldata, SwapValidation};
+use clawlet_evm::swap_validation::{identify_router, validate_swap_calldata, SwapValidation};
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
@@ -258,31 +258,34 @@ pub async fn handle_send_raw(
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
     // ---- Router address whitelist ----
-    if !is_allowed_router(req.to, supported_chain) {
-        {
-            let event = AuditEvent::new(
-                "send_raw",
-                json!({
-                    "to": format!("{}", req.to),
-                    "chain_id": chain_id,
-                }),
-                format!(
-                    "denied: target address {} is not a known Uniswap router",
-                    req.to
-                ),
-            );
-            if let Ok(mut audit) = state.audit.lock() {
-                let _ = audit.log_event(event);
+    let router_version = match identify_router(req.to, supported_chain) {
+        Some(v) => v,
+        None => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                    }),
+                    format!(
+                        "denied: target address {} is not a known Uniswap router",
+                        req.to
+                    ),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
             }
+            return Err(HandlerError::BadRequest(format!(
+                "target address {} is not a known Uniswap router for chain {chain_id}",
+                req.to
+            )));
         }
-        return Err(HandlerError::BadRequest(format!(
-            "target address {} is not a known Uniswap router for chain {chain_id}",
-            req.to
-        )));
-    }
+    };
 
-    // ---- Swap calldata validation ----
-    let swap_params = match validate_swap_calldata(&req.data) {
+    // ---- Swap calldata validation (using identified router version) ----
+    let swap_params = match validate_swap_calldata(&req.data, router_version) {
         SwapValidation::Allowed(params) => params,
         SwapValidation::NoSelector => {
             return Err(HandlerError::BadRequest(

@@ -270,47 +270,51 @@ fn validate_v2(data: &Bytes, selector: [u8; 4]) -> SwapValidation {
         Ok(call) => {
             let params = match &call {
                 IUniswapV2Router::IUniswapV2RouterCalls::swapExactTokensForTokens(c) => {
-                    let token_in = match c.path.first() {
-                        Some(addr) => *addr,
-                        None => {
-                            return SwapValidation::MalformedArgs {
-                                name: "swapExactTokensForTokens".into(),
-                                reason: "path must contain at least one token".into(),
-                            };
-                        }
-                    };
+                    if c.path.len() < 2 {
+                        return SwapValidation::MalformedArgs {
+                            name: "swapExactTokensForTokens".into(),
+                            reason: format!(
+                                "path must contain at least 2 tokens, got {}",
+                                c.path.len()
+                            ),
+                        };
+                    }
                     SwapParams {
                         function: "swapExactTokensForTokens".into(),
-                        token_in,
+                        token_in: c.path[0],
                         amount_in: c.amountIn,
                     }
                 }
                 IUniswapV2Router::IUniswapV2RouterCalls::swapExactETHForTokens(c) => {
-                    if c.path.is_empty() {
+                    if c.path.len() < 2 {
                         return SwapValidation::MalformedArgs {
                             name: "swapExactETHForTokens".into(),
-                            reason: "path must contain at least one token".into(),
+                            reason: format!(
+                                "path must contain at least 2 tokens, got {}",
+                                c.path.len()
+                            ),
                         };
                     }
+                    // path[0] should be WETH; use it as token_in for policy checks
                     SwapParams {
                         function: "swapExactETHForTokens".into(),
-                        token_in: Address::ZERO,
-                        amount_in: U256::ZERO,
+                        token_in: c.path[0],
+                        amount_in: U256::ZERO, // ETH sent as msg.value
                     }
                 }
                 IUniswapV2Router::IUniswapV2RouterCalls::swapExactTokensForETH(c) => {
-                    let token_in = match c.path.first() {
-                        Some(addr) => *addr,
-                        None => {
-                            return SwapValidation::MalformedArgs {
-                                name: "swapExactTokensForETH".into(),
-                                reason: "path must contain at least one token".into(),
-                            };
-                        }
-                    };
+                    if c.path.len() < 2 {
+                        return SwapValidation::MalformedArgs {
+                            name: "swapExactTokensForETH".into(),
+                            reason: format!(
+                                "path must contain at least 2 tokens, got {}",
+                                c.path.len()
+                            ),
+                        };
+                    }
                     SwapParams {
                         function: "swapExactTokensForETH".into(),
-                        token_in,
+                        token_in: c.path[0],
                         amount_in: c.amountIn,
                     }
                 }
@@ -345,65 +349,107 @@ mod tests {
 
     #[test]
     fn correct_router_per_chain() {
-        // Ethereum
-        assert!(identify_router(
-            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-            SupportedChainId::Ethereum
-        ).is_some());
-        assert!(identify_router(
-            address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
-            SupportedChainId::Ethereum
-        ).is_some());
+        // Ethereum V3
+        assert_eq!(
+            identify_router(
+                address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+                SupportedChainId::Ethereum
+            ),
+            Some(RouterVersion::V3)
+        );
+        // Ethereum V2
+        assert_eq!(
+            identify_router(
+                address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+                SupportedChainId::Ethereum
+            ),
+            Some(RouterVersion::V2)
+        );
 
-        // Optimism
-        assert!(identify_router(
-            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-            SupportedChainId::Optimism
-        ).is_some());
-        assert!(identify_router(
-            address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
-            SupportedChainId::Optimism
-        ).is_some());
+        // Optimism V3
+        assert_eq!(
+            identify_router(
+                address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+                SupportedChainId::Optimism
+            ),
+            Some(RouterVersion::V3)
+        );
+        // Optimism V2
+        assert_eq!(
+            identify_router(
+                address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
+                SupportedChainId::Optimism
+            ),
+            Some(RouterVersion::V2)
+        );
 
-        // Polygon
-        assert!(identify_router(
-            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-            SupportedChainId::Polygon
-        ).is_some());
-        assert!(identify_router(
-            address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
-            SupportedChainId::Polygon
-        ).is_some());
+        // Polygon V3
+        assert_eq!(
+            identify_router(
+                address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+                SupportedChainId::Polygon
+            ),
+            Some(RouterVersion::V3)
+        );
+        // Polygon V2
+        assert_eq!(
+            identify_router(
+                address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
+                SupportedChainId::Polygon
+            ),
+            Some(RouterVersion::V2)
+        );
 
-        // Arbitrum
-        assert!(identify_router(
-            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-            SupportedChainId::Arbitrum
-        ).is_some());
-        assert!(identify_router(
-            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-            SupportedChainId::Arbitrum
-        ).is_some());
+        // Arbitrum V3
+        assert_eq!(
+            identify_router(
+                address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+                SupportedChainId::Arbitrum
+            ),
+            Some(RouterVersion::V3)
+        );
+        // Arbitrum V2
+        assert_eq!(
+            identify_router(
+                address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
+                SupportedChainId::Arbitrum
+            ),
+            Some(RouterVersion::V2)
+        );
 
-        // Base
-        assert!(identify_router(
-            address!("2626664c2603336E57B271c5C0b26F421741e481"),
-            SupportedChainId::Base
-        ).is_some());
-        assert!(identify_router(
-            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-            SupportedChainId::Base
-        ).is_some());
+        // Base V3
+        assert_eq!(
+            identify_router(
+                address!("2626664c2603336E57B271c5C0b26F421741e481"),
+                SupportedChainId::Base
+            ),
+            Some(RouterVersion::V3)
+        );
+        // Base V2
+        assert_eq!(
+            identify_router(
+                address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
+                SupportedChainId::Base
+            ),
+            Some(RouterVersion::V2)
+        );
 
-        // BNB
-        assert!(identify_router(
-            address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
-            SupportedChainId::Bnb
-        ).is_some());
-        assert!(identify_router(
-            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-            SupportedChainId::Bnb
-        ).is_some());
+        // BNB V3
+        assert_eq!(
+            identify_router(
+                address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
+                SupportedChainId::Bnb
+            ),
+            Some(RouterVersion::V3)
+        );
+        // BNB V2
+        assert_eq!(
+            identify_router(
+                address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
+                SupportedChainId::Bnb
+            ),
+            Some(RouterVersion::V2)
+        );
     }
 
     #[test]
@@ -677,8 +723,8 @@ mod tests {
         match validate_swap_calldata(&Some(encode_swap_exact_eth_for_tokens()), RouterVersion::V2) {
             SwapValidation::Allowed(p) => {
                 assert_eq!(p.function, "swapExactETHForTokens");
-                assert_eq!(p.token_in, Address::ZERO);
-                assert_eq!(p.amount_in, U256::ZERO);
+                assert_eq!(p.token_in, WETH); // path[0] is WETH
+                assert_eq!(p.amount_in, U256::ZERO); // ETH sent as msg.value
             }
             other => panic!("expected Allowed, got {:?}", other),
         }
@@ -770,6 +816,48 @@ mod tests {
         assert!(matches!(
             validate_swap_calldata(&Some(data), RouterVersion::V2),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
+        ));
+    }
+
+    #[test]
+    fn v2_single_token_path_rejected() {
+        // path with only 1 token should be rejected (V2 requires >= 2)
+        let call = IUniswapV2Router::swapExactTokensForTokensCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::from(1u64),
+            path: vec![WETH],
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data), RouterVersion::V2),
+            SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForTokens" && reason.contains("at least 2")
+        ));
+
+        let call = IUniswapV2Router::swapExactETHForTokensCall {
+            amountOutMin: U256::from(1u64),
+            path: vec![WETH],
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data), RouterVersion::V2),
+            SwapValidation::MalformedArgs { name, reason } if name == "swapExactETHForTokens" && reason.contains("at least 2")
+        ));
+
+        let call = IUniswapV2Router::swapExactTokensForETHCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::from(1u64),
+            path: vec![USDC],
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data), RouterVersion::V2),
+            SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForETH" && reason.contains("at least 2")
         ));
     }
 

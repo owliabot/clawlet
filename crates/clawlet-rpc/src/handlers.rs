@@ -362,7 +362,16 @@ pub async fn handle_send_raw(
                 )));
             }
         }
-        _ => {} // V3 functions — value check not enforced here
+        // V3 exactInput*/exactOutput* are non-payable
+        "exactInputSingle" | "exactInput" | "exactOutputSingle" | "exactOutput" => {
+            if !value.is_zero() {
+                return Err(HandlerError::BadRequest(format!(
+                    "{} is non-payable but req.value is nonzero ({})",
+                    swap_params.function, value
+                )));
+            }
+        }
+        _ => {}
     }
 
     // ---- Policy check ----

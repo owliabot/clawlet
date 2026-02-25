@@ -285,7 +285,7 @@ pub async fn handle_send_raw(
     };
 
     // ---- Swap calldata validation (using identified router version) ----
-    let swap_params = match validate_swap_calldata(&req.data, router_version) {
+    let swap_params = match validate_swap_calldata(&req.data, router_version, supported_chain) {
         SwapValidation::Allowed(params) => params,
         SwapValidation::NoSelector => {
             return Err(HandlerError::BadRequest(
@@ -341,6 +341,29 @@ pub async fn handle_send_raw(
             )));
         }
     };
+
+    // ---- Value/function consistency check ----
+    // payable functions (swapExactETHForTokens) must have nonzero value;
+    // non-payable swap functions must have zero value.
+    let value = req.value.unwrap_or(U256::ZERO);
+    match swap_params.function.as_str() {
+        "swapExactETHForTokens" => {
+            if value.is_zero() {
+                return Err(HandlerError::BadRequest(
+                    "swapExactETHForTokens requires nonzero msg.value (ETH input)".into(),
+                ));
+            }
+        }
+        "swapExactTokensForTokens" | "swapExactTokensForETH" => {
+            if !value.is_zero() {
+                return Err(HandlerError::BadRequest(format!(
+                    "{} is non-payable but req.value is nonzero ({})",
+                    swap_params.function, value
+                )));
+            }
+        }
+        _ => {} // V3 functions — value check not enforced here
+    }
 
     // ---- Policy check ----
     // Use the input token address from the swap calldata for policy validation,
@@ -398,7 +421,6 @@ pub async fn handle_send_raw(
         .get(&chain_id)
         .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
 
-    let value = req.value.unwrap_or(U256::ZERO);
     let data = req.data.clone().unwrap_or_default();
 
     let tx_req = build_raw_tx(&RawTxRequest {
@@ -433,7 +455,11 @@ pub async fn handle_send_raw(
                 "gas_limit": req.gas_limit,
                 "swap_fn": swap_params.function,
                 "token_in": format!("{}", swap_params.token_in),
-                "amount_in": swap_params.amount_in.to_string(),
+                "amount_in": if swap_params.amount_in.is_zero() && swap_params.function == "swapExactETHForTokens" {
+                    value.to_string() // ETH input is in msg.value, not calldata
+                } else {
+                    swap_params.amount_in.to_string()
+                },
                 "tx_hash": format!("{tx_hash}"),
                 "audit_id": audit_id,
             }),

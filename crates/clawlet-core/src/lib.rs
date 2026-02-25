@@ -5,5 +5,6 @@
 pub mod ais;
 pub mod audit;
 pub mod auth;
+pub mod chain;
 pub mod config;
 pub mod policy;

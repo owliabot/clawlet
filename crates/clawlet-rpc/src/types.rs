@@ -57,7 +57,7 @@ pub enum RpcMethod {
     Transfer,
     Skills,
     Execute,
-    /// Send a raw transaction bypassing the policy engine.
+    /// Send a raw transaction (UniswapV3 swap only, policy-gated).
     SendRaw,
     /// Grant a new session token (Admin only).
     AuthGrant,
@@ -298,7 +298,7 @@ pub struct AddressResponse {
     pub address: Address,
 }
 
-/// Request body for raw transaction sends (bypasses policy engine).
+/// Request body for raw transaction sends (UniswapV3 swap only, policy-gated).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendRawRequest {
     /// Recipient address (hex, 0x-prefixed).

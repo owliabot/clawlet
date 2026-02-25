@@ -229,7 +229,7 @@ impl RpcClient {
         Ok(result)
     }
 
-    /// Send a raw transaction (bypasses policy engine).
+    /// Send a raw transaction (UniswapV3 swap only, policy-gated).
     pub async fn send_raw(
         &self,
         to: alloy::primitives::Address,

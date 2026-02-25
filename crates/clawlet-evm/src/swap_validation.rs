@@ -2,34 +2,17 @@
 //! targeting known router contract addresses.
 
 use alloy::primitives::{address, Address, Bytes};
+use clawlet_core::chain::SupportedChainId;
 
 /// Canonical UniswapV3 SwapRouter address, shared across all supported chains:
 /// `0xE592427A0AEce92De3Edee1F18E0157C05861564`
-///
-/// Supported chains: 1 (Ethereum), 10 (Optimism), 56 (BNB), 137 (Polygon),
-/// 8453 (Base), 42161 (Arbitrum).
 const CANONICAL_SWAP_ROUTER: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
 
-/// Returns `true` if `to` is a known UniswapV3 SwapRouter for the given chain.
-///
-/// Only explicitly listed chains are allowed. Unknown chains are rejected.
-pub fn is_allowed_router(to: Address, chain_id: u64) -> bool {
-    match chain_id {
-        // Ethereum mainnet
-        1 => to == CANONICAL_SWAP_ROUTER,
-        // Optimism
-        10 => to == CANONICAL_SWAP_ROUTER,
-        // Polygon
-        137 => to == CANONICAL_SWAP_ROUTER,
-        // Arbitrum
-        42161 => to == CANONICAL_SWAP_ROUTER,
-        // Base
-        8453 => to == CANONICAL_SWAP_ROUTER,
-        // BNB Chain
-        56 => to == CANONICAL_SWAP_ROUTER,
-        // Unknown chain — deny
-        _ => false,
-    }
+/// Returns `true` if `to` is the known UniswapV3 SwapRouter for the given chain.
+pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
+    // All supported chains use the same canonical router.
+    let _ = chain; // ensure the chain was already validated via the enum
+    to == CANONICAL_SWAP_ROUTER
 }
 
 /// Allowed UniswapV3 SwapRouter function selectors (first 4 bytes of calldata).
@@ -118,42 +101,27 @@ mod tests {
     // ---- Router address tests ----
 
     #[test]
-    fn canonical_router_allowed_on_mainnet() {
-        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 1));
-    }
-
-    #[test]
-    fn canonical_router_allowed_on_base() {
-        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 8453));
-    }
-
-    #[test]
-    fn canonical_router_allowed_on_bnb() {
-        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 56));
+    fn canonical_router_allowed_on_all_chains() {
+        for chain in SupportedChainId::ALL {
+            assert!(
+                is_allowed_router(CANONICAL_SWAP_ROUTER, chain),
+                "canonical router should be allowed on {chain}"
+            );
+        }
     }
 
     #[test]
     fn random_address_denied() {
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
-        assert!(!is_allowed_router(random, 1));
-        assert!(!is_allowed_router(random, 56));
+        assert!(!is_allowed_router(random, SupportedChainId::Ethereum));
+        assert!(!is_allowed_router(random, SupportedChainId::Bnb));
     }
 
     #[test]
-    fn unknown_chain_denied() {
-        // Even canonical router is denied on unlisted chains
-        assert!(!is_allowed_router(CANONICAL_SWAP_ROUTER, 999));
-        assert!(!is_allowed_router(CANONICAL_SWAP_ROUTER, 43114)); // Avalanche not listed
-    }
-
-    #[test]
-    fn all_listed_chains_accept_canonical() {
-        for chain in [1, 10, 137, 42161, 8453, 56] {
-            assert!(
-                is_allowed_router(CANONICAL_SWAP_ROUTER, chain),
-                "canonical router should be allowed on chain {chain}"
-            );
-        }
+    fn unknown_chain_rejected_at_type_level() {
+        // SupportedChainId::try_from rejects unknown chains
+        assert!(SupportedChainId::try_from(999u64).is_err());
+        assert!(SupportedChainId::try_from(43114u64).is_err());
     }
 
     // ---- Selector tests ----

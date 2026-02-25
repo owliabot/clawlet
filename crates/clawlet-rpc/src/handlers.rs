@@ -8,6 +8,7 @@ use serde_json::json;
 use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
+use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::swap_validation::{is_allowed_router, validate_swap_calldata, SwapValidation};
 use clawlet_evm::tx::{
@@ -248,8 +249,12 @@ pub async fn handle_send_raw(
 ) -> Result<SendRawResponse, HandlerError> {
     let chain_id = req.chain_id;
 
+    // ---- Chain ID validation ----
+    let supported_chain = SupportedChainId::try_from(chain_id)
+        .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
+
     // ---- Router address whitelist ----
-    if !is_allowed_router(req.to, chain_id) {
+    if !is_allowed_router(req.to, supported_chain) {
         {
             let event = AuditEvent::new(
                 "send_raw",

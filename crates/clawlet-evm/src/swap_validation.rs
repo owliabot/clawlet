@@ -81,15 +81,25 @@ pub enum SwapValidation {
     MalformedArgs { name: String, reason: String },
 }
 
-/// Minimum valid V3 path length: one hop = token(20) + fee(3) + token(20) = 43 bytes.
-const MIN_PATH_LEN: usize = 43;
+/// Validate that a V3 path has correct structure: `20 + 23*n` bytes (n >= 1).
+///
+/// Path encoding: `token(20) | fee(3) | token(20) [| fee(3) | token(20) ]*`
+#[allow(clippy::manual_is_multiple_of)]
+fn is_valid_v3_path(path: &Bytes) -> bool {
+    // Must be at least 43 bytes (one hop: 20 + 3 + 20)
+    if path.len() < 43 {
+        return false;
+    }
+    // After the first token (20 bytes), remaining must be exact multiples of 23 (fee + token)
+    (path.len() - 20) % 23 == 0
+}
 
 /// Extract the first token address from a Uniswap V3 multi-hop path.
 ///
 /// Path encoding: `tokenA (20 bytes) | fee (3 bytes) | tokenB (20 bytes) | ...`
 /// Used for `exactInput` where the first token in the path is tokenIn.
 fn first_token_from_path(path: &Bytes) -> Option<Address> {
-    if path.len() < MIN_PATH_LEN {
+    if !is_valid_v3_path(path) {
         return None;
     }
     Some(Address::from_slice(&path[..20]))
@@ -99,7 +109,7 @@ fn first_token_from_path(path: &Bytes) -> Option<Address> {
 ///
 /// Used for `exactOutput` where the path is reversed: the **last** 20 bytes are tokenIn.
 fn last_token_from_path(path: &Bytes) -> Option<Address> {
-    if path.len() < MIN_PATH_LEN {
+    if !is_valid_v3_path(path) {
         return None;
     }
     Some(Address::from_slice(&path[path.len() - 20..]))
@@ -121,22 +131,49 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
                     token_in: c.params.tokenIn,
                     amount_in: c.params.amountIn,
                 },
-                ISwapRouter::ISwapRouterCalls::exactInput(c) => SwapParams {
-                    function: "exactInput".into(),
-                    token_in: first_token_from_path(&c.params.path).unwrap_or(Address::ZERO),
-                    amount_in: c.params.amountIn,
-                },
+                ISwapRouter::ISwapRouterCalls::exactInput(c) => {
+                    let token_in = match first_token_from_path(&c.params.path) {
+                        Some(addr) => addr,
+                        None => {
+                            return SwapValidation::MalformedArgs {
+                                name: "exactInput".into(),
+                                reason: format!(
+                                    "invalid V3 path: length {} (expected 20 + 23*n, n >= 1)",
+                                    c.params.path.len()
+                                ),
+                            };
+                        }
+                    };
+                    SwapParams {
+                        function: "exactInput".into(),
+                        token_in,
+                        amount_in: c.params.amountIn,
+                    }
+                }
                 ISwapRouter::ISwapRouterCalls::exactOutputSingle(c) => SwapParams {
                     function: "exactOutputSingle".into(),
                     token_in: c.params.tokenIn,
                     amount_in: c.params.amountInMaximum,
                 },
-                ISwapRouter::ISwapRouterCalls::exactOutput(c) => SwapParams {
-                    function: "exactOutput".into(),
-                    // For exactOutput the path is reversed: last token is tokenIn
-                    token_in: last_token_from_path(&c.params.path).unwrap_or(Address::ZERO),
-                    amount_in: c.params.amountInMaximum,
-                },
+                ISwapRouter::ISwapRouterCalls::exactOutput(c) => {
+                    let token_in = match last_token_from_path(&c.params.path) {
+                        Some(addr) => addr,
+                        None => {
+                            return SwapValidation::MalformedArgs {
+                                name: "exactOutput".into(),
+                                reason: format!(
+                                    "invalid V3 path: length {} (expected 20 + 23*n, n >= 1)",
+                                    c.params.path.len()
+                                ),
+                            };
+                        }
+                    };
+                    SwapParams {
+                        function: "exactOutput".into(),
+                        token_in,
+                        amount_in: c.params.amountInMaximum,
+                    }
+                }
             };
             SwapValidation::Allowed(params)
         }
@@ -395,5 +432,90 @@ mod tests {
             validate_swap_calldata(&Some(data)),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
+    }
+
+    // ---- V3 path validation tests ----
+
+    #[test]
+    fn exact_input_with_short_path_rejected() {
+        // path = 20 bytes (too short, needs at least 43)
+        let call = ISwapRouter::exactInputCall {
+            params: IV3SwapRouter::ExactInputParams {
+                path: Bytes::from(vec![0xAA; 20]),
+                recipient: Address::ZERO,
+                amountIn: U256::from(1u64),
+                amountOutMinimum: U256::from(1u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
+        ));
+    }
+
+    #[test]
+    fn exact_output_with_invalid_path_length_rejected() {
+        // path = 44 bytes (not 20 + 23*n)
+        let call = ISwapRouter::exactOutputCall {
+            params: IV3SwapRouter::ExactOutputParams {
+                path: Bytes::from(vec![0xBB; 44]),
+                recipient: Address::ZERO,
+                amountOut: U256::from(1u64),
+                amountInMaximum: U256::MAX,
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "exactOutput"
+        ));
+    }
+
+    #[test]
+    fn valid_two_hop_path_accepted() {
+        // Two hops: WETH -> fee -> USDC -> fee -> DAI = 20+3+20+3+20 = 66 bytes
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let mut path = Vec::with_capacity(66);
+        path.extend_from_slice(WETH.as_slice());
+        path.extend_from_slice(&[0x00, 0x0B, 0xB8]); // fee 3000
+        path.extend_from_slice(USDC.as_slice());
+        path.extend_from_slice(&[0x00, 0x01, 0xF4]); // fee 500
+        path.extend_from_slice(dai.as_slice());
+
+        let call = ISwapRouter::exactInputCall {
+            params: IV3SwapRouter::ExactInputParams {
+                path: Bytes::from(path),
+                recipient: Address::ZERO,
+                amountIn: U256::from(1_000_000_000_000_000_000u64),
+                amountOutMinimum: U256::from(1u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_swap_calldata(&Some(data)) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "exactInput");
+                assert_eq!(
+                    p.token_in, WETH,
+                    "first token in two-hop path should be WETH"
+                );
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn is_valid_v3_path_checks() {
+        use super::is_valid_v3_path;
+        // Valid: 43 (1 hop), 66 (2 hops), 89 (3 hops)
+        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 43])));
+        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 66])));
+        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 89])));
+        // Invalid
+        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 0])));
+        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 20])));
+        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 42])));
+        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 44])));
+        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 65])));
     }
 }

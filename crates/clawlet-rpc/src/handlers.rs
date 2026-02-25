@@ -10,7 +10,9 @@ use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_evm::swap_validation::{is_allowed_router, validate_swap_calldata, SwapValidation};
+use clawlet_evm::swap_validation::{
+    is_allowed_router, validate_swap_calldata, SwapValidation,
+};
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
@@ -279,8 +281,8 @@ pub async fn handle_send_raw(
     }
 
     // ---- Swap calldata validation ----
-    let swap_fn = match validate_swap_calldata(&req.data) {
-        SwapValidation::Allowed(name) => name,
+    let swap_params = match validate_swap_calldata(&req.data) {
+        SwapValidation::Allowed(params) => params,
         SwapValidation::NoSelector => {
             return Err(HandlerError::BadRequest(
                 "send_raw requires calldata with a valid UniswapV3 SwapRouter function selector"
@@ -337,12 +339,13 @@ pub async fn handle_send_raw(
     };
 
     // ---- Policy check ----
-    // Pass the specific swap function name (e.g. "swap:exactInputSingle") as the
-    // token identifier so policy can control which swap types are allowed.
-    let policy_token = format!("swap:{swap_fn}");
+    // Use the input token address from the swap calldata for policy validation,
+    // same as transfer — allowed_tokens and allowed_chains are enforced.
+    // USD amount is None (no price oracle yet).
+    let token_str = format!("{}", swap_params.token_in);
     let decision = state
         .policy
-        .check_transfer(None, &policy_token, chain_id)
+        .check_transfer(None, &token_str, chain_id)
         .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {
@@ -354,7 +357,7 @@ pub async fn handle_send_raw(
                     json!({
                         "to": format!("{}", req.to),
                         "chain_id": chain_id,
-                        "swap_fn": swap_fn,
+                        "swap_fn": swap_params.function,
                     }),
                     format!("denied: {reason}"),
                 );
@@ -371,7 +374,7 @@ pub async fn handle_send_raw(
                     json!({
                         "to": format!("{}", req.to),
                         "chain_id": chain_id,
-                        "swap_fn": swap_fn,
+                        "swap_fn": swap_params.function,
                     }),
                     format!("requires_approval: {reason}"),
                 );
@@ -424,7 +427,9 @@ pub async fn handle_send_raw(
                 "data": req.data.as_ref().map(|b| b.to_string()).unwrap_or_default(),
                 "chain_id": chain_id,
                 "gas_limit": req.gas_limit,
-                "swap_fn": swap_fn,
+                "swap_fn": swap_params.function,
+                "token_in": format!("{}", swap_params.token_in),
+                "amount_in": swap_params.amount_in.to_string(),
                 "tx_hash": format!("{tx_hash}"),
                 "audit_id": audit_id,
             }),

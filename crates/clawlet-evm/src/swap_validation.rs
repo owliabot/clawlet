@@ -4,7 +4,7 @@
 //! The allowed functions are defined by the ABI JSON file at `abi/ISwapRouter.json`
 //! (IV3SwapRouter interface from swap-router-contracts).
 
-use alloy::primitives::{address, Address, Bytes};
+use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
 use alloy::sol_types::SolInterface;
 use clawlet_core::chain::SupportedChainId;
@@ -40,16 +40,6 @@ pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
     to == swap_router02_address(chain)
 }
 
-/// Map a successfully decoded call to its function name.
-fn call_name(call: &ISwapRouter::ISwapRouterCalls) -> &'static str {
-    match call {
-        ISwapRouter::ISwapRouterCalls::exactInputSingle(_) => "exactInputSingle",
-        ISwapRouter::ISwapRouterCalls::exactInput(_) => "exactInput",
-        ISwapRouter::ISwapRouterCalls::exactOutputSingle(_) => "exactOutputSingle",
-        ISwapRouter::ISwapRouterCalls::exactOutput(_) => "exactOutput",
-    }
-}
-
 /// Try to identify a known function name from a 4-byte selector.
 ///
 /// SwapRouter02 (IV3SwapRouter) selectors:
@@ -67,11 +57,22 @@ fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
     }
 }
 
+/// Parsed swap parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapParams {
+    /// Function name (e.g. "exactInputSingle").
+    pub function: String,
+    /// The input token address.
+    pub token_in: Address,
+    /// The input amount (amountIn for exactInput*, amountInMaximum for exactOutput*).
+    pub amount_in: U256,
+}
+
 /// Result of validating raw transaction calldata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwapValidation {
     /// The calldata is a valid, ABI-decodable UniswapV3 swap call.
-    Allowed(String),
+    Allowed(SwapParams),
     /// The calldata is missing or too short to contain a function selector.
     NoSelector,
     /// The function selector is not one of the allowed swap functions.
@@ -80,8 +81,18 @@ pub enum SwapValidation {
     MalformedArgs { name: String, reason: String },
 }
 
+/// Extract the first token address from a Uniswap V3 multi-hop path.
+///
+/// Path encoding: `tokenA (20 bytes) | fee (3 bytes) | tokenB (20 bytes) | ...`
+fn token_in_from_path(path: &Bytes) -> Option<Address> {
+    if path.len() < 20 {
+        return None;
+    }
+    Some(Address::from_slice(&path[..20]))
+}
+
 /// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter02 function
-/// and can be ABI-decoded successfully.
+/// and can be ABI-decoded successfully. Returns parsed swap parameters on success.
 pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
     let data = match data {
         Some(d) if d.len() >= 4 => d,
@@ -89,7 +100,32 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
     };
 
     match ISwapRouter::ISwapRouterCalls::abi_decode(data) {
-        Ok(call) => SwapValidation::Allowed(call_name(&call).to_string()),
+        Ok(call) => {
+            let params = match &call {
+                ISwapRouter::ISwapRouterCalls::exactInputSingle(c) => SwapParams {
+                    function: "exactInputSingle".into(),
+                    token_in: c.params.tokenIn,
+                    amount_in: c.params.amountIn,
+                },
+                ISwapRouter::ISwapRouterCalls::exactInput(c) => SwapParams {
+                    function: "exactInput".into(),
+                    token_in: token_in_from_path(&c.params.path).unwrap_or(Address::ZERO),
+                    amount_in: c.params.amountIn,
+                },
+                ISwapRouter::ISwapRouterCalls::exactOutputSingle(c) => SwapParams {
+                    function: "exactOutputSingle".into(),
+                    token_in: c.params.tokenIn,
+                    amount_in: c.params.amountInMaximum,
+                },
+                ISwapRouter::ISwapRouterCalls::exactOutput(c) => SwapParams {
+                    function: "exactOutput".into(),
+                    // For exactOutput the path is reversed: last token is tokenIn
+                    token_in: token_in_from_path(&c.params.path).unwrap_or(Address::ZERO),
+                    amount_in: c.params.amountInMaximum,
+                },
+            };
+            SwapValidation::Allowed(params)
+        }
         Err(decode_err) => {
             let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
@@ -219,34 +255,51 @@ mod tests {
 
     #[test]
     fn exact_input_single_valid() {
-        assert!(matches!(
-            validate_swap_calldata(&Some(encode_exact_input_single())),
-            SwapValidation::Allowed(name) if name == "exactInputSingle"
-        ));
+        match validate_swap_calldata(&Some(encode_exact_input_single())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "exactInputSingle");
+                assert_eq!(p.token_in, Address::ZERO);
+                assert_eq!(p.amount_in, U256::from(1_000_000_000_000_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
     }
 
     #[test]
     fn exact_input_valid() {
-        assert!(matches!(
-            validate_swap_calldata(&Some(encode_exact_input())),
-            SwapValidation::Allowed(name) if name == "exactInput"
-        ));
+        match validate_swap_calldata(&Some(encode_exact_input())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "exactInput");
+                // path is all zeros, so token_in = Address::ZERO
+                assert_eq!(p.token_in, Address::ZERO);
+                assert_eq!(p.amount_in, U256::from(1_000_000_000_000_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
     }
 
     #[test]
     fn exact_output_single_valid() {
-        assert!(matches!(
-            validate_swap_calldata(&Some(encode_exact_output_single())),
-            SwapValidation::Allowed(name) if name == "exactOutputSingle"
-        ));
+        match validate_swap_calldata(&Some(encode_exact_output_single())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "exactOutputSingle");
+                assert_eq!(p.token_in, Address::ZERO);
+                // amount_in is amountInMaximum
+                assert_eq!(p.amount_in, U256::MAX);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
     }
 
     #[test]
     fn exact_output_valid() {
-        assert!(matches!(
-            validate_swap_calldata(&Some(encode_exact_output())),
-            SwapValidation::Allowed(name) if name == "exactOutput"
-        ));
+        match validate_swap_calldata(&Some(encode_exact_output())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "exactOutput");
+                assert_eq!(p.amount_in, U256::MAX);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
     }
 
     #[test]

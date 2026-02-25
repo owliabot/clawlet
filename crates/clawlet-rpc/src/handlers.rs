@@ -337,10 +337,12 @@ pub async fn handle_send_raw(
     };
 
     // ---- Policy check ----
-    // Use "swap" as the token identifier for policy; USD amount is unknown (no oracle).
+    // Pass the specific swap function name (e.g. "swap:exactInputSingle") as the
+    // token identifier so policy can control which swap types are allowed.
+    let policy_token = format!("swap:{swap_fn}");
     let decision = state
         .policy
-        .check_transfer(None, "swap", chain_id)
+        .check_transfer(None, &policy_token, chain_id)
         .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
 
     match decision {

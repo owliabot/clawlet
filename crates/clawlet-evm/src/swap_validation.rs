@@ -81,38 +81,60 @@ pub enum SwapValidation {
     MalformedArgs { name: String, reason: String },
 }
 
-/// Validate that a V3 path has correct structure: `20 + 23*n` bytes (n >= 1).
+/// A decoded hop in a Uniswap V3 multi-hop path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathHop {
+    pub token_in: Address,
+    pub fee: u32,
+    pub token_out: Address,
+}
+
+/// Decode a Uniswap V3 path into a list of hops.
 ///
 /// Path encoding: `token(20) | fee(3) | token(20) [| fee(3) | token(20) ]*`
-#[allow(clippy::manual_is_multiple_of)]
-fn is_valid_v3_path(path: &Bytes) -> bool {
-    // Must be at least 43 bytes (one hop: 20 + 3 + 20)
+/// Returns `None` if the path is malformed (wrong length or too short).
+pub fn decode_v3_path(path: &Bytes) -> Option<Vec<PathHop>> {
+    // Minimum: 20 + 3 + 20 = 43 bytes for one hop
     if path.len() < 43 {
-        return false;
+        return None;
     }
-    // After the first token (20 bytes), remaining must be exact multiples of 23 (fee + token)
-    (path.len() - 20) % 23 == 0
+    // Structure check: (len - 20) must be divisible by 23
+    if !((path.len() - 20).is_multiple_of(23)) {
+        return None;
+    }
+
+    let num_hops = (path.len() - 20) / 23;
+    let mut hops = Vec::with_capacity(num_hops);
+    let mut offset = 0;
+
+    for _ in 0..num_hops {
+        let token_in = Address::from_slice(&path[offset..offset + 20]);
+        offset += 20;
+        let fee = ((path[offset] as u32) << 16)
+            | ((path[offset + 1] as u32) << 8)
+            | (path[offset + 2] as u32);
+        offset += 3;
+        let token_out = Address::from_slice(&path[offset..offset + 20]);
+        // Don't advance offset past token_out — it's the next hop's token_in
+
+        hops.push(PathHop {
+            token_in,
+            fee,
+            token_out,
+        });
+    }
+
+    Some(hops)
 }
 
-/// Extract the first token address from a Uniswap V3 multi-hop path.
-///
-/// Path encoding: `tokenA (20 bytes) | fee (3 bytes) | tokenB (20 bytes) | ...`
-/// Used for `exactInput` where the first token in the path is tokenIn.
+/// Extract tokenIn from a V3 path for `exactInput` (first token).
 fn first_token_from_path(path: &Bytes) -> Option<Address> {
-    if !is_valid_v3_path(path) {
-        return None;
-    }
-    Some(Address::from_slice(&path[..20]))
+    decode_v3_path(path).map(|hops| hops[0].token_in)
 }
 
-/// Extract the last token address from a Uniswap V3 multi-hop path.
-///
-/// Used for `exactOutput` where the path is reversed: the **last** 20 bytes are tokenIn.
+/// Extract tokenIn from a V3 path for `exactOutput` (last token in reversed path).
 fn last_token_from_path(path: &Bytes) -> Option<Address> {
-    if !is_valid_v3_path(path) {
-        return None;
-    }
-    Some(Address::from_slice(&path[path.len() - 20..]))
+    decode_v3_path(path).map(|hops| hops.last().unwrap().token_out)
 }
 
 /// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter02 function
@@ -505,17 +527,46 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_v3_path_checks() {
-        use super::is_valid_v3_path;
-        // Valid: 43 (1 hop), 66 (2 hops), 89 (3 hops)
-        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 43])));
-        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 66])));
-        assert!(is_valid_v3_path(&Bytes::from(vec![0u8; 89])));
-        // Invalid
-        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 0])));
-        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 20])));
-        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 42])));
-        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 44])));
-        assert!(!is_valid_v3_path(&Bytes::from(vec![0u8; 65])));
+    fn decode_v3_path_single_hop() {
+        let path = make_path(WETH, 3000, USDC);
+        let hops = decode_v3_path(&path).unwrap();
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].token_in, WETH);
+        assert_eq!(hops[0].fee, 3000);
+        assert_eq!(hops[0].token_out, USDC);
+    }
+
+    #[test]
+    fn decode_v3_path_two_hops() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let mut path = Vec::with_capacity(66);
+        path.extend_from_slice(WETH.as_slice());
+        path.extend_from_slice(&[0x00, 0x0B, 0xB8]); // fee 3000
+        path.extend_from_slice(USDC.as_slice());
+        path.extend_from_slice(&[0x00, 0x01, 0xF4]); // fee 500
+        path.extend_from_slice(dai.as_slice());
+        let path = Bytes::from(path);
+
+        let hops = decode_v3_path(&path).unwrap();
+        assert_eq!(hops.len(), 2);
+        assert_eq!(hops[0].token_in, WETH);
+        assert_eq!(hops[0].fee, 3000);
+        assert_eq!(hops[0].token_out, USDC);
+        assert_eq!(hops[1].token_in, USDC);
+        assert_eq!(hops[1].fee, 500);
+        assert_eq!(hops[1].token_out, dai);
+    }
+
+    #[test]
+    fn decode_v3_path_invalid_lengths() {
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 0])).is_none());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 20])).is_none());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 42])).is_none());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 44])).is_none());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 65])).is_none());
+        // Valid lengths
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 43])).is_some());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 66])).is_some());
+        assert!(decode_v3_path(&Bytes::from(vec![0u8; 89])).is_some());
     }
 }

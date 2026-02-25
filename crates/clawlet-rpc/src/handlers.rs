@@ -10,7 +10,7 @@ use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_evm::swap_validation::{is_allowed_router, validate_swap_calldata, SwapValidation};
+use clawlet_evm::swap_validation::{identify_router, validate_swap_calldata, SwapValidation};
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
@@ -236,12 +236,15 @@ pub async fn handle_transfer(
 
 /// Send a raw transaction with swap validation and policy checks.
 ///
-/// Only allows UniswapV3 SwapRouter02 (IV3SwapRouter) functions targeting
+/// Only allows Uniswap router (V2/V3) functions targeting
 /// known router addresses per chain:
 /// - `exactInputSingle` (`0x04e45aaf`)
 /// - `exactInput` (`0xb858183f`)
 /// - `exactOutputSingle` (`0x5023b4df`)
 /// - `exactOutput` (`0x09b81346`)
+/// - `swapExactTokensForTokens` (`0x38ed1739`)
+/// - `swapExactETHForTokens` (`0x7ff36ab5`)
+/// - `swapExactTokensForETH` (`0x18cbafe5`)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -255,36 +258,38 @@ pub async fn handle_send_raw(
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
     // ---- Router address whitelist ----
-    if !is_allowed_router(req.to, supported_chain) {
-        {
-            let event = AuditEvent::new(
-                "send_raw",
-                json!({
-                    "to": format!("{}", req.to),
-                    "chain_id": chain_id,
-                }),
-                format!(
-                    "denied: target address {} is not a known UniswapV3 SwapRouter",
-                    req.to
-                ),
-            );
-            if let Ok(mut audit) = state.audit.lock() {
-                let _ = audit.log_event(event);
+    let router_version = match identify_router(req.to, supported_chain) {
+        Some(v) => v,
+        None => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                    }),
+                    format!(
+                        "denied: target address {} is not a known Uniswap router",
+                        req.to
+                    ),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
             }
+            return Err(HandlerError::BadRequest(format!(
+                "target address {} is not a known Uniswap router for chain {chain_id}",
+                req.to
+            )));
         }
-        return Err(HandlerError::BadRequest(format!(
-            "target address {} is not a known UniswapV3 SwapRouter for chain {chain_id}",
-            req.to
-        )));
-    }
+    };
 
-    // ---- Swap calldata validation ----
-    let swap_params = match validate_swap_calldata(&req.data) {
+    // ---- Swap calldata validation (using identified router version) ----
+    let swap_params = match validate_swap_calldata(&req.data, router_version, supported_chain) {
         SwapValidation::Allowed(params) => params,
         SwapValidation::NoSelector => {
             return Err(HandlerError::BadRequest(
-                "send_raw requires calldata with a valid UniswapV3 SwapRouter function selector"
-                    .into(),
+                "send_raw requires calldata with a valid Uniswap router function selector".into(),
             ));
         }
         SwapValidation::MalformedArgs { name, reason } => {
@@ -330,11 +335,39 @@ pub async fn handle_send_raw(
 
             return Err(HandlerError::BadRequest(format!(
                 "function selector {sel_hex} is not allowed; \
-                 only UniswapV3 SwapRouter functions are permitted \
-                 (exactInputSingle, exactInput, exactOutputSingle, exactOutput)"
+                 only Uniswap router functions are permitted \
+                 (exactInputSingle, exactInput, exactOutputSingle, exactOutput, \
+                 swapExactTokensForTokens, swapExactETHForTokens, swapExactTokensForETH)"
             )));
         }
     };
+
+    // ---- Value/function consistency check ----
+    // V2 swapExactETHForTokens is payable and requires nonzero value (ETH input).
+    // V2 swapExactTokensForTokens / swapExactTokensForETH are non-payable.
+    // V3 functions (exactInput*, exactOutput*) are payable in ABI (SwapRouter02
+    // accepts ETH for wrapping), so we allow nonzero value for them.
+    let value = req.value.unwrap_or(U256::ZERO);
+    match swap_params.function.as_str() {
+        "swapExactETHForTokens" => {
+            if value.is_zero() {
+                return Err(HandlerError::BadRequest(
+                    "swapExactETHForTokens requires nonzero msg.value (ETH input)".into(),
+                ));
+            }
+        }
+        "swapExactTokensForTokens" | "swapExactTokensForETH" => {
+            if !value.is_zero() {
+                return Err(HandlerError::BadRequest(format!(
+                    "{} is non-payable but req.value is nonzero ({})",
+                    swap_params.function, value
+                )));
+            }
+        }
+        // V3 exactInput*/exactOutput* are payable in SwapRouter02 ABI
+        // (router accepts ETH and wraps to WETH internally), so allow any value.
+        _ => {}
+    }
 
     // ---- Policy check ----
     // Use the input token address from the swap calldata for policy validation,
@@ -392,7 +425,6 @@ pub async fn handle_send_raw(
         .get(&chain_id)
         .ok_or_else(|| HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}")))?;
 
-    let value = req.value.unwrap_or(U256::ZERO);
     let data = req.data.clone().unwrap_or_default();
 
     let tx_req = build_raw_tx(&RawTxRequest {
@@ -427,7 +459,11 @@ pub async fn handle_send_raw(
                 "gas_limit": req.gas_limit,
                 "swap_fn": swap_params.function,
                 "token_in": format!("{}", swap_params.token_in),
-                "amount_in": swap_params.amount_in.to_string(),
+                "amount_in": if swap_params.amount_in.is_zero() && swap_params.function == "swapExactETHForTokens" {
+                    value.to_string() // ETH input is in msg.value, not calldata
+                } else {
+                    swap_params.amount_in.to_string()
+                },
                 "tx_hash": format!("{tx_hash}"),
                 "audit_id": audit_id,
             }),

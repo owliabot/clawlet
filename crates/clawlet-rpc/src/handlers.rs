@@ -236,12 +236,15 @@ pub async fn handle_transfer(
 
 /// Send a raw transaction with swap validation and policy checks.
 ///
-/// Only allows UniswapV3 SwapRouter02 (IV3SwapRouter) functions targeting
+/// Only allows Uniswap router (V2/V3) functions targeting
 /// known router addresses per chain:
 /// - `exactInputSingle` (`0x04e45aaf`)
 /// - `exactInput` (`0xb858183f`)
 /// - `exactOutputSingle` (`0x5023b4df`)
 /// - `exactOutput` (`0x09b81346`)
+/// - `swapExactTokensForTokens` (`0x38ed1739`)
+/// - `swapExactETHForTokens` (`0x7ff36ab5`)
+/// - `swapExactTokensForETH` (`0x18cbafe5`)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -264,7 +267,7 @@ pub async fn handle_send_raw(
                     "chain_id": chain_id,
                 }),
                 format!(
-                    "denied: target address {} is not a known UniswapV3 SwapRouter",
+                    "denied: target address {} is not a known Uniswap router",
                     req.to
                 ),
             );
@@ -273,7 +276,7 @@ pub async fn handle_send_raw(
             }
         }
         return Err(HandlerError::BadRequest(format!(
-            "target address {} is not a known UniswapV3 SwapRouter for chain {chain_id}",
+            "target address {} is not a known Uniswap router for chain {chain_id}",
             req.to
         )));
     }
@@ -283,8 +286,7 @@ pub async fn handle_send_raw(
         SwapValidation::Allowed(params) => params,
         SwapValidation::NoSelector => {
             return Err(HandlerError::BadRequest(
-                "send_raw requires calldata with a valid UniswapV3 SwapRouter function selector"
-                    .into(),
+                "send_raw requires calldata with a valid Uniswap router function selector".into(),
             ));
         }
         SwapValidation::MalformedArgs { name, reason } => {
@@ -330,8 +332,9 @@ pub async fn handle_send_raw(
 
             return Err(HandlerError::BadRequest(format!(
                 "function selector {sel_hex} is not allowed; \
-                 only UniswapV3 SwapRouter functions are permitted \
-                 (exactInputSingle, exactInput, exactOutputSingle, exactOutput)"
+                 only Uniswap router functions are permitted \
+                 (exactInputSingle, exactInput, exactOutputSingle, exactOutput, \
+                 swapExactTokensForTokens, swapExactETHForTokens, swapExactTokensForETH)"
             )));
         }
     };

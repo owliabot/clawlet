@@ -1,8 +1,9 @@
-//! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter02 functions
+//! Calldata validation for `send_raw` — only allows whitelisted Uniswap router functions
 //! targeting known router contract addresses.
 //!
-//! The allowed functions are defined by the ABI JSON file at `abi/ISwapRouter.json`
-//! (IV3SwapRouter interface from swap-router-contracts).
+//! The allowed functions are defined by the ABI JSON files at:
+//! - `abi/ISwapRouter.json` (Uniswap V3 SwapRouter02 / IV3SwapRouter)
+//! - `abi/IUniswapV2Router.json` (UniswapV2-like Router02 interfaces)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
@@ -16,10 +17,17 @@ sol!(
     "abi/ISwapRouter.json"
 );
 
+// Load UniswapV2-like Router02 interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    IUniswapV2Router,
+    "abi/IUniswapV2Router.json"
+);
+
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
 ///
 /// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
-fn swap_router02_address(chain: SupportedChainId) -> Address {
+fn swap_router_v3_address(chain: SupportedChainId) -> Address {
     match chain {
         // Ethereum, Optimism, Polygon, Arbitrum share the same address
         SupportedChainId::Ethereum
@@ -35,9 +43,22 @@ fn swap_router02_address(chain: SupportedChainId) -> Address {
     }
 }
 
-/// Returns `true` if `to` is the known UniswapV3 SwapRouter02 for the given chain.
+/// UniswapV2-like Router02 addresses per chain.
+fn swap_router_v2_address(chain: SupportedChainId) -> Address {
+    match chain {
+        SupportedChainId::Ethereum => address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+        SupportedChainId::Bnb => address!("10ED43C718714eb63d5aA57B78B54704E256024E"),
+        SupportedChainId::Polygon => address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"),
+        SupportedChainId::Arbitrum | SupportedChainId::Base => {
+            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24")
+        }
+        SupportedChainId::Optimism => address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
+    }
+}
+
+/// Returns `true` if `to` is a known Uniswap router (V2/V3) for the given chain.
 pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
-    to == swap_router02_address(chain)
+    to == swap_router_v3_address(chain) || to == swap_router_v2_address(chain)
 }
 
 /// Try to identify a known function name from a 4-byte selector.
@@ -47,7 +68,7 @@ pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
 /// - exactInput:        0xb858183f
 /// - exactOutputSingle: 0x5023b4df
 /// - exactOutput:       0x09b81346
-fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
+fn selector_name_v3(selector: [u8; 4]) -> Option<&'static str> {
     match selector {
         [0x04, 0xe4, 0x5a, 0xaf] => Some("exactInputSingle"),
         [0xb8, 0x58, 0x18, 0x3f] => Some("exactInput"),
@@ -55,6 +76,19 @@ fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
         [0x09, 0xb8, 0x13, 0x46] => Some("exactOutput"),
         _ => None,
     }
+}
+
+fn selector_name_v2(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0x38, 0xed, 0x17, 0x39] => Some("swapExactTokensForTokens"),
+        [0x7f, 0xf3, 0x6a, 0xb5] => Some("swapExactETHForTokens"),
+        [0x18, 0xcb, 0xaf, 0xe5] => Some("swapExactTokensForETH"),
+        _ => None,
+    }
+}
+
+fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
+    selector_name_v3(selector).or_else(|| selector_name_v2(selector))
 }
 
 /// Parsed swap parameters for policy checks.
@@ -71,7 +105,7 @@ pub struct SwapParams {
 /// Result of validating raw transaction calldata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwapValidation {
-    /// The calldata is a valid, ABI-decodable UniswapV3 swap call.
+    /// The calldata is a valid, ABI-decodable Uniswap swap call.
     Allowed(SwapParams),
     /// The calldata is missing or too short to contain a function selector.
     NoSelector,
@@ -137,13 +171,14 @@ fn last_token_from_path(path: &Bytes) -> Option<Address> {
     decode_v3_path(path).map(|hops| hops.last().unwrap().token_out)
 }
 
-/// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter02 function
+/// Validate that the calldata corresponds to an allowed Uniswap router function
 /// and can be ABI-decoded successfully. Returns parsed swap parameters on success.
 pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
     let data = match data {
         Some(d) if d.len() >= 4 => d,
         _ => return SwapValidation::NoSelector,
     };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
     match ISwapRouter::ISwapRouterCalls::abi_decode(data) {
         Ok(call) => {
@@ -199,17 +234,76 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
             };
             SwapValidation::Allowed(params)
         }
-        Err(decode_err) => {
-            let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
-
-            if let Some(name) = selector_name(selector) {
+        Err(v3_decode_err) => {
+            if let Some(name) = selector_name_v3(selector) {
                 return SwapValidation::MalformedArgs {
                     name: name.to_string(),
-                    reason: decode_err.to_string(),
+                    reason: v3_decode_err.to_string(),
                 };
             }
 
-            SwapValidation::Denied { selector }
+            match IUniswapV2Router::IUniswapV2RouterCalls::abi_decode(data) {
+                Ok(call) => {
+                    let params = match &call {
+                        IUniswapV2Router::IUniswapV2RouterCalls::swapExactTokensForTokens(c) => {
+                            let token_in = match c.path.first() {
+                                Some(addr) => *addr,
+                                None => {
+                                    return SwapValidation::MalformedArgs {
+                                        name: "swapExactTokensForTokens".into(),
+                                        reason: "path must contain at least one token".into(),
+                                    };
+                                }
+                            };
+                            SwapParams {
+                                function: "swapExactTokensForTokens".into(),
+                                token_in,
+                                amount_in: c.amountIn,
+                            }
+                        }
+                        IUniswapV2Router::IUniswapV2RouterCalls::swapExactETHForTokens(c) => {
+                            if c.path.is_empty() {
+                                return SwapValidation::MalformedArgs {
+                                    name: "swapExactETHForTokens".into(),
+                                    reason: "path must contain at least one token".into(),
+                                };
+                            }
+                            SwapParams {
+                                function: "swapExactETHForTokens".into(),
+                                token_in: Address::ZERO,
+                                amount_in: U256::ZERO,
+                            }
+                        }
+                        IUniswapV2Router::IUniswapV2RouterCalls::swapExactTokensForETH(c) => {
+                            let token_in = match c.path.first() {
+                                Some(addr) => *addr,
+                                None => {
+                                    return SwapValidation::MalformedArgs {
+                                        name: "swapExactTokensForETH".into(),
+                                        reason: "path must contain at least one token".into(),
+                                    };
+                                }
+                            };
+                            SwapParams {
+                                function: "swapExactTokensForETH".into(),
+                                token_in,
+                                amount_in: c.amountIn,
+                            }
+                        }
+                    };
+                    SwapValidation::Allowed(params)
+                }
+                Err(v2_decode_err) => {
+                    if let Some(name) = selector_name(selector) {
+                        return SwapValidation::MalformedArgs {
+                            name: name.to_string(),
+                            reason: v2_decode_err.to_string(),
+                        };
+                    }
+
+                    SwapValidation::Denied { selector }
+                }
+            }
         }
     }
 }
@@ -224,22 +318,65 @@ mod tests {
 
     #[test]
     fn correct_router_per_chain() {
-        // Ethereum/Optimism/Polygon/Arbitrum share one address
-        let common = address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
-        assert!(is_allowed_router(common, SupportedChainId::Ethereum));
-        assert!(is_allowed_router(common, SupportedChainId::Optimism));
-        assert!(is_allowed_router(common, SupportedChainId::Polygon));
-        assert!(is_allowed_router(common, SupportedChainId::Arbitrum));
+        // Ethereum
+        assert!(is_allowed_router(
+            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+            SupportedChainId::Ethereum
+        ));
+        assert!(is_allowed_router(
+            address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+            SupportedChainId::Ethereum
+        ));
 
-        // Base has a different address
-        let base_router = address!("2626664c2603336E57B271c5C0b26F421741e481");
-        assert!(is_allowed_router(base_router, SupportedChainId::Base));
-        assert!(!is_allowed_router(common, SupportedChainId::Base));
+        // Optimism
+        assert!(is_allowed_router(
+            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+            SupportedChainId::Optimism
+        ));
+        assert!(is_allowed_router(
+            address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
+            SupportedChainId::Optimism
+        ));
 
-        // BNB has its own address
-        let bnb_router = address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2");
-        assert!(is_allowed_router(bnb_router, SupportedChainId::Bnb));
-        assert!(!is_allowed_router(common, SupportedChainId::Bnb));
+        // Polygon
+        assert!(is_allowed_router(
+            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+            SupportedChainId::Polygon
+        ));
+        assert!(is_allowed_router(
+            address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"),
+            SupportedChainId::Polygon
+        ));
+
+        // Arbitrum
+        assert!(is_allowed_router(
+            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+            SupportedChainId::Arbitrum
+        ));
+        assert!(is_allowed_router(
+            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
+            SupportedChainId::Arbitrum
+        ));
+
+        // Base
+        assert!(is_allowed_router(
+            address!("2626664c2603336E57B271c5C0b26F421741e481"),
+            SupportedChainId::Base
+        ));
+        assert!(is_allowed_router(
+            address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
+            SupportedChainId::Base
+        ));
+
+        // BNB
+        assert!(is_allowed_router(
+            address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
+            SupportedChainId::Bnb
+        ));
+        assert!(is_allowed_router(
+            address!("10ED43C718714eb63d5aA57B78B54704E256024E"),
+            SupportedChainId::Bnb
+        ));
     }
 
     #[test]
@@ -453,6 +590,153 @@ mod tests {
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
+        ));
+    }
+
+    // ---- V2 decode tests ----
+
+    fn encode_swap_exact_tokens_for_tokens() -> Bytes {
+        let call = IUniswapV2Router::swapExactTokensForTokensCall {
+            amountIn: U256::from(10_000u64),
+            amountOutMin: U256::from(9_500u64),
+            path: vec![WETH, USDC],
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_swap_exact_eth_for_tokens() -> Bytes {
+        let call = IUniswapV2Router::swapExactETHForTokensCall {
+            amountOutMin: U256::from(9_500u64),
+            path: vec![WETH, USDC],
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_swap_exact_tokens_for_eth() -> Bytes {
+        let call = IUniswapV2Router::swapExactTokensForETHCall {
+            amountIn: U256::from(10_000u64),
+            amountOutMin: U256::from(9_500u64),
+            path: vec![USDC, WETH],
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    #[test]
+    fn swap_exact_tokens_for_tokens_valid() {
+        match validate_swap_calldata(&Some(encode_swap_exact_tokens_for_tokens())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "swapExactTokensForTokens");
+                assert_eq!(p.token_in, WETH);
+                assert_eq!(p.amount_in, U256::from(10_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn swap_exact_eth_for_tokens_valid() {
+        match validate_swap_calldata(&Some(encode_swap_exact_eth_for_tokens())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "swapExactETHForTokens");
+                assert_eq!(p.token_in, Address::ZERO);
+                assert_eq!(p.amount_in, U256::ZERO);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn swap_exact_tokens_for_eth_valid() {
+        match validate_swap_calldata(&Some(encode_swap_exact_tokens_for_eth())) {
+            SwapValidation::Allowed(p) => {
+                assert_eq!(p.function, "swapExactTokensForETH");
+                assert_eq!(p.token_in, USDC);
+                assert_eq!(p.amount_in, U256::from(10_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v2_selector_only_is_malformed() {
+        // swapExactTokensForTokens selector (0x38ed1739) with no args
+        let data = Bytes::from(vec![0x38, 0xed, 0x17, 0x39]);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
+        ));
+    }
+
+    #[test]
+    fn v2_eth_for_tokens_selector_only_is_malformed() {
+        // swapExactETHForTokens selector (0x7ff36ab5) with no args
+        let data = Bytes::from(vec![0x7f, 0xf3, 0x6a, 0xb5]);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
+        ));
+    }
+
+    #[test]
+    fn v2_tokens_for_eth_selector_only_is_malformed() {
+        // swapExactTokensForETH selector (0x18cbafe5) with no args
+        let data = Bytes::from(vec![0x18, 0xcb, 0xaf, 0xe5]);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
+        ));
+    }
+
+    #[test]
+    fn v2_tokens_for_eth_empty_path_rejected() {
+        let call = IUniswapV2Router::swapExactTokensForETHCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::from(1u64),
+            path: Vec::new(),
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
+        ));
+    }
+
+    #[test]
+    fn v2_tokens_for_tokens_empty_path_rejected() {
+        let call = IUniswapV2Router::swapExactTokensForTokensCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::from(1u64),
+            path: Vec::new(),
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
+        ));
+    }
+
+    #[test]
+    fn v2_eth_for_tokens_empty_path_rejected() {
+        let call = IUniswapV2Router::swapExactETHForTokensCall {
+            amountOutMin: U256::from(1u64),
+            path: Vec::new(),
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
         ));
     }
 

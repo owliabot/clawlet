@@ -343,8 +343,10 @@ pub async fn handle_send_raw(
     };
 
     // ---- Value/function consistency check ----
-    // payable functions (swapExactETHForTokens) must have nonzero value;
-    // non-payable swap functions must have zero value.
+    // V2 swapExactETHForTokens is payable and requires nonzero value (ETH input).
+    // V2 swapExactTokensForTokens / swapExactTokensForETH are non-payable.
+    // V3 functions (exactInput*, exactOutput*) are payable in ABI (SwapRouter02
+    // accepts ETH for wrapping), so we allow nonzero value for them.
     let value = req.value.unwrap_or(U256::ZERO);
     match swap_params.function.as_str() {
         "swapExactETHForTokens" => {
@@ -362,15 +364,8 @@ pub async fn handle_send_raw(
                 )));
             }
         }
-        // V3 exactInput*/exactOutput* are non-payable
-        "exactInputSingle" | "exactInput" | "exactOutputSingle" | "exactOutput" => {
-            if !value.is_zero() {
-                return Err(HandlerError::BadRequest(format!(
-                    "{} is non-payable but req.value is nonzero ({})",
-                    swap_params.function, value
-                )));
-            }
-        }
+        // V3 exactInput*/exactOutput* are payable in SwapRouter02 ABI
+        // (router accepts ETH and wraps to WETH internally), so allow any value.
         _ => {}
     }
 

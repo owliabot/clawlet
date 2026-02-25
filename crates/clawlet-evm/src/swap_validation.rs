@@ -290,6 +290,11 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
                                 amount_in: c.amountIn,
                             }
                         }
+                        // All other V2 Router functions (addLiquidity, removeLiquidity, etc.)
+                        // are valid ABI but not whitelisted for send_raw.
+                        _ => {
+                            return SwapValidation::Denied { selector };
+                        }
                     };
                     SwapValidation::Allowed(params)
                 }

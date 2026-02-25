@@ -236,11 +236,12 @@ pub async fn handle_transfer(
 
 /// Send a raw transaction with swap validation and policy checks.
 ///
-/// Only allows UniswapV3 SwapRouter functions targeting known router addresses:
-/// - `exactInputSingle` (`0x414bf389`)
-/// - `exactInput` (`0xc04b8d59`)
-/// - `exactOutputSingle` (`0xdb3e2198`)
-/// - `exactOutput` (`0xf28c0498`)
+/// Only allows UniswapV3 SwapRouter02 (IV3SwapRouter) functions targeting
+/// known router addresses per chain:
+/// - `exactInputSingle` (`0x04e45aaf`)
+/// - `exactInput` (`0xb858183f`)
+/// - `exactOutputSingle` (`0x5023b4df`)
+/// - `exactOutput` (`0x09b81346`)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(

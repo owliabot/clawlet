@@ -1,23 +1,44 @@
-//! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter functions
+//! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter02 functions
 //! targeting known router contract addresses.
 //!
-//! The allowed functions are defined by the ABI JSON file at `abi/ISwapRouter.json`.
+//! The allowed functions are defined by the ABI JSON file at `abi/ISwapRouter.json`
+//! (IV3SwapRouter interface from swap-router-contracts).
 
 use alloy::primitives::{address, Address, Bytes};
 use alloy::sol;
 use alloy::sol_types::SolInterface;
 use clawlet_core::chain::SupportedChainId;
 
-/// Canonical UniswapV3 SwapRouter address, shared across all supported chains:
-/// `0xE592427A0AEce92De3Edee1F18E0157C05861564`
-const CANONICAL_SWAP_ROUTER: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
-
-// Load UniswapV3 SwapRouter interface from ABI JSON.
+// Load UniswapV3 SwapRouter02 (IV3SwapRouter) interface from ABI JSON.
 sol!(
     #[sol(abi)]
     ISwapRouter,
     "abi/ISwapRouter.json"
 );
+
+/// SwapRouter02 addresses per chain (from Uniswap official deployments).
+///
+/// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
+fn swap_router02_address(chain: SupportedChainId) -> Address {
+    match chain {
+        // Ethereum, Optimism, Polygon, Arbitrum share the same address
+        SupportedChainId::Ethereum
+        | SupportedChainId::Optimism
+        | SupportedChainId::Polygon
+        | SupportedChainId::Arbitrum => {
+            address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45")
+        }
+        // Base has a different deployment
+        SupportedChainId::Base => address!("2626664c2603336E57B271c5C0b26F421741e481"),
+        // BNB Chain has its own deployment
+        SupportedChainId::Bnb => address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
+    }
+}
+
+/// Returns `true` if `to` is the known UniswapV3 SwapRouter02 for the given chain.
+pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
+    to == swap_router02_address(chain)
+}
 
 /// Map a successfully decoded call to its function name.
 fn call_name(call: &ISwapRouter::ISwapRouterCalls) -> &'static str {
@@ -31,25 +52,19 @@ fn call_name(call: &ISwapRouter::ISwapRouterCalls) -> &'static str {
 
 /// Try to identify a known function name from a 4-byte selector.
 ///
-/// Selectors derived from the canonical Solidity signatures:
-/// - exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160)): 0x414bf389
-/// - exactInput((bytes,address,uint256,uint256,uint256)): 0xc04b8d59
-/// - exactOutputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160)): 0xdb3e2198
-/// - exactOutput((bytes,address,uint256,uint256,uint256)): 0xf28c0498
+/// SwapRouter02 (IV3SwapRouter) selectors:
+/// - exactInputSingle:  0x04e45aaf
+/// - exactInput:        0xb858183f
+/// - exactOutputSingle: 0x5023b4df
+/// - exactOutput:       0x09b81346
 fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
     match selector {
-        [0x41, 0x4b, 0xf3, 0x89] => Some("exactInputSingle"),
-        [0xc0, 0x4b, 0x8d, 0x59] => Some("exactInput"),
-        [0xdb, 0x3e, 0x21, 0x98] => Some("exactOutputSingle"),
-        [0xf2, 0x8c, 0x04, 0x98] => Some("exactOutput"),
+        [0x04, 0xe4, 0x5a, 0xaf] => Some("exactInputSingle"),
+        [0xb8, 0x58, 0x18, 0x3f] => Some("exactInput"),
+        [0x50, 0x23, 0xb4, 0xdf] => Some("exactOutputSingle"),
+        [0x09, 0xb8, 0x13, 0x46] => Some("exactOutput"),
         _ => None,
     }
-}
-
-/// Returns `true` if `to` is the known UniswapV3 SwapRouter for the given chain.
-pub fn is_allowed_router(to: Address, chain: SupportedChainId) -> bool {
-    let _ = chain; // chain already validated via enum
-    to == CANONICAL_SWAP_ROUTER
 }
 
 /// Result of validating raw transaction calldata.
@@ -65,7 +80,7 @@ pub enum SwapValidation {
     MalformedArgs { name: String, reason: String },
 }
 
-/// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter function
+/// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter02 function
 /// and can be ABI-decoded successfully.
 pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
     let data = match data {
@@ -73,13 +88,11 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
         _ => return SwapValidation::NoSelector,
     };
 
-    // Try full ABI decode against the ISwapRouter interface.
     match ISwapRouter::ISwapRouterCalls::abi_decode(data) {
         Ok(call) => SwapValidation::Allowed(call_name(&call).to_string()),
         Err(decode_err) => {
             let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
-            // Known selector but bad args → malformed
             if let Some(name) = selector_name(selector) {
                 return SwapValidation::MalformedArgs {
                     name: name.to_string(),
@@ -101,38 +114,62 @@ mod tests {
     // ---- Router address tests ----
 
     #[test]
-    fn canonical_router_allowed_on_all_chains() {
+    fn correct_router_per_chain() {
+        // Ethereum/Optimism/Polygon/Arbitrum share one address
+        let common = address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
+        assert!(is_allowed_router(common, SupportedChainId::Ethereum));
+        assert!(is_allowed_router(common, SupportedChainId::Optimism));
+        assert!(is_allowed_router(common, SupportedChainId::Polygon));
+        assert!(is_allowed_router(common, SupportedChainId::Arbitrum));
+
+        // Base has a different address
+        let base_router = address!("2626664c2603336E57B271c5C0b26F421741e481");
+        assert!(is_allowed_router(base_router, SupportedChainId::Base));
+        assert!(!is_allowed_router(common, SupportedChainId::Base));
+
+        // BNB has its own address
+        let bnb_router = address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2");
+        assert!(is_allowed_router(bnb_router, SupportedChainId::Bnb));
+        assert!(!is_allowed_router(common, SupportedChainId::Bnb));
+    }
+
+    #[test]
+    fn wrong_router_denied() {
+        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
             assert!(
-                is_allowed_router(CANONICAL_SWAP_ROUTER, chain),
-                "canonical router should be allowed on {chain}"
+                !is_allowed_router(random, chain),
+                "random address should be denied on {chain}"
             );
         }
     }
 
     #[test]
-    fn random_address_denied() {
-        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
-        assert!(!is_allowed_router(random, SupportedChainId::Ethereum));
-        assert!(!is_allowed_router(random, SupportedChainId::Bnb));
+    fn old_swap_router_v1_denied() {
+        // The old SwapRouter (0xE592...) should NOT be allowed
+        let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
+        for chain in SupportedChainId::ALL {
+            assert!(
+                !is_allowed_router(v1_router, chain),
+                "SwapRouter V1 should be denied on {chain}"
+            );
+        }
     }
 
     #[test]
     fn unknown_chain_rejected_at_type_level() {
         assert!(SupportedChainId::try_from(999u64).is_err());
-        assert!(SupportedChainId::try_from(43114u64).is_err());
     }
 
-    // ---- ABI decode tests ----
+    // ---- ABI decode tests (SwapRouter02 / IV3SwapRouter — no deadline field) ----
 
     fn encode_exact_input_single() -> Bytes {
         let call = ISwapRouter::exactInputSingleCall {
-            params: ISwapRouter::ExactInputSingleParams {
+            params: IV3SwapRouter::ExactInputSingleParams {
                 tokenIn: Address::ZERO,
                 tokenOut: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
                 fee: Uint::from(3000u32),
                 recipient: Address::ZERO,
-                deadline: U256::from(9999999999u64),
                 amountIn: U256::from(1_000_000_000_000_000_000u64),
                 amountOutMinimum: U256::from(1u64),
                 sqrtPriceLimitX96: U160::ZERO,
@@ -143,10 +180,9 @@ mod tests {
 
     fn encode_exact_input() -> Bytes {
         let call = ISwapRouter::exactInputCall {
-            params: ISwapRouter::ExactInputParams {
+            params: IV3SwapRouter::ExactInputParams {
                 path: Bytes::from(vec![0u8; 43]),
                 recipient: Address::ZERO,
-                deadline: U256::from(9999999999u64),
                 amountIn: U256::from(1_000_000_000_000_000_000u64),
                 amountOutMinimum: U256::from(1u64),
             },
@@ -156,12 +192,11 @@ mod tests {
 
     fn encode_exact_output_single() -> Bytes {
         let call = ISwapRouter::exactOutputSingleCall {
-            params: ISwapRouter::ExactOutputSingleParams {
+            params: IV3SwapRouter::ExactOutputSingleParams {
                 tokenIn: Address::ZERO,
                 tokenOut: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
                 fee: Uint::from(3000u32),
                 recipient: Address::ZERO,
-                deadline: U256::from(9999999999u64),
                 amountOut: U256::from(1000000u64),
                 amountInMaximum: U256::MAX,
                 sqrtPriceLimitX96: U160::ZERO,
@@ -172,10 +207,9 @@ mod tests {
 
     fn encode_exact_output() -> Bytes {
         let call = ISwapRouter::exactOutputCall {
-            params: ISwapRouter::ExactOutputParams {
+            params: IV3SwapRouter::ExactOutputParams {
                 path: Bytes::from(vec![0u8; 43]),
                 recipient: Address::ZERO,
-                deadline: U256::from(9999999999u64),
                 amountOut: U256::from(1000000u64),
                 amountInMaximum: U256::MAX,
             },
@@ -225,6 +259,18 @@ mod tests {
     }
 
     #[test]
+    fn old_v1_selectors_denied() {
+        // SwapRouter V1 exactInputSingle selector (0x414bf389) should be denied
+        let mut v = vec![0x41, 0x4b, 0xf3, 0x89];
+        v.extend(vec![0x00u8; 260]);
+        let data = Bytes::from(v);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
     fn empty_data_no_selector() {
         assert_eq!(validate_swap_calldata(&None), SwapValidation::NoSelector);
         assert_eq!(
@@ -235,7 +281,7 @@ mod tests {
 
     #[test]
     fn short_data_no_selector() {
-        let data = Bytes::from(vec![0x41, 0x4b, 0xf3]);
+        let data = Bytes::from(vec![0x04, 0xe4, 0x5a]);
         assert_eq!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::NoSelector
@@ -244,20 +290,20 @@ mod tests {
 
     #[test]
     fn correct_selector_but_malformed_args() {
-        // exactInputSingle selector (0x414bf389) with garbage args
-        let mut data = vec![0x41, 0x4b, 0xf3, 0x89, 0xff, 0xff];
+        // exactInputSingle selector (0x04e45aaf) with garbage
+        let data = Bytes::from(vec![0x04, 0xe4, 0x5a, 0xaf, 0xff, 0xff]);
         assert!(matches!(
-            validate_swap_calldata(&Some(Bytes::from(data))),
+            validate_swap_calldata(&Some(data)),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInputSingle"
         ));
     }
 
     #[test]
     fn selector_only_is_malformed() {
-        // exactInput selector (0xc04b8d59) with no args
-        let data = vec![0xc0, 0x4b, 0x8d, 0x59];
+        // exactInput selector (0xb858183f) with no args
+        let data = Bytes::from(vec![0xb8, 0x58, 0x18, 0x3f]);
         assert!(matches!(
-            validate_swap_calldata(&Some(Bytes::from(data))),
+            validate_swap_calldata(&Some(data)),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }

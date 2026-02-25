@@ -1,7 +1,7 @@
 //! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter functions
 //! targeting known router contract addresses.
 //!
-//! Uses alloy's `sol!` macro for ABI-level decoding rather than raw selector matching.
+//! The allowed functions are defined by the ABI JSON file at `abi/ISwapRouter.json`.
 
 use alloy::primitives::{address, Address, Bytes};
 use alloy::sol;
@@ -12,52 +12,37 @@ use clawlet_core::chain::SupportedChainId;
 /// `0xE592427A0AEce92De3Edee1F18E0157C05861564`
 const CANONICAL_SWAP_ROUTER: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
 
-// UniswapV3 SwapRouter interface — only the 4 allowed swap functions.
-sol! {
-    /// UniswapV3 SwapRouter swap functions.
-    interface ISwapRouter {
-        struct ExactInputSingleParams {
-            address tokenIn;
-            address tokenOut;
-            uint24 fee;
-            address recipient;
-            uint256 deadline;
-            uint256 amountIn;
-            uint256 amountOutMinimum;
-            uint160 sqrtPriceLimitX96;
-        }
+// Load UniswapV3 SwapRouter interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    ISwapRouter,
+    "abi/ISwapRouter.json"
+);
 
-        struct ExactInputParams {
-            bytes path;
-            address recipient;
-            uint256 deadline;
-            uint256 amountIn;
-            uint256 amountOutMinimum;
-        }
+/// Map a successfully decoded call to its function name.
+fn call_name(call: &ISwapRouter::ISwapRouterCalls) -> &'static str {
+    match call {
+        ISwapRouter::ISwapRouterCalls::exactInputSingle(_) => "exactInputSingle",
+        ISwapRouter::ISwapRouterCalls::exactInput(_) => "exactInput",
+        ISwapRouter::ISwapRouterCalls::exactOutputSingle(_) => "exactOutputSingle",
+        ISwapRouter::ISwapRouterCalls::exactOutput(_) => "exactOutput",
+    }
+}
 
-        struct ExactOutputSingleParams {
-            address tokenIn;
-            address tokenOut;
-            uint24 fee;
-            address recipient;
-            uint256 deadline;
-            uint256 amountOut;
-            uint256 amountInMaximum;
-            uint160 sqrtPriceLimitX96;
-        }
-
-        struct ExactOutputParams {
-            bytes path;
-            address recipient;
-            uint256 deadline;
-            uint256 amountOut;
-            uint256 amountInMaximum;
-        }
-
-        function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
-        function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
-        function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
-        function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+/// Try to identify a known function name from a 4-byte selector.
+///
+/// Selectors derived from the canonical Solidity signatures:
+/// - exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160)): 0x414bf389
+/// - exactInput((bytes,address,uint256,uint256,uint256)): 0xc04b8d59
+/// - exactOutputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160)): 0xdb3e2198
+/// - exactOutput((bytes,address,uint256,uint256,uint256)): 0xf28c0498
+fn selector_name(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0x41, 0x4b, 0xf3, 0x89] => Some("exactInputSingle"),
+        [0xc0, 0x4b, 0x8d, 0x59] => Some("exactInput"),
+        [0xdb, 0x3e, 0x21, 0x98] => Some("exactOutputSingle"),
+        [0xf2, 0x8c, 0x04, 0x98] => Some("exactOutput"),
+        _ => None,
     }
 }
 
@@ -74,7 +59,7 @@ pub enum SwapValidation {
     Allowed(String),
     /// The calldata is missing or too short to contain a function selector.
     NoSelector,
-    /// The function selector is not one of the 4 allowed swap functions.
+    /// The function selector is not one of the allowed swap functions.
     Denied { selector: [u8; 4] },
     /// The function selector matches but ABI decoding failed (malformed args).
     MalformedArgs { name: String, reason: String },
@@ -88,34 +73,18 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
         _ => return SwapValidation::NoSelector,
     };
 
-    // Try to ABI-decode as one of the 4 ISwapRouter functions.
+    // Try full ABI decode against the ISwapRouter interface.
     match ISwapRouter::ISwapRouterCalls::abi_decode(data) {
-        Ok(call) => {
-            let name = match call {
-                ISwapRouter::ISwapRouterCalls::exactInputSingle(_) => "exactInputSingle",
-                ISwapRouter::ISwapRouterCalls::exactInput(_) => "exactInput",
-                ISwapRouter::ISwapRouterCalls::exactOutputSingle(_) => "exactOutputSingle",
-                ISwapRouter::ISwapRouterCalls::exactOutput(_) => "exactOutput",
-            };
-            SwapValidation::Allowed(name.to_string())
-        }
+        Ok(call) => SwapValidation::Allowed(call_name(&call).to_string()),
         Err(decode_err) => {
-            // Check if the selector matches but args are malformed
             let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
-            let known_selectors = [
-                ([0x41, 0x4b, 0xf3, 0x89], "exactInputSingle"),
-                ([0xc0, 0x4b, 0x8d, 0x59], "exactInput"),
-                ([0xdb, 0x3e, 0x21, 0x98], "exactOutputSingle"),
-                ([0xf2, 0x8c, 0x04, 0x98], "exactOutput"),
-            ];
 
-            for (sel, name) in &known_selectors {
-                if selector == *sel {
-                    return SwapValidation::MalformedArgs {
-                        name: name.to_string(),
-                        reason: decode_err.to_string(),
-                    };
-                }
+            // Known selector but bad args → malformed
+            if let Some(name) = selector_name(selector) {
+                return SwapValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: decode_err.to_string(),
+                };
             }
 
             SwapValidation::Denied { selector }
@@ -175,7 +144,7 @@ mod tests {
     fn encode_exact_input() -> Bytes {
         let call = ISwapRouter::exactInputCall {
             params: ISwapRouter::ExactInputParams {
-                path: Bytes::from(vec![0u8; 43]), // token+fee+token
+                path: Bytes::from(vec![0u8; 43]),
                 recipient: Address::ZERO,
                 deadline: U256::from(9999999999u64),
                 amountIn: U256::from(1_000_000_000_000_000_000u64),
@@ -216,36 +185,32 @@ mod tests {
 
     #[test]
     fn exact_input_single_valid() {
-        let data = encode_exact_input_single();
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(encode_exact_input_single())),
             SwapValidation::Allowed(name) if name == "exactInputSingle"
         ));
     }
 
     #[test]
     fn exact_input_valid() {
-        let data = encode_exact_input();
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(encode_exact_input())),
             SwapValidation::Allowed(name) if name == "exactInput"
         ));
     }
 
     #[test]
     fn exact_output_single_valid() {
-        let data = encode_exact_output_single();
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(encode_exact_output_single())),
             SwapValidation::Allowed(name) if name == "exactOutputSingle"
         ));
     }
 
     #[test]
     fn exact_output_valid() {
-        let data = encode_exact_output();
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(encode_exact_output())),
             SwapValidation::Allowed(name) if name == "exactOutput"
         ));
     }
@@ -279,19 +244,20 @@ mod tests {
 
     #[test]
     fn correct_selector_but_malformed_args() {
-        // exactInputSingle selector with garbage args
-        let data = Bytes::from(vec![0x41, 0x4b, 0xf3, 0x89, 0xff, 0xff]);
+        // exactInputSingle selector (0x414bf389) with garbage args
+        let mut data = vec![0x41, 0x4b, 0xf3, 0x89, 0xff, 0xff];
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(Bytes::from(data))),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInputSingle"
         ));
     }
 
     #[test]
     fn selector_only_is_malformed() {
-        let data = Bytes::from(vec![0xc0, 0x4b, 0x8d, 0x59]);
+        // exactInput selector (0xc04b8d59) with no args
+        let data = vec![0xc0, 0x4b, 0x8d, 0x59];
         assert!(matches!(
-            validate_swap_calldata(&Some(data)),
+            validate_swap_calldata(&Some(Bytes::from(data))),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }

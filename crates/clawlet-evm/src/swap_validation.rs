@@ -1,26 +1,64 @@
-//! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter functions.
+//! Calldata validation for `send_raw` — only allows whitelisted UniswapV3 SwapRouter functions
+//! targeting known router contract addresses.
 
-use alloy::primitives::Bytes;
+use alloy::primitives::{address, Address, Bytes};
+
+/// Canonical UniswapV3 SwapRouter addresses per chain.
+///
+/// - Ethereum mainnet (1): `0xE592427A0AEce92De3Edee1F18E0157C05861564`
+/// - Arbitrum (42161):      same
+/// - Optimism (10):         same
+/// - Polygon (137):         same
+/// - Base (8453):           same
+/// - BNB Chain (56):        `0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2`
+///
+/// The canonical SwapRouter address is shared across most chains.
+/// Add chain-specific overrides as needed.
+const CANONICAL_SWAP_ROUTER: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
+const BNB_SWAP_ROUTER: Address = address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2");
+
+/// Returns `true` if `to` is a known UniswapV3 SwapRouter for the given chain.
+pub fn is_allowed_router(to: Address, chain_id: u64) -> bool {
+    match chain_id {
+        56 => to == BNB_SWAP_ROUTER || to == CANONICAL_SWAP_ROUTER,
+        _ => to == CANONICAL_SWAP_ROUTER,
+    }
+}
 
 /// Allowed UniswapV3 SwapRouter function selectors (first 4 bytes of calldata).
 ///
-/// - `exactInputSingle`:  `0x414bf389`
-/// - `exactInput`:        `0xc04b8d59`
-/// - `exactOutputSingle`: `0xdb3e2198`
-/// - `exactOutput`:       `0xf28c0498`
-const ALLOWED_SELECTORS: [[u8; 4]; 4] = [
-    [0x41, 0x4b, 0xf3, 0x89], // exactInputSingle
-    [0xc0, 0x4b, 0x8d, 0x59], // exactInput
-    [0xdb, 0x3e, 0x21, 0x98], // exactOutputSingle
-    [0xf2, 0x8c, 0x04, 0x98], // exactOutput
-];
+/// - `exactInputSingle`:  `0x414bf389`  — expects 8×32 = 256 bytes of args
+/// - `exactInput`:        `0xc04b8d59`  — expects ≥ 5×32 = 160 bytes (dynamic `bytes path`)
+/// - `exactOutputSingle`: `0xdb3e2198`  — expects 8×32 = 256 bytes of args
+/// - `exactOutput`:       `0xf28c0498`  — expects ≥ 5×32 = 160 bytes (dynamic `bytes path`)
+struct AllowedSelector {
+    selector: [u8; 4],
+    name: &'static str,
+    /// Minimum calldata length (selector + args).
+    min_len: usize,
+}
 
-/// Human-readable names for the allowed functions (same order as `ALLOWED_SELECTORS`).
-const ALLOWED_NAMES: [&str; 4] = [
-    "exactInputSingle",
-    "exactInput",
-    "exactOutputSingle",
-    "exactOutput",
+const ALLOWED: [AllowedSelector; 4] = [
+    AllowedSelector {
+        selector: [0x41, 0x4b, 0xf3, 0x89],
+        name: "exactInputSingle",
+        min_len: 4 + 256, // 8 static tuple fields × 32
+    },
+    AllowedSelector {
+        selector: [0xc0, 0x4b, 0x8d, 0x59],
+        name: "exactInput",
+        min_len: 4 + 160, // 5 fields (dynamic path needs ≥ 160)
+    },
+    AllowedSelector {
+        selector: [0xdb, 0x3e, 0x21, 0x98],
+        name: "exactOutputSingle",
+        min_len: 4 + 256,
+    },
+    AllowedSelector {
+        selector: [0xf2, 0x8c, 0x04, 0x98],
+        name: "exactOutput",
+        min_len: 4 + 160,
+    },
 ];
 
 /// Result of validating raw transaction calldata.
@@ -32,9 +70,16 @@ pub enum SwapValidation {
     NoSelector,
     /// The function selector is not in the whitelist.
     Denied { selector: [u8; 4] },
+    /// The function selector is correct but the calldata is too short (malformed).
+    MalformedArgs {
+        name: String,
+        expected_min: usize,
+        actual: usize,
+    },
 }
 
-/// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter function.
+/// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter function
+/// and has sufficient length for ABI-encoded arguments.
 pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
     let data = match data {
         Some(d) if d.len() >= 4 => d,
@@ -43,9 +88,16 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
 
     let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
-    for (i, allowed) in ALLOWED_SELECTORS.iter().enumerate() {
-        if selector == *allowed {
-            return SwapValidation::Allowed(ALLOWED_NAMES[i].to_string());
+    for entry in &ALLOWED {
+        if selector == entry.selector {
+            if data.len() < entry.min_len {
+                return SwapValidation::MalformedArgs {
+                    name: entry.name.to_string(),
+                    expected_min: entry.min_len,
+                    actual: data.len(),
+                };
+            }
+            return SwapValidation::Allowed(entry.name.to_string());
         }
     }
 
@@ -56,9 +108,46 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
 mod tests {
     use super::*;
 
+    // ---- Router address tests ----
+
+    #[test]
+    fn canonical_router_allowed_on_mainnet() {
+        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 1));
+    }
+
+    #[test]
+    fn canonical_router_allowed_on_base() {
+        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 8453));
+    }
+
+    #[test]
+    fn bnb_router_allowed_on_bnb() {
+        assert!(is_allowed_router(BNB_SWAP_ROUTER, 56));
+    }
+
+    #[test]
+    fn canonical_router_also_allowed_on_bnb() {
+        assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 56));
+    }
+
+    #[test]
+    fn random_address_denied() {
+        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        assert!(!is_allowed_router(random, 1));
+        assert!(!is_allowed_router(random, 56));
+    }
+
+    // ---- Selector tests ----
+
+    fn make_data(selector: [u8; 4], extra_len: usize) -> Bytes {
+        let mut v = selector.to_vec();
+        v.extend(vec![0u8; extra_len]);
+        Bytes::from(v)
+    }
+
     #[test]
     fn exact_input_single_allowed() {
-        let data = Bytes::from(vec![0x41, 0x4b, 0xf3, 0x89, 0x00, 0x00]);
+        let data = make_data([0x41, 0x4b, 0xf3, 0x89], 256);
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::Allowed(name) if name == "exactInputSingle"
@@ -67,7 +156,7 @@ mod tests {
 
     #[test]
     fn exact_input_allowed() {
-        let data = Bytes::from(vec![0xc0, 0x4b, 0x8d, 0x59, 0x00]);
+        let data = make_data([0xc0, 0x4b, 0x8d, 0x59], 160);
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::Allowed(name) if name == "exactInput"
@@ -76,7 +165,7 @@ mod tests {
 
     #[test]
     fn exact_output_single_allowed() {
-        let data = Bytes::from(vec![0xdb, 0x3e, 0x21, 0x98]);
+        let data = make_data([0xdb, 0x3e, 0x21, 0x98], 256);
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::Allowed(name) if name == "exactOutputSingle"
@@ -85,7 +174,7 @@ mod tests {
 
     #[test]
     fn exact_output_allowed() {
-        let data = Bytes::from(vec![0xf2, 0x8c, 0x04, 0x98, 0xaa]);
+        let data = make_data([0xf2, 0x8c, 0x04, 0x98], 160);
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::Allowed(name) if name == "exactOutput"
@@ -94,7 +183,7 @@ mod tests {
 
     #[test]
     fn unknown_selector_denied() {
-        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+        let data = make_data([0xde, 0xad, 0xbe, 0xef], 256);
         assert!(matches!(
             validate_swap_calldata(&Some(data)),
             SwapValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
@@ -117,5 +206,37 @@ mod tests {
             validate_swap_calldata(&Some(data)),
             SwapValidation::NoSelector
         );
+    }
+
+    // ---- Malformed args tests ----
+
+    #[test]
+    fn exact_input_single_too_short() {
+        // selector + only 100 bytes (needs 256)
+        let data = make_data([0x41, 0x4b, 0xf3, 0x89], 100);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, expected_min: 260, actual: 104 } if name == "exactInputSingle"
+        ));
+    }
+
+    #[test]
+    fn exact_input_too_short() {
+        // selector + only 32 bytes (needs 160)
+        let data = make_data([0xc0, 0x4b, 0x8d, 0x59], 32);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { name, expected_min: 164, actual: 36 } if name == "exactInput"
+        ));
+    }
+
+    #[test]
+    fn selector_only_is_malformed() {
+        // Just 4 bytes, no args
+        let data = Bytes::from(vec![0x41, 0x4b, 0xf3, 0x89]);
+        assert!(matches!(
+            validate_swap_calldata(&Some(data)),
+            SwapValidation::MalformedArgs { .. }
+        ));
     }
 }

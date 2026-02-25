@@ -283,7 +283,7 @@ pub trait ClawletApi {
     #[method(name = "execute")]
     async fn execute(&self, params: ExecuteRequestWithAuth) -> Result<Value, ErrorObjectOwned>;
 
-    /// Send a raw transaction (bypasses policy engine).
+    /// Send a raw transaction (UniswapV3 swap only, policy-gated).
     #[method(name = "send_raw")]
     async fn send_raw(&self, params: SendRawRequest) -> Result<Value, ErrorObjectOwned>;
 

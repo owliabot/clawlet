@@ -9,7 +9,7 @@ use alloy::primitives::U256;
 use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_evm::swap_validation::{validate_swap_calldata, SwapValidation};
+use clawlet_evm::swap_validation::{is_allowed_router, validate_swap_calldata, SwapValidation};
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
     TransferRequest as EvmTransferRequest,
@@ -235,7 +235,7 @@ pub async fn handle_transfer(
 
 /// Send a raw transaction with swap validation and policy checks.
 ///
-/// Only allows UniswapV3 SwapRouter functions:
+/// Only allows UniswapV3 SwapRouter functions targeting known router addresses:
 /// - `exactInputSingle` (`0x414bf389`)
 /// - `exactInput` (`0xc04b8d59`)
 /// - `exactOutputSingle` (`0xdb3e2198`)
@@ -248,6 +248,30 @@ pub async fn handle_send_raw(
 ) -> Result<SendRawResponse, HandlerError> {
     let chain_id = req.chain_id;
 
+    // ---- Router address whitelist ----
+    if !is_allowed_router(req.to, chain_id) {
+        {
+            let event = AuditEvent::new(
+                "send_raw",
+                json!({
+                    "to": format!("{}", req.to),
+                    "chain_id": chain_id,
+                }),
+                format!(
+                    "denied: target address {} is not a known UniswapV3 SwapRouter",
+                    req.to
+                ),
+            );
+            if let Ok(mut audit) = state.audit.lock() {
+                let _ = audit.log_event(event);
+            }
+        }
+        return Err(HandlerError::BadRequest(format!(
+            "target address {} is not a known UniswapV3 SwapRouter for chain {chain_id}",
+            req.to
+        )));
+    }
+
     // ---- Swap calldata validation ----
     let swap_fn = match validate_swap_calldata(&req.data) {
         SwapValidation::Allowed(name) => name,
@@ -256,6 +280,31 @@ pub async fn handle_send_raw(
                 "send_raw requires calldata with a valid UniswapV3 SwapRouter function selector"
                     .into(),
             ));
+        }
+        SwapValidation::MalformedArgs {
+            name,
+            expected_min,
+            actual,
+        } => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "function": name,
+                        "expected_min_bytes": expected_min,
+                        "actual_bytes": actual,
+                    }),
+                    format!("denied: malformed calldata for {name}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            return Err(HandlerError::BadRequest(format!(
+                "malformed calldata for {name}: expected at least {expected_min} bytes, got {actual}"
+            )));
         }
         SwapValidation::Denied { selector } => {
             let sel_hex = format!(

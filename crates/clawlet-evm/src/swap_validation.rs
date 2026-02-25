@@ -81,14 +81,28 @@ pub enum SwapValidation {
     MalformedArgs { name: String, reason: String },
 }
 
+/// Minimum valid V3 path length: one hop = token(20) + fee(3) + token(20) = 43 bytes.
+const MIN_PATH_LEN: usize = 43;
+
 /// Extract the first token address from a Uniswap V3 multi-hop path.
 ///
 /// Path encoding: `tokenA (20 bytes) | fee (3 bytes) | tokenB (20 bytes) | ...`
-fn token_in_from_path(path: &Bytes) -> Option<Address> {
-    if path.len() < 20 {
+/// Used for `exactInput` where the first token in the path is tokenIn.
+fn first_token_from_path(path: &Bytes) -> Option<Address> {
+    if path.len() < MIN_PATH_LEN {
         return None;
     }
     Some(Address::from_slice(&path[..20]))
+}
+
+/// Extract the last token address from a Uniswap V3 multi-hop path.
+///
+/// Used for `exactOutput` where the path is reversed: the **last** 20 bytes are tokenIn.
+fn last_token_from_path(path: &Bytes) -> Option<Address> {
+    if path.len() < MIN_PATH_LEN {
+        return None;
+    }
+    Some(Address::from_slice(&path[path.len() - 20..]))
 }
 
 /// Validate that the calldata corresponds to an allowed UniswapV3 SwapRouter02 function
@@ -109,7 +123,7 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
                 },
                 ISwapRouter::ISwapRouterCalls::exactInput(c) => SwapParams {
                     function: "exactInput".into(),
-                    token_in: token_in_from_path(&c.params.path).unwrap_or(Address::ZERO),
+                    token_in: first_token_from_path(&c.params.path).unwrap_or(Address::ZERO),
                     amount_in: c.params.amountIn,
                 },
                 ISwapRouter::ISwapRouterCalls::exactOutputSingle(c) => SwapParams {
@@ -120,7 +134,7 @@ pub fn validate_swap_calldata(data: &Option<Bytes>) -> SwapValidation {
                 ISwapRouter::ISwapRouterCalls::exactOutput(c) => SwapParams {
                     function: "exactOutput".into(),
                     // For exactOutput the path is reversed: last token is tokenIn
-                    token_in: token_in_from_path(&c.params.path).unwrap_or(Address::ZERO),
+                    token_in: last_token_from_path(&c.params.path).unwrap_or(Address::ZERO),
                     amount_in: c.params.amountInMaximum,
                 },
             };
@@ -214,10 +228,24 @@ mod tests {
         Bytes::from(call.abi_encode())
     }
 
+    // Build a V3 path: tokenA(20) + fee(3) + tokenB(20) = 43 bytes
+    fn make_path(token_a: Address, fee: u32, token_b: Address) -> Bytes {
+        let mut path = Vec::with_capacity(43);
+        path.extend_from_slice(token_a.as_slice());
+        path.push((fee >> 16) as u8);
+        path.push((fee >> 8) as u8);
+        path.push(fee as u8);
+        path.extend_from_slice(token_b.as_slice());
+        Bytes::from(path)
+    }
+
+    const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
     fn encode_exact_input() -> Bytes {
         let call = ISwapRouter::exactInputCall {
             params: IV3SwapRouter::ExactInputParams {
-                path: Bytes::from(vec![0u8; 43]),
+                path: make_path(WETH, 3000, USDC),
                 recipient: Address::ZERO,
                 amountIn: U256::from(1_000_000_000_000_000_000u64),
                 amountOutMinimum: U256::from(1u64),
@@ -242,9 +270,12 @@ mod tests {
     }
 
     fn encode_exact_output() -> Bytes {
+        // exactOutput path is REVERSED: tokenOut -> fee -> tokenIn
+        // So path = USDC(tokenOut) + fee + WETH(tokenIn)
+        // tokenIn (WETH) should be extracted from the LAST 20 bytes
         let call = ISwapRouter::exactOutputCall {
             params: IV3SwapRouter::ExactOutputParams {
-                path: Bytes::from(vec![0u8; 43]),
+                path: make_path(USDC, 3000, WETH),
                 recipient: Address::ZERO,
                 amountOut: U256::from(1000000u64),
                 amountInMaximum: U256::MAX,
@@ -270,8 +301,8 @@ mod tests {
         match validate_swap_calldata(&Some(encode_exact_input())) {
             SwapValidation::Allowed(p) => {
                 assert_eq!(p.function, "exactInput");
-                // path is all zeros, so token_in = Address::ZERO
-                assert_eq!(p.token_in, Address::ZERO);
+                // tokenIn is the FIRST token in the path (WETH)
+                assert_eq!(p.token_in, WETH);
                 assert_eq!(p.amount_in, U256::from(1_000_000_000_000_000_000u64));
             }
             other => panic!("expected Allowed, got {:?}", other),
@@ -296,6 +327,11 @@ mod tests {
         match validate_swap_calldata(&Some(encode_exact_output())) {
             SwapValidation::Allowed(p) => {
                 assert_eq!(p.function, "exactOutput");
+                // tokenIn is the LAST token in the reversed path (WETH)
+                assert_eq!(
+                    p.token_in, WETH,
+                    "exactOutput should extract tokenIn from last 20 bytes of reversed path"
+                );
                 assert_eq!(p.amount_in, U256::MAX);
             }
             other => panic!("expected Allowed, got {:?}", other),

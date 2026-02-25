@@ -48,7 +48,7 @@ fn swap_router_v2_address(chain: SupportedChainId) -> Address {
     match chain {
         SupportedChainId::Ethereum => address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
         SupportedChainId::Bnb => address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-        SupportedChainId::Polygon => address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"),
+        SupportedChainId::Polygon => address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
         SupportedChainId::Arbitrum | SupportedChainId::Base => {
             address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24")
         }
@@ -349,7 +349,7 @@ mod tests {
             SupportedChainId::Polygon
         ));
         assert!(is_allowed_router(
-            address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"),
+            address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
             SupportedChainId::Polygon
         ));
 

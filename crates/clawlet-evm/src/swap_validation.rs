@@ -3,19 +3,12 @@
 
 use alloy::primitives::{address, Address, Bytes};
 
-/// Canonical UniswapV3 SwapRouter addresses per chain.
+/// Canonical UniswapV3 SwapRouter address, shared across all supported chains:
+/// `0xE592427A0AEce92De3Edee1F18E0157C05861564`
 ///
-/// - Ethereum mainnet (1): `0xE592427A0AEce92De3Edee1F18E0157C05861564`
-/// - Arbitrum (42161):      same
-/// - Optimism (10):         same
-/// - Polygon (137):         same
-/// - Base (8453):           same
-/// - BNB Chain (56):        `0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2`
-///
-/// The canonical SwapRouter address is shared across most chains.
-/// Add chain-specific overrides as needed.
+/// Supported chains: 1 (Ethereum), 10 (Optimism), 56 (BNB), 137 (Polygon),
+/// 8453 (Base), 42161 (Arbitrum).
 const CANONICAL_SWAP_ROUTER: Address = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
-const BNB_SWAP_ROUTER: Address = address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2");
 
 /// Returns `true` if `to` is a known UniswapV3 SwapRouter for the given chain.
 ///
@@ -32,8 +25,8 @@ pub fn is_allowed_router(to: Address, chain_id: u64) -> bool {
         42161 => to == CANONICAL_SWAP_ROUTER,
         // Base
         8453 => to == CANONICAL_SWAP_ROUTER,
-        // BNB Chain — has its own router in addition to canonical
-        56 => to == BNB_SWAP_ROUTER || to == CANONICAL_SWAP_ROUTER,
+        // BNB Chain
+        56 => to == CANONICAL_SWAP_ROUTER,
         // Unknown chain — deny
         _ => false,
     }
@@ -135,12 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn bnb_router_allowed_on_bnb() {
-        assert!(is_allowed_router(BNB_SWAP_ROUTER, 56));
-    }
-
-    #[test]
-    fn canonical_router_also_allowed_on_bnb() {
+    fn canonical_router_allowed_on_bnb() {
         assert!(is_allowed_router(CANONICAL_SWAP_ROUTER, 56));
     }
 

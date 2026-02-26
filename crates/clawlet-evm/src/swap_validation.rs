@@ -128,6 +128,23 @@ fn selector_name_v2(selector: [u8; 4]) -> Option<&'static str> {
     }
 }
 
+/// Try to identify a known liquidity function name from a 4-byte selector.
+///
+/// UniswapV2 Router02 liquidity selectors:
+/// - addLiquidity:    0xe8e33700
+/// - addLiquidityETH: 0xf305d719
+/// - removeLiquidity: 0xbaa2abde
+/// - removeLiquidityETH: 0x02751cec
+fn selector_name_liquidity(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0xe8, 0xe3, 0x37, 0x00] => Some("addLiquidity"),
+        [0xf3, 0x05, 0xd7, 0x19] => Some("addLiquidityETH"),
+        [0xba, 0xa2, 0xab, 0xde] => Some("removeLiquidity"),
+        [0x02, 0x75, 0x1c, 0xec] => Some("removeLiquidityETH"),
+        _ => None,
+    }
+}
+
 /// Parsed swap parameters for policy checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwapParams {
@@ -161,6 +178,34 @@ pub enum WethValidation {
     Unwrap(U256),
     /// The calldata doesn't match deposit or withdraw patterns.
     Invalid { reason: String },
+}
+
+/// Parsed liquidity parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiquidityParams {
+    /// Function name (e.g. "addLiquidity").
+    pub function: String,
+    /// First token address in the pool.
+    pub token_a: Address,
+    /// Second token address in the pool.
+    pub token_b: Address,
+    /// Amount for token A (amountADesired for add, amountAMin for remove).
+    pub amount_a: U256,
+    /// Amount for token B (amountBDesired for add, amountBMin for remove).
+    pub amount_b: U256,
+}
+
+/// Result of validating liquidity calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiquidityValidation {
+    /// The calldata is a valid, ABI-decodable Uniswap liquidity call.
+    Allowed(LiquidityParams),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed liquidity functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
 }
 
 /// A decoded hop in a Uniswap V3 multi-hop path.
@@ -453,6 +498,73 @@ pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> Weth
         Err(e) => WethValidation::Invalid {
             reason: format!("invalid WETH calldata: {e}"),
         },
+    }
+}
+
+/// Validate UniswapV2 Router liquidity calldata.
+///
+/// Whitelists: addLiquidity, addLiquidityETH, removeLiquidity, removeLiquidityETH.
+/// For ETH variants, the wrapped native token is used as token_b.
+/// All other V2 Router functions are denied.
+pub fn validate_liquidity_calldata(
+    data: &Option<Bytes>,
+    chain: SupportedChainId,
+) -> LiquidityValidation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return LiquidityValidation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+    let weth = wrapped_native_address(chain);
+
+    match IUniswapV2Router::IUniswapV2RouterCalls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                IUniswapV2Router::IUniswapV2RouterCalls::addLiquidity(c) => LiquidityParams {
+                    function: "addLiquidity".into(),
+                    token_a: c.tokenA,
+                    token_b: c.tokenB,
+                    amount_a: c.amountADesired,
+                    amount_b: c.amountBDesired,
+                },
+                IUniswapV2Router::IUniswapV2RouterCalls::addLiquidityETH(c) => LiquidityParams {
+                    function: "addLiquidityETH".into(),
+                    token_a: c.token,
+                    token_b: weth,
+                    amount_a: c.amountTokenDesired,
+                    amount_b: U256::ZERO, // ETH sent as msg.value
+                },
+                IUniswapV2Router::IUniswapV2RouterCalls::removeLiquidity(c) => LiquidityParams {
+                    function: "removeLiquidity".into(),
+                    token_a: c.tokenA,
+                    token_b: c.tokenB,
+                    amount_a: c.amountAMin,
+                    amount_b: c.amountBMin,
+                },
+                IUniswapV2Router::IUniswapV2RouterCalls::removeLiquidityETH(c) => LiquidityParams {
+                    function: "removeLiquidityETH".into(),
+                    token_a: c.token,
+                    token_b: weth,
+                    amount_a: c.amountTokenMin,
+                    amount_b: c.amountETHMin,
+                },
+                // All other V2 Router functions are not whitelisted for liquidity.
+                _ => {
+                    return LiquidityValidation::Denied { selector };
+                }
+            };
+            LiquidityValidation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_liquidity(selector) {
+                LiquidityValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                LiquidityValidation::Denied { selector }
+            }
+        }
     }
 }
 
@@ -1342,6 +1454,253 @@ mod tests {
         assert!(matches!(
             validate_weth_calldata(&data, None),
             WethValidation::Invalid { .. }
+        ));
+    }
+
+    // ---- Liquidity validation tests ----
+
+    const DAI: Address = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+
+    fn encode_add_liquidity() -> Bytes {
+        let call = IUniswapV2Router::addLiquidityCall {
+            tokenA: USDC,
+            tokenB: DAI,
+            amountADesired: U256::from(1_000_000u64),
+            amountBDesired: U256::from(1_000_000_000_000_000_000u64),
+            amountAMin: U256::from(900_000u64),
+            amountBMin: U256::from(900_000_000_000_000_000u64),
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_add_liquidity_eth() -> Bytes {
+        let call = IUniswapV2Router::addLiquidityETHCall {
+            token: USDC,
+            amountTokenDesired: U256::from(1_000_000u64),
+            amountTokenMin: U256::from(900_000u64),
+            amountETHMin: U256::from(900_000_000_000_000_000u64),
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_remove_liquidity() -> Bytes {
+        let call = IUniswapV2Router::removeLiquidityCall {
+            tokenA: USDC,
+            tokenB: DAI,
+            liquidity: U256::from(500_000u64),
+            amountAMin: U256::from(450_000u64),
+            amountBMin: U256::from(450_000_000_000_000_000u64),
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_remove_liquidity_eth() -> Bytes {
+        let call = IUniswapV2Router::removeLiquidityETHCall {
+            token: USDC,
+            liquidity: U256::from(500_000u64),
+            amountTokenMin: U256::from(450_000u64),
+            amountETHMin: U256::from(450_000_000_000_000_000u64),
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    #[test]
+    fn add_liquidity_valid() {
+        match validate_liquidity_calldata(&Some(encode_add_liquidity()), SupportedChainId::Ethereum)
+        {
+            LiquidityValidation::Allowed(p) => {
+                assert_eq!(p.function, "addLiquidity");
+                assert_eq!(p.token_a, USDC);
+                assert_eq!(p.token_b, DAI);
+                assert_eq!(p.amount_a, U256::from(1_000_000u64));
+                assert_eq!(p.amount_b, U256::from(1_000_000_000_000_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn add_liquidity_eth_valid() {
+        match validate_liquidity_calldata(
+            &Some(encode_add_liquidity_eth()),
+            SupportedChainId::Ethereum,
+        ) {
+            LiquidityValidation::Allowed(p) => {
+                assert_eq!(p.function, "addLiquidityETH");
+                assert_eq!(p.token_a, USDC);
+                assert_eq!(p.token_b, WETH); // wrapped native for Ethereum
+                assert_eq!(p.amount_a, U256::from(1_000_000u64));
+                assert_eq!(p.amount_b, U256::ZERO); // ETH sent as msg.value
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn add_liquidity_eth_uses_chain_weth() {
+        // On Polygon, token_b should be WMATIC
+        match validate_liquidity_calldata(
+            &Some(encode_add_liquidity_eth()),
+            SupportedChainId::Polygon,
+        ) {
+            LiquidityValidation::Allowed(p) => {
+                assert_eq!(p.function, "addLiquidityETH");
+                assert_eq!(p.token_b, wrapped_native_address(SupportedChainId::Polygon));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remove_liquidity_valid() {
+        match validate_liquidity_calldata(
+            &Some(encode_remove_liquidity()),
+            SupportedChainId::Ethereum,
+        ) {
+            LiquidityValidation::Allowed(p) => {
+                assert_eq!(p.function, "removeLiquidity");
+                assert_eq!(p.token_a, USDC);
+                assert_eq!(p.token_b, DAI);
+                assert_eq!(p.amount_a, U256::from(450_000u64));
+                assert_eq!(p.amount_b, U256::from(450_000_000_000_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remove_liquidity_eth_valid() {
+        match validate_liquidity_calldata(
+            &Some(encode_remove_liquidity_eth()),
+            SupportedChainId::Ethereum,
+        ) {
+            LiquidityValidation::Allowed(p) => {
+                assert_eq!(p.function, "removeLiquidityETH");
+                assert_eq!(p.token_a, USDC);
+                assert_eq!(p.token_b, WETH);
+                assert_eq!(p.amount_a, U256::from(450_000u64));
+                assert_eq!(p.amount_b, U256::from(450_000_000_000_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn liquidity_no_selector() {
+        assert_eq!(
+            validate_liquidity_calldata(&None, SupportedChainId::Ethereum),
+            LiquidityValidation::NoSelector
+        );
+        assert_eq!(
+            validate_liquidity_calldata(&Some(Bytes::new()), SupportedChainId::Ethereum),
+            LiquidityValidation::NoSelector
+        );
+        assert_eq!(
+            validate_liquidity_calldata(
+                &Some(Bytes::from(vec![0xe8, 0xe3, 0x37])),
+                SupportedChainId::Ethereum
+            ),
+            LiquidityValidation::NoSelector
+        );
+    }
+
+    #[test]
+    fn liquidity_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn liquidity_swap_selectors_denied() {
+        // Swap calldata should be denied by liquidity validation
+        let data = encode_swap_exact_tokens_for_tokens();
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn liquidity_add_selector_only_malformed() {
+        // addLiquidity selector (0xe8e33700) with no args
+        let data = Bytes::from(vec![0xe8, 0xe3, 0x37, 0x00]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::MalformedArgs { name, .. } if name == "addLiquidity"
+        ));
+    }
+
+    #[test]
+    fn liquidity_add_eth_selector_only_malformed() {
+        // addLiquidityETH selector (0xf305d719) with no args
+        let data = Bytes::from(vec![0xf3, 0x05, 0xd7, 0x19]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::MalformedArgs { name, .. } if name == "addLiquidityETH"
+        ));
+    }
+
+    #[test]
+    fn liquidity_remove_selector_only_malformed() {
+        // removeLiquidity selector (0xbaa2abde) with no args
+        let data = Bytes::from(vec![0xba, 0xa2, 0xab, 0xde]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::MalformedArgs { name, .. } if name == "removeLiquidity"
+        ));
+    }
+
+    #[test]
+    fn liquidity_remove_eth_selector_only_malformed() {
+        // removeLiquidityETH selector (0x02751cec) with no args
+        let data = Bytes::from(vec![0x02, 0x75, 0x1c, 0xec]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::MalformedArgs { name, .. } if name == "removeLiquidityETH"
+        ));
+    }
+
+    #[test]
+    fn liquidity_add_with_garbage_malformed() {
+        // addLiquidity selector + garbage
+        let data = Bytes::from(vec![0xe8, 0xe3, 0x37, 0x00, 0xff, 0xff]);
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::MalformedArgs { name, .. } if name == "addLiquidity"
+        ));
+    }
+
+    #[test]
+    fn liquidity_non_whitelisted_v2_functions_denied() {
+        // removeLiquidityWithPermit has a valid ABI decode but should be denied
+        let call = IUniswapV2Router::removeLiquidityWithPermitCall {
+            tokenA: USDC,
+            tokenB: DAI,
+            liquidity: U256::from(500_000u64),
+            amountAMin: U256::from(1u64),
+            amountBMin: U256::from(1u64),
+            to: Address::ZERO,
+            deadline: U256::from(1_700_000_000u64),
+            approveMax: false,
+            v: 27,
+            r: alloy::primitives::B256::ZERO,
+            s: alloy::primitives::B256::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
+            LiquidityValidation::Denied { .. }
         ));
     }
 }

@@ -11,8 +11,8 @@ use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::swap_validation::{
-    identify_router, is_allowed_weth, validate_swap_calldata, validate_weth_calldata,
-    SwapValidation, WethValidation,
+    identify_router, is_allowed_weth, validate_liquidity_calldata, validate_swap_calldata,
+    validate_weth_calldata, LiquidityValidation, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -290,10 +290,64 @@ pub async fn handle_send_raw(
     }
 
     // ---- Operation-specific validation and policy checks ----
-    let (operation_type, token_str, amount_str) = if let Some(version) = router_version {
+    //
+    // For router targets we try swap validation first, then liquidity validation.
+    // Liquidity operations need two policy checks (one per token), so they are
+    // handled via a separate enum variant.
+    enum RouterOp {
+        Swap {
+            operation_type: String,
+            token_str: String,
+            amount_str: String,
+        },
+        Liquidity {
+            operation_type: String,
+            token_a_str: String,
+            token_b_str: String,
+            amount_str: String,
+        },
+    }
+
+    let resolved_op = if let Some(version) = router_version {
         // ---- Swap calldata validation ----
-        let swap_params = match validate_swap_calldata(&req.data, version, supported_chain) {
-            SwapValidation::Allowed(params) => params,
+        let swap_result = validate_swap_calldata(&req.data, version, supported_chain);
+
+        match swap_result {
+            SwapValidation::Allowed(swap_params) => {
+                // ---- Value/function consistency check ----
+                let value = req.value.unwrap_or(U256::ZERO);
+                match swap_params.function.as_str() {
+                    "swapExactETHForTokens" => {
+                        if value.is_zero() {
+                            return Err(HandlerError::BadRequest(
+                                "swapExactETHForTokens requires nonzero msg.value (ETH input)"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    "swapExactTokensForTokens" | "swapExactTokensForETH" => {
+                        if !value.is_zero() {
+                            return Err(HandlerError::BadRequest(format!(
+                                "{} is non-payable but req.value is nonzero ({})",
+                                swap_params.function, value
+                            )));
+                        }
+                    }
+                    _ => {}
+                }
+
+                let amount_str = if swap_params.function == "swapExactETHForTokens" {
+                    value.to_string()
+                } else {
+                    swap_params.amount_in.to_string()
+                };
+
+                RouterOp::Swap {
+                    operation_type: swap_params.function,
+                    token_str: format!("{}", swap_params.token_in),
+                    amount_str,
+                }
+            }
             SwapValidation::NoSelector => {
                 return Err(HandlerError::BadRequest(
                     "send_raw requires calldata with a valid Uniswap router function selector"
@@ -321,84 +375,102 @@ pub async fn handle_send_raw(
                 )));
             }
             SwapValidation::Denied { selector } => {
-                let sel_hex = format!(
-                    "0x{:02x}{:02x}{:02x}{:02x}",
-                    selector[0], selector[1], selector[2], selector[3]
-                );
+                // Swap validation denied — try liquidity validation for V2 routers.
+                match validate_liquidity_calldata(&req.data, supported_chain) {
+                    LiquidityValidation::Allowed(liq_params) => {
+                        // ---- Value/function consistency check for liquidity ----
+                        let value = req.value.unwrap_or(U256::ZERO);
+                        match liq_params.function.as_str() {
+                            "addLiquidityETH" => {
+                                if value.is_zero() {
+                                    return Err(HandlerError::BadRequest(
+                                        "addLiquidityETH requires nonzero msg.value (ETH input)"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                            "addLiquidity" | "removeLiquidity" | "removeLiquidityETH" => {
+                                if !value.is_zero() {
+                                    return Err(HandlerError::BadRequest(format!(
+                                        "{} is non-payable but req.value is nonzero ({})",
+                                        liq_params.function, value
+                                    )));
+                                }
+                            }
+                            _ => {}
+                        }
 
-                {
-                    let event = AuditEvent::new(
-                        "send_raw",
-                        json!({
-                            "to": format!("{}", req.to),
-                            "chain_id": chain_id,
-                            "selector": sel_hex,
-                        }),
-                        format!("denied: unsupported function selector {sel_hex}"),
-                    );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
+                        let amount_str = format!(
+                            "tokenA={},tokenB={}",
+                            liq_params.amount_a, liq_params.amount_b
+                        );
+
+                        RouterOp::Liquidity {
+                            operation_type: liq_params.function,
+                            token_a_str: format!("{}", liq_params.token_a),
+                            token_b_str: format!("{}", liq_params.token_b),
+                            amount_str,
+                        }
+                    }
+                    LiquidityValidation::MalformedArgs { name, reason } => {
+                        {
+                            let event = AuditEvent::new(
+                                "send_raw",
+                                json!({
+                                    "to": format!("{}", req.to),
+                                    "chain_id": chain_id,
+                                    "function": name,
+                                    "decode_error": reason,
+                                }),
+                                format!("denied: malformed calldata for {name}"),
+                            );
+                            if let Ok(mut audit) = state.audit.lock() {
+                                let _ = audit.log_event(event);
+                            }
+                        }
+                        return Err(HandlerError::BadRequest(format!(
+                            "malformed calldata for {name}: ABI decode failed — {reason}"
+                        )));
+                    }
+                    // Liquidity validation also denied or no selector — report original
+                    // swap denial.
+                    _ => {
+                        let sel_hex = format!(
+                            "0x{:02x}{:02x}{:02x}{:02x}",
+                            selector[0], selector[1], selector[2], selector[3]
+                        );
+
+                        {
+                            let event = AuditEvent::new(
+                                "send_raw",
+                                json!({
+                                    "to": format!("{}", req.to),
+                                    "chain_id": chain_id,
+                                    "selector": sel_hex,
+                                }),
+                                format!("denied: unsupported function selector {sel_hex}"),
+                            );
+                            if let Ok(mut audit) = state.audit.lock() {
+                                let _ = audit.log_event(event);
+                            }
+                        }
+
+                        return Err(HandlerError::BadRequest(format!(
+                            "function selector {sel_hex} is not allowed; \
+                             only Uniswap V2/V3 swap and liquidity functions are permitted"
+                        )));
                     }
                 }
-
-                return Err(HandlerError::BadRequest(format!(
-                    "function selector {sel_hex} is not allowed; \
-                     only Uniswap V2/V3 swap functions are permitted"
-                )));
             }
-        };
-
-        // ---- Value/function consistency check ----
-        // V2 swapExactETHForTokens is payable and requires nonzero value (ETH input).
-        // V2 swapExactTokensForTokens / swapExactTokensForETH are non-payable.
-        // V3 functions (exactInput*, exactOutput*) are payable in ABI (SwapRouter02
-        // accepts ETH for wrapping), so we allow nonzero value for them.
-        let value = req.value.unwrap_or(U256::ZERO);
-        match swap_params.function.as_str() {
-            "swapExactETHForTokens" => {
-                if value.is_zero() {
-                    return Err(HandlerError::BadRequest(
-                        "swapExactETHForTokens requires nonzero msg.value (ETH input)".into(),
-                    ));
-                }
-            }
-            "swapExactTokensForTokens" | "swapExactTokensForETH" => {
-                if !value.is_zero() {
-                    return Err(HandlerError::BadRequest(format!(
-                        "{} is non-payable but req.value is nonzero ({})",
-                        swap_params.function, value
-                    )));
-                }
-            }
-            // V3 exactInput*/exactOutput* are payable in SwapRouter02 ABI
-            // (router accepts ETH and wraps to WETH internally), so allow any value.
-            _ => {}
         }
-
-        // For swapExactETHForTokens, the actual amount is req.value (ETH sent as msg.value),
-        // not swap_params.amount_in (which is 0).
-        let amount_str = if swap_params.function == "swapExactETHForTokens" {
-            value.to_string()
-        } else {
-            swap_params.amount_in.to_string()
-        };
-
-        (
-            swap_params.function,
-            format!("{}", swap_params.token_in),
-            amount_str,
-        )
     } else {
         // ---- WETH calldata validation ----
         match validate_weth_calldata(&req.data, req.value) {
-            WethValidation::Wrap(amount) => {
-                // For wrap: token is native ETH, amount is the value sent
-                (
-                    "wrap_native".to_string(),
-                    "ETH".to_string(),
-                    amount.to_string(),
-                )
-            }
+            WethValidation::Wrap(amount) => RouterOp::Swap {
+                operation_type: "wrap_native".to_string(),
+                token_str: "ETH".to_string(),
+                amount_str: amount.to_string(),
+            },
             WethValidation::Unwrap(amount) => {
                 // WETH withdraw is nonpayable — reject if value is sent
                 if req.value.unwrap_or(U256::ZERO) > U256::ZERO {
@@ -406,12 +478,11 @@ pub async fn handle_send_raw(
                         "WETH withdraw is nonpayable; cannot send value".to_string(),
                     ));
                 }
-                // For unwrap: token is WETH, amount is the withdraw amount
-                (
-                    "unwrap_native".to_string(),
-                    format!("{}", req.to),
-                    amount.to_string(),
-                )
+                RouterOp::Swap {
+                    operation_type: "unwrap_native".to_string(),
+                    token_str: format!("{}", req.to),
+                    amount_str: amount.to_string(),
+                }
             }
             WethValidation::Invalid { reason } => {
                 {
@@ -436,53 +507,31 @@ pub async fn handle_send_raw(
     };
 
     // ---- Policy check ----
-    // Use the token address/name for policy validation.
-    // allowed_tokens and allowed_chains are enforced.
-    // USD amount is None (no price oracle yet).
-    let decision = state
-        .policy
-        .check_transfer(None, &token_str, chain_id)
-        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
+    // For swap/WETH operations: single token policy check.
+    // For liquidity operations: dual token policy check (both tokens must pass).
+    let (operation_type, token_str, amount_str) = match resolved_op {
+        RouterOp::Swap {
+            operation_type,
+            token_str,
+            amount_str,
+        } => {
+            check_policy(state, &token_str, chain_id, &operation_type, &req)?;
+            (operation_type, token_str, amount_str)
+        }
+        RouterOp::Liquidity {
+            operation_type,
+            token_a_str,
+            token_b_str,
+            amount_str,
+        } => {
+            // Both tokens must pass policy check
+            check_policy(state, &token_a_str, chain_id, &operation_type, &req)?;
+            check_policy(state, &token_b_str, chain_id, &operation_type, &req)?;
 
-    match decision {
-        PolicyDecision::Allowed => { /* proceed */ }
-        PolicyDecision::Denied(reason) => {
-            {
-                let event = AuditEvent::new(
-                    "send_raw",
-                    json!({
-                        "to": format!("{}", req.to),
-                        "chain_id": chain_id,
-                        "operation": operation_type,
-                    }),
-                    format!("denied: {reason}"),
-                );
-                if let Ok(mut audit) = state.audit.lock() {
-                    let _ = audit.log_event(event);
-                }
-            }
-            return Err(HandlerError::BadRequest(format!("policy denied: {reason}")));
+            let token_str = format!("{token_a_str},{token_b_str}");
+            (operation_type, token_str, amount_str)
         }
-        PolicyDecision::RequiresApproval(reason) => {
-            {
-                let event = AuditEvent::new(
-                    "send_raw",
-                    json!({
-                        "to": format!("{}", req.to),
-                        "chain_id": chain_id,
-                        "operation": operation_type,
-                    }),
-                    format!("requires_approval: {reason}"),
-                );
-                if let Ok(mut audit) = state.audit.lock() {
-                    let _ = audit.log_event(event);
-                }
-            }
-            return Err(HandlerError::BadRequest(format!(
-                "policy requires approval: {reason}"
-            )));
-        }
-    }
+    };
 
     // ---- Build and send ----
     let adapter = state
@@ -537,6 +586,62 @@ pub async fn handle_send_raw(
     }
 
     Ok(SendRawResponse { tx_hash, audit_id })
+}
+
+/// Run a single policy check for one token and return an error if denied.
+fn check_policy(
+    state: &AppState,
+    token_str: &str,
+    chain_id: u64,
+    operation_type: &str,
+    req: &SendRawRequest,
+) -> Result<(), HandlerError> {
+    let decision = state
+        .policy
+        .check_transfer(None, token_str, chain_id)
+        .map_err(|e| HandlerError::Internal(format!("policy error: {e}")))?;
+
+    match decision {
+        PolicyDecision::Allowed => Ok(()),
+        PolicyDecision::Denied(reason) => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "operation": operation_type,
+                        "token": token_str,
+                    }),
+                    format!("denied: {reason}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            Err(HandlerError::BadRequest(format!("policy denied: {reason}")))
+        }
+        PolicyDecision::RequiresApproval(reason) => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "operation": operation_type,
+                        "token": token_str,
+                    }),
+                    format!("requires_approval: {reason}"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            Err(HandlerError::BadRequest(format!(
+                "policy requires approval: {reason}"
+            )))
+        }
+    }
 }
 
 /// List available AIS specs from the skills directory.
@@ -1462,6 +1567,468 @@ mod tests {
         match err {
             HandlerError::BadRequest(msg) => {
                 assert!(msg.contains("policy denied"));
+            }
+            _ => panic!("expected BadRequest error for policy denial, got {:?}", err),
+        }
+    }
+
+    // ---- Liquidity operation tests ----
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityCall {
+            tokenA: usdc,
+            tokenB: dai,
+            amountADesired: U256::from(1_000_000u64),
+            amountBDesired: U256::from(1_000_000_000_000_000_000u64),
+            amountAMin: U256::from(900_000u64),
+            amountBMin: U256::from(900_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO), // addLiquidity is non-payable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass validation and fail at adapter stage
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_nonpayable() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityCall {
+            tokenA: usdc,
+            tokenB: dai,
+            amountADesired: U256::from(1_000_000u64),
+            amountBDesired: U256::from(1_000_000_000_000_000_000u64),
+            amountAMin: U256::from(900_000u64),
+            amountBMin: U256::from(900_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(1_000_000u64)), // Sending value to nonpayable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("is non-payable but req.value is nonzero"),
+                    "expected nonpayable error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_eth_requires_value() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityETHCall {
+            token: usdc,
+            amountTokenDesired: U256::from(1_000_000u64),
+            amountTokenMin: U256::from(900_000u64),
+            amountETHMin: U256::from(900_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO), // No value sent
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("addLiquidityETH requires nonzero msg.value"),
+                    "expected payable error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_eth_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityETHCall {
+            token: usdc,
+            amountTokenDesired: U256::from(1_000_000u64),
+            amountTokenMin: U256::from(900_000u64),
+            amountETHMin: U256::from(900_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass validation and fail at adapter stage
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_remove_liquidity_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::removeLiquidityCall {
+            tokenA: usdc,
+            tokenB: dai,
+            liquidity: U256::from(500_000u64),
+            amountAMin: U256::from(450_000u64),
+            amountBMin: U256::from(450_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO), // removeLiquidity is non-payable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_remove_liquidity_eth_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::removeLiquidityETHCall {
+            token: usdc,
+            liquidity: U256::from(500_000u64),
+            amountTokenMin: U256::from(450_000u64),
+            amountETHMin: U256::from(450_000_000_000_000_000u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO), // removeLiquidityETH is non-payable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_remove_liquidity_nonpayable() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::removeLiquidityCall {
+            tokenA: usdc,
+            tokenB: dai,
+            liquidity: U256::from(500_000u64),
+            amountAMin: U256::from(1u64),
+            amountBMin: U256::from(1u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(100u64)), // Sending value to nonpayable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("is non-payable but req.value is nonzero"),
+                    "expected nonpayable error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_remove_liquidity_eth_nonpayable() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::removeLiquidityETHCall {
+            token: usdc,
+            liquidity: U256::from(500_000u64),
+            amountTokenMin: U256::from(1u64),
+            amountETHMin: U256::from(1u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(100u64)), // Sending value to nonpayable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("is non-payable but req.value is nonzero"),
+                    "expected nonpayable error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    // ---- Liquidity policy deny tests (dual-token check) ----
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_policy_denied_token_a() {
+        // Restrictive policy: only USDC allowed.
+        // addLiquidity with DAI+WETH should be denied because WETH is not in allowed_tokens.
+        let (state, _temp) = mock_app_state_restrictive();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let weth = wrapped_native_address(SupportedChainId::Ethereum);
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityCall {
+            tokenA: dai,
+            tokenB: weth,
+            amountADesired: U256::from(1_000_000u64),
+            amountBDesired: U256::from(1_000_000u64),
+            amountAMin: U256::from(1u64),
+            amountBMin: U256::from(1u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO),
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("policy denied"),
+                    "expected policy denied error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error for policy denial, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_add_liquidity_eth_policy_denied_weth() {
+        // Restrictive policy: only USDC allowed.
+        // addLiquidityETH with USDC+WETH: token_a (USDC) passes, but token_b (WETH) should fail.
+        let (state, _temp) = mock_app_state_restrictive();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::addLiquidityETHCall {
+            token: usdc,
+            amountTokenDesired: U256::from(1_000_000u64),
+            amountTokenMin: U256::from(1u64),
+            amountETHMin: U256::from(1u64),
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                // token_a (USDC) passes but token_b (WETH address) should be denied
+                assert!(
+                    msg.contains("policy denied"),
+                    "expected policy denied error for WETH, got: {msg}"
+                );
             }
             _ => panic!("expected BadRequest error for policy denial, got {:?}", err),
         }

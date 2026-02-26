@@ -298,7 +298,7 @@ pub struct AddressResponse {
     pub address: Address,
 }
 
-/// Request body for raw transaction sends (Uniswap V2/V3 swap only, policy-gated).
+/// Request body for raw transaction sends (Uniswap V2/V3 swap + WETH wrap/unwrap, policy-gated).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendRawRequest {
     /// Recipient address (hex, 0x-prefixed).

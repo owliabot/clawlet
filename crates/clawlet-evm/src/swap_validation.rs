@@ -1,9 +1,10 @@
-//! Calldata validation for `send_raw` — only allows whitelisted Uniswap router functions
-//! targeting known router contract addresses.
+//! Calldata validation for `send_raw` — only allows whitelisted contract functions
+//! targeting known addresses per chain.
 //!
-//! The allowed functions are defined by the ABI JSON files at:
-//! - `abi/ISwapRouter.json` (Uniswap V3 SwapRouter02 / IV3SwapRouter)
-//! - `abi/IUniswapV2Router.json` (UniswapV2-like Router02 interfaces)
+//! Supported targets:
+//! - Uniswap V3 SwapRouter02 (`abi/ISwapRouter.json`)
+//! - Uniswap V2-like Router02 (`abi/IUniswapV2Router.json`)
+//! - Canonical WETH/WBNB/WMATIC (`abi/IWETH.json`) — deposit (wrap) and withdraw (unwrap)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
@@ -22,6 +23,13 @@ sol!(
     #[sol(abi)]
     IUniswapV2Router,
     "abi/IUniswapV2Router.json"
+);
+
+// Load WETH (Wrapped Ether) interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    IWETH,
+    "abi/IWETH.json"
 );
 
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
@@ -77,6 +85,15 @@ pub enum RouterVersion {
     V3,
 }
 
+/// Identified target contract type for `send_raw`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendRawTarget {
+    /// A known Uniswap router (V2 or V3).
+    Router(RouterVersion),
+    /// The canonical wrapped native token contract (WETH/WBNB/WMATIC).
+    Weth,
+}
+
 /// Returns the router version if `to` is a known Uniswap router for the given chain.
 pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVersion> {
     if to == swap_router_v3_address(chain) {
@@ -85,6 +102,137 @@ pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVer
         Some(RouterVersion::V2)
     } else {
         None
+    }
+}
+
+/// Identify the target contract type for `send_raw`.
+///
+/// Returns `Some(SendRawTarget)` if `to` is a known Uniswap router or the
+/// canonical wrapped native token (WETH) contract for the given chain.
+pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTarget> {
+    if let Some(v) = identify_router(to, chain) {
+        return Some(SendRawTarget::Router(v));
+    }
+    if to == wrapped_native_address(chain) {
+        return Some(SendRawTarget::Weth);
+    }
+    None
+}
+
+/// Parsed WETH wrap/unwrap parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WethParams {
+    /// Function name: "wrap_native" or "unwrap_native".
+    pub function: String,
+    /// The wrapped native token address.
+    pub token: Address,
+    /// Amount of native token (wrap) or wrapped token (unwrap).
+    pub amount: U256,
+}
+
+/// Result of validating WETH calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WethValidation {
+    /// Valid WETH deposit or withdraw call.
+    Allowed(WethParams),
+    /// Missing or unrecognised selector.
+    Denied { selector: [u8; 4] },
+    /// Recognised selector but malformed arguments.
+    MalformedArgs { name: String, reason: String },
+}
+
+/// WETH deposit() selector: `0xd0e30db0`.
+const WETH_DEPOSIT_SELECTOR: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0];
+/// WETH withdraw(uint256) selector: `0x2e1a7d4d`.
+const WETH_WITHDRAW_SELECTOR: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d];
+
+/// Try to identify a known WETH function name from a 4-byte selector.
+fn selector_name_weth(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        WETH_DEPOSIT_SELECTOR => Some("deposit"),
+        WETH_WITHDRAW_SELECTOR => Some("withdraw"),
+        _ => None,
+    }
+}
+
+/// Validate calldata for a WETH contract call using alloy ABI decoding.
+///
+/// Only `deposit()` (wrap_native) and `withdraw(uint256)` (unwrap_native) are allowed;
+/// all other WETH functions (transfer, approve, etc.) are denied.
+///
+/// - `wrap_native` (`deposit()`): selector `0xd0e30db0`, no args. `value` (passed
+///   separately) must be nonzero.
+/// - `unwrap_native` (`withdraw(uint256)`): selector `0x2e1a7d4d` + ABI-encoded uint256.
+///   `value` must be zero.
+///
+/// `value` validation is done by the caller (`handle_send_raw`); this function
+/// only validates calldata structure and returns parsed params.
+pub fn validate_weth_calldata(
+    data: &Option<Bytes>,
+    value: U256,
+    chain: SupportedChainId,
+) -> WethValidation {
+    let weth = wrapped_native_address(chain);
+
+    // deposit() can be called with empty data or just the 4-byte selector
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        None => {
+            // No data → treat as deposit (wrap_native)
+            return WethValidation::Allowed(WethParams {
+                function: "wrap_native".into(),
+                token: weth,
+                amount: value,
+            });
+        }
+        Some(d) if d.is_empty() => {
+            // Empty bytes → treat as deposit (wrap_native)
+            return WethValidation::Allowed(WethParams {
+                function: "wrap_native".into(),
+                token: weth,
+                amount: value,
+            });
+        }
+        Some(d) => {
+            // 1-3 bytes: too short to be a valid function selector
+            return WethValidation::MalformedArgs {
+                name: "unknown".into(),
+                reason: format!(
+                    "calldata too short for a function selector: {} bytes (need >= 4)",
+                    d.len()
+                ),
+            };
+        }
+    };
+
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    // Use alloy ABI decoding via the IWETH interface
+    match IWETH::IWETHCalls::abi_decode(data) {
+        Ok(call) => match &call {
+            IWETH::IWETHCalls::deposit(_) => WethValidation::Allowed(WethParams {
+                function: "wrap_native".into(),
+                token: weth,
+                amount: value,
+            }),
+            IWETH::IWETHCalls::withdraw(c) => WethValidation::Allowed(WethParams {
+                function: "unwrap_native".into(),
+                token: weth,
+                amount: c.wad,
+            }),
+            // All other WETH functions (transfer, approve, transferFrom, etc.) are denied
+            _ => WethValidation::Denied { selector },
+        },
+        Err(err) => {
+            if let Some(name) = selector_name_weth(selector) {
+                WethValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                WethValidation::Denied { selector }
+            }
+        }
     }
 }
 
@@ -1099,5 +1247,223 @@ mod tests {
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 43])).is_some());
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 66])).is_some());
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 89])).is_some());
+    }
+
+    // ---- identify_target tests ----
+
+    #[test]
+    fn identify_target_router_v3() {
+        assert_eq!(
+            identify_target(
+                address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+                SupportedChainId::Ethereum
+            ),
+            Some(SendRawTarget::Router(RouterVersion::V3))
+        );
+    }
+
+    #[test]
+    fn identify_target_router_v2() {
+        assert_eq!(
+            identify_target(
+                address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+                SupportedChainId::Ethereum
+            ),
+            Some(SendRawTarget::Router(RouterVersion::V2))
+        );
+    }
+
+    #[test]
+    fn identify_target_weth() {
+        assert_eq!(
+            identify_target(WETH, SupportedChainId::Ethereum),
+            Some(SendRawTarget::Weth)
+        );
+        // Base WETH
+        assert_eq!(
+            identify_target(
+                address!("4200000000000000000000000000000000000006"),
+                SupportedChainId::Base
+            ),
+            Some(SendRawTarget::Weth)
+        );
+    }
+
+    #[test]
+    fn identify_target_unknown() {
+        assert_eq!(
+            identify_target(
+                address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+                SupportedChainId::Ethereum
+            ),
+            None
+        );
+    }
+
+    // ---- WETH validation tests ----
+
+    #[test]
+    fn wrap_native_with_deposit_selector() {
+        // deposit() selector = 0xd0e30db0
+        let data = Bytes::from(vec![0xd0, 0xe3, 0x0d, 0xb0]);
+        let value = U256::from(1_000_000_000_000_000_000u64);
+        match validate_weth_calldata(&Some(data), value, SupportedChainId::Ethereum) {
+            WethValidation::Allowed(p) => {
+                assert_eq!(p.function, "wrap_native");
+                assert_eq!(p.token, WETH);
+                assert_eq!(p.amount, value);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wrap_native_with_no_data() {
+        // Empty data → treated as deposit
+        let value = U256::from(1_000_000_000_000_000_000u64);
+        match validate_weth_calldata(&None, value, SupportedChainId::Ethereum) {
+            WethValidation::Allowed(p) => {
+                assert_eq!(p.function, "wrap_native");
+                assert_eq!(p.amount, value);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wrap_native_with_empty_bytes() {
+        let value = U256::from(1u64);
+        match validate_weth_calldata(&Some(Bytes::new()), value, SupportedChainId::Ethereum) {
+            WethValidation::Allowed(p) => {
+                assert_eq!(p.function, "wrap_native");
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unwrap_native_valid() {
+        // withdraw(uint256) selector = 0x2e1a7d4d + 32-byte amount
+        let amount = U256::from(500_000_000_000_000_000u64);
+        let mut data = vec![0x2e, 0x1a, 0x7d, 0x4d];
+        data.extend_from_slice(&amount.to_be_bytes::<32>());
+        match validate_weth_calldata(
+            &Some(Bytes::from(data)),
+            U256::ZERO,
+            SupportedChainId::Ethereum,
+        ) {
+            WethValidation::Allowed(p) => {
+                assert_eq!(p.function, "unwrap_native");
+                assert_eq!(p.token, WETH);
+                assert_eq!(p.amount, amount);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unwrap_native_too_short() {
+        // withdraw selector but only 10 bytes total (need 4 + 32)
+        let data = Bytes::from(vec![
+            0x2e, 0x1a, 0x7d, 0x4d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert!(matches!(
+            validate_weth_calldata(&Some(data), U256::ZERO, SupportedChainId::Ethereum),
+            WethValidation::MalformedArgs { name, .. } if name == "withdraw"
+        ));
+    }
+
+    #[test]
+    fn weth_short_calldata_rejected() {
+        // 1-3 bytes: too short for a selector, should be rejected (not treated as wrap)
+        for len in 1..=3 {
+            let data = Bytes::from(vec![0xd0; len]);
+            assert!(
+                matches!(
+                    validate_weth_calldata(
+                        &Some(data),
+                        U256::from(1u64),
+                        SupportedChainId::Ethereum
+                    ),
+                    WethValidation::MalformedArgs { .. }
+                ),
+                "data of length {len} should be rejected as malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn unwrap_native_trailing_bytes_accepted() {
+        // alloy ABI decode tolerates trailing bytes (consistent with EVM and swap validation)
+        let amount = U256::from(1_000_000u64);
+        let mut data = vec![0x2e, 0x1a, 0x7d, 0x4d];
+        data.extend_from_slice(&amount.to_be_bytes::<32>());
+        data.push(0x00); // trailing byte
+        match validate_weth_calldata(
+            &Some(Bytes::from(data)),
+            U256::ZERO,
+            SupportedChainId::Ethereum,
+        ) {
+            WethValidation::Allowed(p) => {
+                assert_eq!(p.function, "unwrap_native");
+                assert_eq!(p.amount, amount);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weth_unknown_selector_denied() {
+        // Some random selector targeting WETH
+        let data = Bytes::from(vec![0xaa, 0xbb, 0xcc, 0xdd, 0x00, 0x00]);
+        assert!(matches!(
+            validate_weth_calldata(&Some(data), U256::ZERO, SupportedChainId::Ethereum),
+            WethValidation::Denied { selector } if selector == [0xaa, 0xbb, 0xcc, 0xdd]
+        ));
+    }
+
+    #[test]
+    fn weth_transfer_denied() {
+        // WETH transfer(address,uint256) should be denied (not in allowlist)
+        use alloy::sol_types::SolCall;
+        let call = IWETH::transferCall {
+            dst: address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            wad: U256::from(1000u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_weth_calldata(&Some(data), U256::ZERO, SupportedChainId::Ethereum),
+            WethValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_approve_denied() {
+        // WETH approve(address,uint256) should be denied
+        use alloy::sol_types::SolCall;
+        let call = IWETH::approveCall {
+            guy: address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            wad: U256::from(1000u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_weth_calldata(&Some(data), U256::ZERO, SupportedChainId::Ethereum),
+            WethValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_per_chain_addresses() {
+        // Verify wrap_native uses correct WETH address per chain
+        let value = U256::from(1u64);
+        for chain in SupportedChainId::ALL {
+            let expected_weth = wrapped_native_address(chain);
+            match validate_weth_calldata(&None, value, chain) {
+                WethValidation::Allowed(p) => {
+                    assert_eq!(p.token, expected_weth, "wrong WETH for chain {chain}");
+                }
+                other => panic!("expected Allowed for chain {chain}, got {:?}", other),
+            }
+        }
     }
 }

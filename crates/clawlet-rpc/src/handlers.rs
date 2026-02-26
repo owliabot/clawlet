@@ -537,9 +537,22 @@ pub async fn handle_send_raw(
             // ---- NonfungiblePositionManager calldata validation ----
             match validate_nft_position_calldata(&req.data) {
                 NftPositionValidation::Allowed(nft_params) => {
-                    // All 5 NFT PM functions are payable in the Uniswap contract
-                    // (to support multicall + refundETH patterns), so no payability
-                    // restriction is needed here.
+                    // Only mint and increaseLiquidity should carry native value
+                    // (for ETH-paired positions). Other functions don't have a
+                    // refund path since we deny multicall/refundETH, so sending
+                    // value would strand ETH in the contract.
+                    match nft_params.function.as_str() {
+                        "mint" | "increaseLiquidity" => {}
+                        _ => {
+                            let value = req.value.unwrap_or(U256::ZERO);
+                            if !value.is_zero() {
+                                return Err(HandlerError::BadRequest(format!(
+                                    "{} should not carry native value (no refund path available); got {}",
+                                    nft_params.function, value
+                                )));
+                            }
+                        }
+                    }
 
                     if let (Some(token0), Some(token1)) = (nft_params.token0, nft_params.token1) {
                         // mint — dual token policy check
@@ -562,8 +575,9 @@ pub async fn handle_send_raw(
                             .get_nft_position_tokens(req.to, token_id)
                             .await
                             .map_err(|e| {
-                                HandlerError::Internal(format!(
-                                    "failed to query positions({token_id}): {e}"
+                                HandlerError::BadRequest(format!(
+                                    "failed to query positions({token_id}): {e} — \
+                                     the tokenId may be invalid or the position may not exist"
                                 ))
                             })?;
 
@@ -2345,8 +2359,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_raw_nft_pm_burn_payable_with_value() {
-        // All NFT PM functions are payable (for multicall + refundETH patterns)
+    async fn send_raw_nft_pm_burn_rejects_value() {
+        // burn should reject nonzero value (no refund path since multicall/refundETH are denied)
         let (state, _temp) = mock_app_state();
 
         let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
@@ -2358,13 +2372,47 @@ mod tests {
 
         let req = SendRawRequest {
             to: nft_pm,
-            value: Some(U256::from(100u64)), // payable — should not be rejected
+            value: Some(U256::from(100u64)),
             data: Some(Bytes::from(calldata)),
             chain_id: 1,
             gas_limit: None,
         };
 
-        // Should pass validation, fail at adapter stage (unsupported chain_id)
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("should not carry native value"),
+                    "expected value rejection, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_nft_pm_burn_zero_value_passes() {
+        // burn with zero value should pass validation
+        let (state, _temp) = mock_app_state();
+
+        let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
+
+        let call = INonfungiblePositionManager::burnCall {
+            tokenId: U256::from(7u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: nft_pm,
+            value: Some(U256::ZERO),
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass value check, fail at adapter lookup
         let result = handle_send_raw(&state, req).await;
         assert!(result.is_err());
         let err = result.unwrap_err();

@@ -1261,4 +1261,209 @@ mod tests {
             _ => panic!("expected BadRequest error"),
         }
     }
+
+    // ---- Router NoSelector / MalformedArgs tests ----
+
+    #[tokio::test]
+    async fn send_raw_router_empty_calldata() {
+        let (state, _temp) = mock_app_state();
+
+        // Uniswap V3 router on Ethereum
+        let router_v3: Address = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: router_v3,
+            value: None,
+            data: Some(Bytes::new()), // Empty calldata
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("requires calldata with a valid"));
+            }
+            _ => panic!("expected BadRequest error for empty calldata"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_router_none_calldata() {
+        let (state, _temp) = mock_app_state();
+
+        // Uniswap V2 router on Ethereum
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: None,
+            data: None, // No calldata
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("requires calldata with a valid"));
+            }
+            _ => panic!("expected BadRequest error for None calldata"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_router_malformed_args() {
+        let (state, _temp) = mock_app_state();
+
+        // Uniswap V3 router on Ethereum
+        let router_v3: Address = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+            .parse()
+            .unwrap();
+
+        // exactInputSingle selector (0x04e45aaf) + garbage bytes
+        let mut malformed_calldata = vec![0x04, 0xe4, 0x5a, 0xaf];
+        malformed_calldata.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // Not valid ABI encoding
+
+        let req = SendRawRequest {
+            to: router_v3,
+            value: None,
+            data: Some(Bytes::from(malformed_calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("malformed calldata"));
+                assert!(msg.contains("ABI decode failed"));
+            }
+            _ => panic!("expected BadRequest error for malformed args"),
+        }
+    }
+
+    // ---- Helper for restrictive policy ----
+
+    /// Helper to create a restrictive AppState for testing policy denial.
+    ///
+    /// Uses a restrictive policy with allowed_tokens limited to only USDC,
+    /// which excludes ETH and WETH.
+    fn mock_app_state_restrictive() -> (AppState, TempDir) {
+        use clawlet_core::auth::SessionStore;
+        use clawlet_core::config::AuthConfig;
+        use std::sync::RwLock;
+
+        let temp_dir = TempDir::new().unwrap();
+        let audit_path = temp_dir.path().join("audit.jsonl");
+        let keystore_path = temp_dir.path().join("keystore");
+
+        // Restrictive policy: only USDC allowed (excludes ETH and WETH)
+        let policy = Policy {
+            daily_transfer_limit_usd: 1_000_000.0,
+            per_tx_limit_usd: 100_000.0,
+            allowed_tokens: vec!["USDC".to_string()], // Only USDC, no ETH or WETH
+            allowed_chains: vec![],                   // All chains allowed
+            require_approval_above_usd: None,
+        };
+        let policy_engine = PolicyEngine::new(policy);
+
+        let audit = AuditLogger::new(&audit_path).unwrap();
+        let adapters: HashMap<u64, EvmAdapter> = HashMap::new();
+
+        let private_key_bytes: [u8; 32] = [
+            0xac, 0x09, 0x74, 0xbe, 0xc3, 0x9a, 0x17, 0xe3, 0x6b, 0xa4, 0xa6, 0xb4, 0xd2, 0x38,
+            0xff, 0x94, 0x4b, 0xac, 0xb4, 0x78, 0xcb, 0xed, 0x5e, 0xfc, 0xae, 0x78, 0x4d, 0x7b,
+            0xf4, 0xf2, 0xff, 0x80,
+        ];
+        let signer = LocalSigner::from_bytes(&private_key_bytes).unwrap();
+
+        let session_store = SessionStore::new();
+        let auth_config = AuthConfig {
+            default_session_ttl_hours: 24,
+            max_failed_attempts: 5,
+            lockout_minutes: 15,
+        };
+
+        let state = AppState {
+            policy: Arc::new(policy_engine),
+            audit: Arc::new(Mutex::new(audit)),
+            adapters: Arc::new(adapters),
+            session_store: Arc::new(RwLock::new(session_store)),
+            auth_config,
+            signer: Arc::new(signer),
+            skills_dir: PathBuf::from("skills"),
+            keystore_path,
+        };
+
+        (state, temp_dir)
+    }
+
+    // ---- Policy deny path tests ----
+
+    #[tokio::test]
+    async fn send_raw_weth_wrap_policy_denied() {
+        let (state, _temp) = mock_app_state_restrictive();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let deposit_call = IWETH::depositCall {};
+        let calldata = deposit_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("policy denied"));
+            }
+            _ => panic!("expected BadRequest error for policy denial, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_unwrap_policy_denied() {
+        let (state, _temp) = mock_app_state_restrictive();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let withdraw_call = IWETH::withdrawCall {
+            wad: U256::from(1_000_000_000_000_000_000u64), // 1 WETH
+        };
+        let calldata = withdraw_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: None,
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("policy denied"));
+            }
+            _ => panic!("expected BadRequest error for policy denial, got {:?}", err),
+        }
+    }
 }

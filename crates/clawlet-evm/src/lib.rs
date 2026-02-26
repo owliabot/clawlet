@@ -13,7 +13,7 @@
 pub mod abi;
 pub mod adapter;
 pub mod executor;
-pub mod swap_validation;
+pub mod send_raw_validation;
 pub mod token;
 pub mod tx;
 

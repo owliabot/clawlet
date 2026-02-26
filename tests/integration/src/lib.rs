@@ -1471,4 +1471,344 @@ allowed_chains: []
             );
         });
     }
+
+    // =========================================================================
+    // NonfungiblePositionManager — positions() query via anvil fork
+    // =========================================================================
+
+    /// test_nft_pm_get_position_tokens — mainnet fork via ANVIL_URL
+    ///
+    /// Queries a known Uniswap V3 position (tokenId=1) on mainnet to verify
+    /// that `EvmAdapter::get_nft_position_tokens` correctly returns token0/token1.
+    #[test]
+    fn test_nft_pm_get_position_tokens() {
+        let Some((anvil_url, _private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // tokenId=1 is one of the earliest V3 positions on mainnet
+            let (token0, token1) = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(1u64))
+                .await
+                .expect("should query positions(1)");
+
+            // token0 and token1 should be valid non-zero addresses
+            assert_ne!(token0, Address::ZERO, "token0 should not be zero");
+            assert_ne!(token1, Address::ZERO, "token1 should not be zero");
+            // token0 < token1 (Uniswap V3 invariant)
+            assert!(token0 < token1, "token0 should be less than token1");
+
+            eprintln!("positions(1): token0={token0}, token1={token1}");
+        });
+    }
+
+    /// test_nft_pm_invalid_token_id — mainnet fork via ANVIL_URL
+    ///
+    /// Queries a very large tokenId that doesn't exist to verify error handling.
+    #[test]
+    fn test_nft_pm_invalid_token_id() {
+        let Some((anvil_url, _private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // tokenId that almost certainly doesn't exist
+            let result = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(999_999_999_999u64))
+                .await;
+
+            // Should either error or return zero addresses (position doesn't exist)
+            match result {
+                Err(_) => {} // Expected — revert or decode error
+                Ok((token0, token1)) => {
+                    // If it returns successfully, tokens should be zero (burned/nonexistent)
+                    assert_eq!(
+                        token0,
+                        Address::ZERO,
+                        "nonexistent position should have zero token0"
+                    );
+                    assert_eq!(
+                        token1,
+                        Address::ZERO,
+                        "nonexistent position should have zero token1"
+                    );
+                }
+            }
+        });
+    }
+
+    /// test_nft_pm_send_raw_collect_policy_denied — mainnet fork via ANVIL_URL
+    ///
+    /// Tests full send_raw flow: collect on real position → positions() query →
+    /// token policy check → denied (tokens not in allowed list).
+    ///
+    /// Uses handle_send_raw directly with a real anvil fork adapter.
+    #[test]
+    fn test_nft_pm_send_raw_collect_policy_denied() {
+        use alloy::sol_types::SolCall;
+        use clawlet_evm::send_raw_validation::INonfungiblePositionManager;
+        use clawlet_rpc::handlers::handle_send_raw;
+        use clawlet_rpc::types::HandlerError;
+        use clawlet_rpc::types::SendRawRequest;
+        use clawlet_rpc::AppState;
+        use std::sync::{Arc, Mutex, RwLock};
+        use tempfile::TempDir;
+
+        let Some((anvil_url, private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+            let signer = LocalSigner::from_bytes(&private_key).unwrap();
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // First verify adapter can query position tokens
+            let (token0, token1) = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(1u64))
+                .await
+                .expect("should query positions(1)");
+            eprintln!("position 1: token0={token0}, token1={token1}");
+
+            // Setup state with restrictive policy — neither token is allowed
+            let temp = TempDir::new().unwrap();
+            let audit = AuditLogger::new(&temp.path().join("audit.jsonl")).unwrap();
+
+            let policy = Policy {
+                daily_transfer_limit_usd: 1000.0,
+                per_tx_limit_usd: 100.0,
+                allowed_tokens: vec!["ONLY_THIS_TOKEN".to_string()],
+                allowed_chains: vec![1],
+                require_approval_above_usd: None,
+            };
+            let engine = PolicyEngine::new(policy);
+
+            let mut adapters_map = std::collections::HashMap::new();
+            adapters_map.insert(1u64, adapter);
+
+            let state = AppState {
+                signer: Arc::new(signer),
+                policy: Arc::new(engine),
+                audit: Arc::new(Mutex::new(audit)),
+                adapters: Arc::new(adapters_map),
+                session_store: Arc::new(RwLock::new(
+                    clawlet_core::auth::SessionStore::default(),
+                )),
+                auth_config: clawlet_core::config::AuthConfig::default(),
+                skills_dir: temp.path().to_path_buf(),
+                keystore_path: temp.path().to_path_buf(),
+            };
+
+            // Build a collect call for position 1
+            let call = INonfungiblePositionManager::collectCall {
+                params: INonfungiblePositionManager::CollectParams {
+                    tokenId: U256::from(1u64),
+                    recipient: state.signer.address(),
+                    amount0Max: u128::MAX,
+                    amount1Max: u128::MAX,
+                },
+            };
+
+            let req = SendRawRequest {
+                to: nft_pm,
+                value: Some(U256::ZERO),
+                data: Some(Bytes::from(call.abi_encode())),
+                chain_id: 1,
+                gas_limit: None,
+            };
+
+            // Should query positions(1), get token0/token1, then DENY by policy
+            let result = handle_send_raw(&state, req).await;
+            assert!(result.is_err(), "should be denied by policy");
+            let err_msg = format!("{:?}", result.unwrap_err());
+            assert!(
+                err_msg.contains("policy denied"),
+                "expected policy denied for position with disallowed tokens (token0={token0}, token1={token1}), got: {err_msg}"
+            );
+        });
+    }
+
+    /// test_nft_pm_increase_liquidity_value_on_non_weth_pair — mainnet fork via ANVIL_URL
+    ///
+    /// Tests that increaseLiquidity with value > 0 on a non-WETH pair is rejected
+    /// (ETH stranding prevention). Position 1 on mainnet is UNI/WETH so we need
+    /// a position that is NOT WETH-paired. We test both cases:
+    /// - WETH-paired position + value → should pass value check
+    /// - Non-WETH-paired position + value → should be rejected
+    #[test]
+    fn test_nft_pm_increase_liquidity_value_checks() {
+        use alloy::sol_types::SolCall;
+        use clawlet_evm::send_raw_validation::INonfungiblePositionManager;
+        use clawlet_rpc::handlers::handle_send_raw;
+        use clawlet_rpc::types::SendRawRequest;
+        use clawlet_rpc::AppState;
+        use std::sync::{Arc, Mutex, RwLock};
+        use tempfile::TempDir;
+
+        let Some((anvil_url, private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+            let signer = LocalSigner::from_bytes(&private_key).unwrap();
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // Position 1 is UNI/WETH — WETH-paired
+            let (token0, token1) = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(1u64))
+                .await
+                .expect("should query positions(1)");
+            let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+                .parse()
+                .unwrap();
+            assert!(
+                token0 == weth || token1 == weth,
+                "position 1 should be WETH-paired"
+            );
+
+            // Setup state with permissive policy (allow all tokens)
+            let temp = TempDir::new().unwrap();
+            let audit = AuditLogger::new(&temp.path().join("audit.jsonl")).unwrap();
+            let policy = Policy {
+                daily_transfer_limit_usd: 999999.0,
+                per_tx_limit_usd: 999999.0,
+                allowed_tokens: vec![],
+                allowed_chains: vec![1],
+                require_approval_above_usd: None,
+            };
+            let engine = PolicyEngine::new(policy);
+            let mut adapters_map = std::collections::HashMap::new();
+            adapters_map.insert(1u64, adapter);
+
+            let state = AppState {
+                signer: Arc::new(signer),
+                policy: Arc::new(engine),
+                audit: Arc::new(Mutex::new(audit)),
+                adapters: Arc::new(adapters_map),
+                session_store: Arc::new(RwLock::new(
+                    clawlet_core::auth::SessionStore::default(),
+                )),
+                auth_config: clawlet_core::config::AuthConfig::default(),
+                skills_dir: temp.path().to_path_buf(),
+                keystore_path: temp.path().to_path_buf(),
+            };
+
+            // Case 1: increaseLiquidity on WETH-paired position with value → should PASS value check
+            let call = INonfungiblePositionManager::increaseLiquidityCall {
+                params: INonfungiblePositionManager::IncreaseLiquidityParams {
+                    tokenId: U256::from(1u64), // UNI/WETH position
+                    amount0Desired: U256::from(1_000u64),
+                    amount1Desired: U256::from(1_000u64),
+                    amount0Min: U256::ZERO,
+                    amount1Min: U256::ZERO,
+                    deadline: U256::from(9999999999u64),
+                },
+            };
+
+            let req = SendRawRequest {
+                to: nft_pm,
+                value: Some(U256::from(1_000u64)), // sending ETH
+                data: Some(Bytes::from(call.abi_encode())),
+                chain_id: 1,
+                gas_limit: None,
+            };
+
+            let result = handle_send_raw(&state, req).await;
+            // Should NOT fail with ETH stranding error (WETH is in the pair)
+            // It may fail later at tx execution, but not at the value check
+            match &result {
+                Err(e) => {
+                    let msg = format!("{e:?}");
+                    assert!(
+                        !msg.contains("neither token is the wrapped native token"),
+                        "WETH-paired position should pass value check, got: {msg}"
+                    );
+                    assert!(
+                        !msg.contains("should not carry native value"),
+                        "increaseLiquidity should allow value for WETH pair, got: {msg}"
+                    );
+                }
+                Ok(_) => {}
+            }
+
+            // Case 2: We need a non-WETH position to test rejection.
+            // Find one by scanning a few tokenIds, or construct a test scenario.
+            // For now, search for a USDC/DAI or similar position.
+            let mut non_weth_token_id = None;
+            for id in [2u64, 3, 4, 5, 10, 20, 50, 100, 200, 500, 1000] {
+                if let Ok((t0, t1)) = state
+                    .adapters
+                    .get(&1u64)
+                    .unwrap()
+                    .get_nft_position_tokens(nft_pm, U256::from(id))
+                    .await
+                {
+                    if t0 != weth && t1 != weth && t0 != Address::ZERO {
+                        eprintln!("found non-WETH position: tokenId={id}, token0={t0}, token1={t1}");
+                        non_weth_token_id = Some(id);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(token_id) = non_weth_token_id {
+                let call = INonfungiblePositionManager::increaseLiquidityCall {
+                    params: INonfungiblePositionManager::IncreaseLiquidityParams {
+                        tokenId: U256::from(token_id),
+                        amount0Desired: U256::from(1_000u64),
+                        amount1Desired: U256::from(1_000u64),
+                        amount0Min: U256::ZERO,
+                        amount1Min: U256::ZERO,
+                        deadline: U256::from(9999999999u64),
+                    },
+                };
+
+                let req = SendRawRequest {
+                    to: nft_pm,
+                    value: Some(U256::from(1_000u64)), // ETH on non-WETH pair
+                    data: Some(Bytes::from(call.abi_encode())),
+                    chain_id: 1,
+                    gas_limit: None,
+                };
+
+                let result = handle_send_raw(&state, req).await;
+                assert!(result.is_err(), "should reject value on non-WETH pair");
+                let err_msg = format!("{:?}", result.unwrap_err());
+                assert!(
+                    err_msg.contains("neither token is the wrapped native token"),
+                    "expected ETH stranding error for non-WETH pair, got: {err_msg}"
+                );
+            } else {
+                eprintln!("warning: could not find a non-WETH position in sampled tokenIds, skipping case 2");
+            }
+        });
+    }
 }

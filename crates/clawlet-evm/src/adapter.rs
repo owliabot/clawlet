@@ -163,6 +163,34 @@ impl EvmAdapter {
             .await
             .map_err(|e| EvmAdapterError::Rpc(e.to_string()))
     }
+
+    /// Query NonfungiblePositionManager.positions(tokenId) to get (token0, token1).
+    pub async fn get_nft_position_tokens(
+        &self,
+        nft_pm_address: Address,
+        token_id: alloy::primitives::U256,
+    ) -> Result<(Address, Address)> {
+        let call = crate::send_raw_validation::INonfungiblePositionManager::positionsCall {
+            tokenId: token_id,
+        };
+        let data = call.abi_encode();
+
+        let result: Bytes = self
+            .provider
+            .call(
+                TransactionRequest::default()
+                    .to(nft_pm_address)
+                    .input(data.into()),
+            )
+            .await
+            .map_err(|e| EvmAdapterError::Rpc(e.to_string()))?;
+
+        let decoded =
+            <crate::send_raw_validation::INonfungiblePositionManager::positionsCall as SolCall>::abi_decode_returns(&result)
+                .map_err(|e| EvmAdapterError::AbiDecode(e.to_string()))?;
+
+        Ok((decoded.token0, decoded.token1))
+    }
 }
 
 #[cfg(test)]

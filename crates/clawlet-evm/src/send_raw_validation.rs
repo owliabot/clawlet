@@ -1,9 +1,11 @@
-//! Calldata validation for `send_raw` — only allows whitelisted Uniswap router functions
-//! targeting known router contract addresses.
+//! Calldata validation for `send_raw` — only allows whitelisted functions
+//! targeting known contract addresses.
 //!
-//! The allowed functions are defined by the ABI JSON files at:
-//! - `abi/ISwapRouter.json` (Uniswap V3 SwapRouter02 / IV3SwapRouter)
-//! - `abi/IUniswapV2Router.json` (UniswapV2-like Router02 interfaces)
+//! Supported targets:
+//! - Uniswap V3 SwapRouter02 (`abi/ISwapRouter.json`)
+//! - Uniswap V2 Router02 (`abi/IUniswapV2Router.json`)
+//! - WETH/WBNB/WMATIC (`abi/IWETH.json`)
+//! - Uniswap V3 NonfungiblePositionManager (`abi/INonfungiblePositionManager.json`)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
@@ -29,6 +31,13 @@ sol!(
     #[sol(abi)]
     IWETH,
     "abi/IWETH.json"
+);
+
+// Load UniswapV3 NonfungiblePositionManager interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    INonfungiblePositionManager,
+    "abi/INonfungiblePositionManager.json"
 );
 
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
@@ -77,29 +86,171 @@ pub fn wrapped_native_address(chain: SupportedChainId) -> Address {
     }
 }
 
-/// Uniswap router version.
+/// Identified target contract type for `send_raw` validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouterVersion {
-    V2,
-    V3,
+pub enum SendRawTarget {
+    /// Uniswap V3 SwapRouter02.
+    UniswapV3Router,
+    /// Uniswap V2 Router02.
+    UniswapV2Router,
+    /// Wrapped native token (WETH/WBNB/WMATIC).
+    Weth,
+    /// Uniswap V3 NonfungiblePositionManager.
+    NftPositionManager,
 }
 
-/// Returns the router version if `to` is a known Uniswap router for the given chain.
-pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVersion> {
+/// Identify the target contract type from a `to` address and chain.
+///
+/// Returns `None` if the address is not a known whitelisted contract.
+pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTarget> {
     if to == swap_router_v3_address(chain) {
-        Some(RouterVersion::V3)
+        Some(SendRawTarget::UniswapV3Router)
     } else if to == swap_router_v2_address(chain) {
-        Some(RouterVersion::V2)
+        Some(SendRawTarget::UniswapV2Router)
+    } else if to == wrapped_native_address(chain) {
+        Some(SendRawTarget::Weth)
+    } else if to == nft_position_manager_address(chain) {
+        Some(SendRawTarget::NftPositionManager)
     } else {
         None
     }
 }
 
-/// Returns `true` if `to` is the known WETH contract for the given chain.
+/// NonfungiblePositionManager addresses per chain (Uniswap V3 official deployments).
 ///
-/// Uses `wrapped_native_address` which provides WETH/WBNB/WMATIC addresses per chain.
-pub fn is_allowed_weth(to: Address, chain: SupportedChainId) -> bool {
-    to == wrapped_native_address(chain)
+/// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
+pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
+    match chain {
+        SupportedChainId::Ethereum
+        | SupportedChainId::Optimism
+        | SupportedChainId::Polygon
+        | SupportedChainId::Arbitrum => {
+            address!("C36442b4a4522E871399CD717aBDD847Ab11FE88")
+        }
+        SupportedChainId::Base => address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+        SupportedChainId::Bnb => address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+    }
+}
+
+/// Parsed NonfungiblePositionManager parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NftPositionParams {
+    /// Function name (e.g. "mint", "increaseLiquidity").
+    pub function: String,
+    /// First token address (only present for `mint`).
+    pub token0: Option<Address>,
+    /// Second token address (only present for `mint`).
+    pub token1: Option<Address>,
+    /// Position token ID (present for all except `mint`).
+    pub token_id: Option<U256>,
+}
+
+/// Result of validating NonfungiblePositionManager calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NftPositionValidation {
+    /// The calldata is a valid, ABI-decodable NFT position manager call.
+    Allowed(NftPositionParams),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed position manager functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
+}
+
+/// Try to identify a known NonfungiblePositionManager function from a 4-byte selector.
+///
+/// Selectors:
+/// - mint:               0x88316456
+/// - increaseLiquidity:  0x219f5d17
+/// - decreaseLiquidity:  0x0c49ccbe
+/// - collect:            0xfc6f7865
+/// - burn:               0x42966c68
+fn selector_name_nft_position(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0x88, 0x31, 0x64, 0x56] => Some("mint"),
+        [0x21, 0x9f, 0x5d, 0x17] => Some("increaseLiquidity"),
+        [0x0c, 0x49, 0xcc, 0xbe] => Some("decreaseLiquidity"),
+        [0xfc, 0x6f, 0x78, 0x65] => Some("collect"),
+        [0x42, 0x96, 0x6c, 0x68] => Some("burn"),
+        _ => None,
+    }
+}
+
+/// Validate NonfungiblePositionManager calldata.
+///
+/// Whitelists: mint, increaseLiquidity, decreaseLiquidity, collect, burn.
+/// For `mint`, token0 and token1 are extracted for policy checks.
+/// For other operations, only tokenId is available (tokens were validated at mint time).
+pub fn validate_nft_position_calldata(data: &Option<Bytes>) -> NftPositionValidation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return NftPositionValidation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    match INonfungiblePositionManager::INonfungiblePositionManagerCalls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::mint(c) => {
+                    NftPositionParams {
+                        function: "mint".into(),
+                        token0: Some(c.params.token0),
+                        token1: Some(c.params.token1),
+                        token_id: None,
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::increaseLiquidity(c) => {
+                    NftPositionParams {
+                        function: "increaseLiquidity".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::decreaseLiquidity(c) => {
+                    NftPositionParams {
+                        function: "decreaseLiquidity".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::collect(c) => {
+                    NftPositionParams {
+                        function: "collect".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::burn(c) => {
+                    NftPositionParams {
+                        function: "burn".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.tokenId),
+                    }
+                }
+                // All other NonfungiblePositionManager functions (approve, transferFrom,
+                // multicall, permit, sweepToken, etc.) are valid ABI but not whitelisted.
+                _ => {
+                    return NftPositionValidation::Denied { selector };
+                }
+            };
+            NftPositionValidation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_nft_position(selector) {
+                NftPositionValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                NftPositionValidation::Denied { selector }
+            }
+        }
+    }
 }
 
 /// Try to identify a known function name from a 4-byte selector.
@@ -264,14 +415,14 @@ fn last_token_from_path(path: &Bytes) -> Option<Address> {
     decode_v3_path(path).map(|hops| hops.last().unwrap().token_out)
 }
 
-/// Validate calldata against the identified router version.
+/// Validate calldata against the identified router target.
 ///
-/// Uses the router version (determined from the `to` address) to decode
+/// Uses the target type (determined from the `to` address) to decode
 /// calldata with the correct ABI, avoiding cross-version false matches.
 /// For V2, `chain` is used to validate WETH endpoints in ETH-path swaps.
 pub fn validate_swap_calldata(
     data: &Option<Bytes>,
-    version: RouterVersion,
+    target: SendRawTarget,
     chain: SupportedChainId,
 ) -> SwapValidation {
     let data = match data {
@@ -280,9 +431,10 @@ pub fn validate_swap_calldata(
     };
     let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
-    match version {
-        RouterVersion::V3 => validate_v3(data, selector),
-        RouterVersion::V2 => validate_v2(data, selector, chain),
+    match target {
+        SendRawTarget::UniswapV3Router => validate_v3(data, selector),
+        SendRawTarget::UniswapV2Router => validate_v2(data, selector, chain),
+        _ => SwapValidation::Denied { selector },
     }
 }
 
@@ -580,104 +732,104 @@ mod tests {
     fn correct_router_per_chain() {
         // Ethereum V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Ethereum
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Ethereum V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
                 SupportedChainId::Ethereum
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Optimism V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Optimism
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Optimism V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
                 SupportedChainId::Optimism
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Polygon V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Polygon
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Polygon V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
                 SupportedChainId::Polygon
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Arbitrum V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Arbitrum
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Arbitrum V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Arbitrum
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Base V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("2626664c2603336E57B271c5C0b26F421741e481"),
                 SupportedChainId::Base
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Base V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Base
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // BNB V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
                 SupportedChainId::Bnb
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::UniswapV3Router)
         );
         // BNB V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Bnb
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::UniswapV2Router)
         );
     }
 
@@ -686,7 +838,7 @@ mod tests {
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
             assert!(
-                identify_router(random, chain).is_none(),
+                identify_target(random, chain).is_none(),
                 "random address should be denied on {chain}"
             );
         }
@@ -698,7 +850,7 @@ mod tests {
         let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
         for chain in SupportedChainId::ALL {
             assert!(
-                identify_router(v1_router, chain).is_none(),
+                identify_target(v1_router, chain).is_none(),
                 "SwapRouter V1 should be denied on {chain}"
             );
         }
@@ -786,7 +938,7 @@ mod tests {
     fn exact_input_single_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_input_single()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -802,7 +954,7 @@ mod tests {
     fn exact_input_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_input()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -819,7 +971,7 @@ mod tests {
     fn exact_output_single_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_output_single()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -836,7 +988,7 @@ mod tests {
     fn exact_output_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_output()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -856,7 +1008,7 @@ mod tests {
     fn unknown_selector_denied() {
         let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
         ));
     }
@@ -868,7 +1020,11 @@ mod tests {
         v.extend(vec![0x00u8; 260]);
         let data = Bytes::from(v);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -876,13 +1032,17 @@ mod tests {
     #[test]
     fn empty_data_no_selector() {
         assert_eq!(
-            validate_swap_calldata(&None, RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &None,
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::NoSelector
         );
         assert_eq!(
             validate_swap_calldata(
                 &Some(Bytes::new()),
-                RouterVersion::V3,
+                SendRawTarget::UniswapV3Router,
                 SupportedChainId::Ethereum
             ),
             SwapValidation::NoSelector
@@ -893,7 +1053,11 @@ mod tests {
     fn short_data_no_selector() {
         let data = Bytes::from(vec![0x04, 0xe4, 0x5a]);
         assert_eq!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::NoSelector
         );
     }
@@ -903,7 +1067,7 @@ mod tests {
         // exactInputSingle selector (0x04e45aaf) with garbage
         let data = Bytes::from(vec![0x04, 0xe4, 0x5a, 0xaf, 0xff, 0xff]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInputSingle"
         ));
     }
@@ -913,7 +1077,7 @@ mod tests {
         // exactInput selector (0xb858183f) with no args
         let data = Bytes::from(vec![0xb8, 0x58, 0x18, 0x3f]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }
@@ -956,7 +1120,7 @@ mod tests {
     fn swap_exact_tokens_for_tokens_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_tokens_for_tokens()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -972,7 +1136,7 @@ mod tests {
     fn swap_exact_eth_for_tokens_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_eth_for_tokens()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -988,7 +1152,7 @@ mod tests {
     fn swap_exact_tokens_for_eth_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_tokens_for_eth()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -1005,7 +1169,7 @@ mod tests {
         // swapExactTokensForTokens selector (0x38ed1739) with no args
         let data = Bytes::from(vec![0x38, 0xed, 0x17, 0x39]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
         ));
     }
@@ -1015,7 +1179,7 @@ mod tests {
         // swapExactETHForTokens selector (0x7ff36ab5) with no args
         let data = Bytes::from(vec![0x7f, 0xf3, 0x6a, 0xb5]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
         ));
     }
@@ -1025,7 +1189,7 @@ mod tests {
         // swapExactTokensForETH selector (0x18cbafe5) with no args
         let data = Bytes::from(vec![0x18, 0xcb, 0xaf, 0xe5]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
         ));
     }
@@ -1041,7 +1205,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
         ));
     }
@@ -1057,7 +1221,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
         ));
     }
@@ -1072,7 +1236,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
         ));
     }
@@ -1089,7 +1253,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForTokens" && reason.contains("at least 2")
         ));
 
@@ -1101,7 +1265,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactETHForTokens" && reason.contains("at least 2")
         ));
 
@@ -1114,7 +1278,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForETH" && reason.contains("at least 2")
         ));
     }
@@ -1126,7 +1290,11 @@ mod tests {
         // V2 swapExactTokensForTokens calldata validated as V3 → Denied
         let data = encode_swap_exact_tokens_for_tokens();
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -1136,7 +1304,11 @@ mod tests {
         // V3 exactInputSingle calldata validated as V2 → Denied
         let data = encode_exact_input_single();
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV2Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -1154,7 +1326,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason }
                 if name == "swapExactETHForTokens" && reason.contains("wrapped native token")
         ));
@@ -1172,7 +1344,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason }
                 if name == "swapExactTokensForETH" && reason.contains("wrapped native token")
         ));
@@ -1193,7 +1365,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }
@@ -1211,7 +1383,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactOutput"
         ));
     }
@@ -1236,7 +1408,11 @@ mod tests {
             },
         };
         let data = Bytes::from(call.abi_encode());
-        match validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum) {
+        match validate_swap_calldata(
+            &Some(data),
+            SendRawTarget::UniswapV3Router,
+            SupportedChainId::Ethereum,
+        ) {
             SwapValidation::Allowed(p) => {
                 assert_eq!(p.function, "exactInput");
                 assert_eq!(
@@ -1701,6 +1877,292 @@ mod tests {
         assert!(matches!(
             validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
             LiquidityValidation::Denied { .. }
+        ));
+    }
+
+    // ---- NonfungiblePositionManager tests ----
+
+    #[test]
+    fn nft_pm_address_per_chain() {
+        // Ethereum, Optimism, Polygon, Arbitrum share the same address
+        let shared = address!("C36442b4a4522E871399CD717aBDD847Ab11FE88");
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Ethereum),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Optimism),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Polygon),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Arbitrum),
+            Some(SendRawTarget::NftPositionManager)
+        );
+
+        // Base has a different address
+        assert_eq!(
+            identify_target(
+                address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+                SupportedChainId::Base
+            ),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        // BNB has a different address
+        assert_eq!(
+            identify_target(
+                address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+                SupportedChainId::Bnb
+            ),
+            Some(SendRawTarget::NftPositionManager)
+        );
+
+        // Random address should not match
+        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        for chain in SupportedChainId::ALL {
+            assert!(
+                identify_target(random, chain).is_none(),
+                "random address should not match on {chain}"
+            );
+        }
+    }
+
+    #[test]
+    fn nft_pm_mint_valid() {
+        let call = INonfungiblePositionManager::mintCall {
+            params: INonfungiblePositionManager::MintParams {
+                token0: WETH,
+                token1: USDC,
+                fee: Uint::from(3000u32),
+                tickLower: alloy::primitives::Signed::try_from(-887220i32).unwrap(),
+                tickUpper: alloy::primitives::Signed::try_from(887220i32).unwrap(),
+                amount0Desired: U256::from(1_000_000_000_000_000_000u64),
+                amount1Desired: U256::from(1_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                recipient: Address::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "mint");
+                assert_eq!(p.token0, Some(WETH));
+                assert_eq!(p.token1, Some(USDC));
+                assert!(p.token_id.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_increase_liquidity_valid() {
+        let call = INonfungiblePositionManager::increaseLiquidityCall {
+            params: INonfungiblePositionManager::IncreaseLiquidityParams {
+                tokenId: U256::from(12345u64),
+                amount0Desired: U256::from(1_000_000u64),
+                amount1Desired: U256::from(1_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "increaseLiquidity");
+                assert!(p.token0.is_none());
+                assert!(p.token1.is_none());
+                assert_eq!(p.token_id, Some(U256::from(12345u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_decrease_liquidity_valid() {
+        let call = INonfungiblePositionManager::decreaseLiquidityCall {
+            params: INonfungiblePositionManager::DecreaseLiquidityParams {
+                tokenId: U256::from(99u64),
+                liquidity: 500_000,
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "decreaseLiquidity");
+                assert_eq!(p.token_id, Some(U256::from(99u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_collect_valid() {
+        let call = INonfungiblePositionManager::collectCall {
+            params: INonfungiblePositionManager::CollectParams {
+                tokenId: U256::from(42u64),
+                recipient: Address::ZERO,
+                amount0Max: u128::MAX,
+                amount1Max: u128::MAX,
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "collect");
+                assert_eq!(p.token_id, Some(U256::from(42u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_burn_valid() {
+        let call = INonfungiblePositionManager::burnCall {
+            tokenId: U256::from(7u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "burn");
+                assert_eq!(p.token_id, Some(U256::from(7u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_no_selector() {
+        assert_eq!(
+            validate_nft_position_calldata(&None),
+            NftPositionValidation::NoSelector
+        );
+        assert_eq!(
+            validate_nft_position_calldata(&Some(Bytes::new())),
+            NftPositionValidation::NoSelector
+        );
+        assert_eq!(
+            validate_nft_position_calldata(&Some(Bytes::from(vec![0x88, 0x31, 0x64]))),
+            NftPositionValidation::NoSelector
+        );
+    }
+
+    #[test]
+    fn nft_pm_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn nft_pm_mint_selector_only_malformed() {
+        let data = Bytes::from(vec![0x88, 0x31, 0x64, 0x56]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "mint"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_increase_selector_only_malformed() {
+        let data = Bytes::from(vec![0x21, 0x9f, 0x5d, 0x17]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "increaseLiquidity"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_decrease_selector_only_malformed() {
+        let data = Bytes::from(vec![0x0c, 0x49, 0xcc, 0xbe]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "decreaseLiquidity"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_collect_selector_only_malformed() {
+        let data = Bytes::from(vec![0xfc, 0x6f, 0x78, 0x65]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "collect"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_burn_selector_only_malformed() {
+        let data = Bytes::from(vec![0x42, 0x96, 0x6c, 0x68]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "burn"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_approve_denied() {
+        // approve(address,uint256) is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::approveCall {
+            to: Address::ZERO,
+            tokenId: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_multicall_denied() {
+        // multicall(bytes[]) is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::multicallCall {
+            data: vec![Bytes::from(vec![0x00])],
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_transfer_from_denied() {
+        // transferFrom is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::transferFromCall {
+            from: Address::ZERO,
+            to: address!("0000000000000000000000000000000000000001"),
+            tokenId: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_sweep_token_denied() {
+        // sweepToken is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::sweepTokenCall {
+            token: USDC,
+            amountMinimum: U256::from(1u64),
+            recipient: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
         ));
     }
 }

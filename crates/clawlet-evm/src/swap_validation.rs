@@ -410,10 +410,10 @@ fn validate_v2(data: &Bytes, selector: [u8; 4], chain: SupportedChainId) -> Swap
 /// Uses alloy's `sol!` macro with the WETH ABI JSON for calldata decoding.
 /// Only deposit and withdraw functions are allowed; other functions (approve, transfer, etc.) are rejected.
 pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> WethValidation {
+    // None or empty calldata → fallback deposit (WETH9 fallback function is payable)
     let data = match data {
-        Some(d) if d.len() >= 4 => d,
-        Some(d) if d.is_empty() => {
-            // Empty data + value > 0 → fallback deposit
+        Some(d) if !d.is_empty() => d,
+        _ => {
             let amount = value.unwrap_or(U256::ZERO);
             if amount.is_zero() {
                 return WethValidation::Invalid {
@@ -422,30 +422,12 @@ pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> Weth
             }
             return WethValidation::Wrap(amount);
         }
-        None => {
-            // None (no calldata) + value > 0 → fallback deposit
-            let amount = value.unwrap_or(U256::ZERO);
-            if amount.is_zero() {
-                return WethValidation::Invalid {
-                    reason: "no calldata with zero value is not a valid WETH operation".into(),
-                };
-            }
-            return WethValidation::Wrap(amount);
-        }
-        Some(_) => {
-            return WethValidation::Invalid {
-                reason:
-                    "calldata too short for WETH operation (need at least 4 bytes for selector)"
-                        .into(),
-            };
-        }
     };
 
-    // Decode the calldata using the WETH ABI
+    // ABI decode — handles selector extraction, length validation, and argument parsing
     match IWETH::IWETHCalls::abi_decode(data) {
         Ok(call) => match call {
             IWETH::IWETHCalls::deposit(_) => {
-                // deposit() is payable and requires value > 0
                 let amount = value.unwrap_or(U256::ZERO);
                 if amount.is_zero() {
                     return WethValidation::Invalid {
@@ -455,31 +437,22 @@ pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> Weth
                 WethValidation::Wrap(amount)
             }
             IWETH::IWETHCalls::withdraw(w) => {
-                // withdraw(uint256 wad) — extract amount from parameter
-                let amount = w.wad;
-                if amount.is_zero() {
+                if w.wad.is_zero() {
                     return WethValidation::Invalid {
                         reason: "withdraw amount must be > 0".into(),
                     };
                 }
-                WethValidation::Unwrap(amount)
+                WethValidation::Unwrap(w.wad)
             }
-            // All other WETH functions (approve, transfer, transferFrom, etc.) are not allowed
+            // Other WETH functions (approve, transfer, transferFrom, etc.) are not allowed
             _ => WethValidation::Invalid {
                 reason: "only deposit and withdraw functions are allowed for WETH operations"
                     .into(),
             },
         },
-        Err(_) => {
-            // Decode failed — extract selector for error message
-            let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
-            WethValidation::Invalid {
-                reason: format!(
-                    "unknown or invalid WETH function selector: 0x{:02x}{:02x}{:02x}{:02x}",
-                    selector[0], selector[1], selector[2], selector[3]
-                ),
-            }
-        }
+        Err(e) => WethValidation::Invalid {
+            reason: format!("invalid WETH calldata: {e}"),
+        },
     }
 }
 

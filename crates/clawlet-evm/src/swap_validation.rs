@@ -230,6 +230,11 @@ pub fn validate_nft_position_calldata(data: &Option<Bytes>) -> NftPositionValida
                         token_id: Some(c.tokenId),
                     }
                 }
+                // All other NonfungiblePositionManager functions (approve, transferFrom,
+                // multicall, permit, sweepToken, etc.) are valid ABI but not whitelisted.
+                _ => {
+                    return NftPositionValidation::Denied { selector };
+                }
             };
             NftPositionValidation::Allowed(params)
         }
@@ -2056,6 +2061,63 @@ mod tests {
         assert!(matches!(
             validate_nft_position_calldata(&Some(data)),
             NftPositionValidation::MalformedArgs { name, .. } if name == "burn"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_approve_denied() {
+        // approve(address,uint256) is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::approveCall {
+            to: Address::ZERO,
+            tokenId: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_multicall_denied() {
+        // multicall(bytes[]) is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::multicallCall {
+            data: vec![Bytes::from(vec![0x00])],
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_transfer_from_denied() {
+        // transferFrom is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::transferFromCall {
+            from: Address::ZERO,
+            to: address!("0000000000000000000000000000000000000001"),
+            tokenId: U256::from(1u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn nft_pm_sweep_token_denied() {
+        // sweepToken is a valid ABI function but not whitelisted
+        let call = INonfungiblePositionManager::sweepTokenCall {
+            token: USDC,
+            amountMinimum: U256::from(1u64),
+            recipient: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { .. }
         ));
     }
 }

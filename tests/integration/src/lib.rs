@@ -1471,4 +1471,182 @@ allowed_chains: []
             );
         });
     }
+
+    // =========================================================================
+    // NonfungiblePositionManager — positions() query via anvil fork
+    // =========================================================================
+
+    /// test_nft_pm_get_position_tokens — mainnet fork via ANVIL_URL
+    ///
+    /// Queries a known Uniswap V3 position (tokenId=1) on mainnet to verify
+    /// that `EvmAdapter::get_nft_position_tokens` correctly returns token0/token1.
+    #[test]
+    fn test_nft_pm_get_position_tokens() {
+        let Some((anvil_url, _private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // tokenId=1 is one of the earliest V3 positions on mainnet
+            let (token0, token1) = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(1u64))
+                .await
+                .expect("should query positions(1)");
+
+            // token0 and token1 should be valid non-zero addresses
+            assert_ne!(token0, Address::ZERO, "token0 should not be zero");
+            assert_ne!(token1, Address::ZERO, "token1 should not be zero");
+            // token0 < token1 (Uniswap V3 invariant)
+            assert!(token0 < token1, "token0 should be less than token1");
+
+            eprintln!("positions(1): token0={token0}, token1={token1}");
+        });
+    }
+
+    /// test_nft_pm_invalid_token_id — mainnet fork via ANVIL_URL
+    ///
+    /// Queries a very large tokenId that doesn't exist to verify error handling.
+    #[test]
+    fn test_nft_pm_invalid_token_id() {
+        let Some((anvil_url, _private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // tokenId that almost certainly doesn't exist
+            let result = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(999_999_999_999u64))
+                .await;
+
+            // Should either error or return zero addresses (position doesn't exist)
+            match result {
+                Err(_) => {} // Expected — revert or decode error
+                Ok((token0, token1)) => {
+                    // If it returns successfully, tokens should be zero (burned/nonexistent)
+                    assert_eq!(
+                        token0,
+                        Address::ZERO,
+                        "nonexistent position should have zero token0"
+                    );
+                    assert_eq!(
+                        token1,
+                        Address::ZERO,
+                        "nonexistent position should have zero token1"
+                    );
+                }
+            }
+        });
+    }
+
+    /// test_nft_pm_send_raw_collect_policy_denied — mainnet fork via ANVIL_URL
+    ///
+    /// Tests full send_raw flow: collect on real position → positions() query →
+    /// token policy check → denied (tokens not in allowed list).
+    ///
+    /// Uses handle_send_raw directly with a real anvil fork adapter.
+    #[test]
+    fn test_nft_pm_send_raw_collect_policy_denied() {
+        use alloy::sol_types::SolCall;
+        use clawlet_evm::send_raw_validation::INonfungiblePositionManager;
+        use clawlet_rpc::handlers::handle_send_raw;
+        use clawlet_rpc::types::HandlerError;
+        use clawlet_rpc::types::SendRawRequest;
+        use clawlet_rpc::AppState;
+        use std::sync::{Arc, Mutex, RwLock};
+        use tempfile::TempDir;
+
+        let Some((anvil_url, private_key)) = env_anvil() else {
+            eprintln!("skipping: set ANVIL_URL and ANVIL_PRIVATE_KEY to run");
+            return;
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let adapter = EvmAdapter::new(&anvil_url).expect("should connect to Anvil fork");
+            let signer = LocalSigner::from_bytes(&private_key).unwrap();
+
+            let nft_pm: Address = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+                .parse()
+                .unwrap();
+
+            // First verify adapter can query position tokens
+            let (token0, token1) = adapter
+                .get_nft_position_tokens(nft_pm, U256::from(1u64))
+                .await
+                .expect("should query positions(1)");
+            eprintln!("position 1: token0={token0}, token1={token1}");
+
+            // Setup state with restrictive policy — neither token is allowed
+            let temp = TempDir::new().unwrap();
+            let audit = AuditLogger::new(&temp.path().join("audit.jsonl")).unwrap();
+
+            let policy = Policy {
+                daily_transfer_limit_usd: 1000.0,
+                per_tx_limit_usd: 100.0,
+                allowed_tokens: vec!["ONLY_THIS_TOKEN".to_string()],
+                allowed_chains: vec![1],
+                require_approval_above_usd: None,
+            };
+            let engine = PolicyEngine::new(policy);
+
+            let mut adapters_map = std::collections::HashMap::new();
+            adapters_map.insert(1u64, adapter);
+
+            let state = AppState {
+                signer: Arc::new(signer),
+                policy: Arc::new(engine),
+                audit: Arc::new(Mutex::new(audit)),
+                adapters: Arc::new(adapters_map),
+                session_store: Arc::new(RwLock::new(
+                    clawlet_core::auth::SessionStore::default(),
+                )),
+                auth_config: clawlet_core::config::AuthConfig::default(),
+                skills_dir: temp.path().to_path_buf(),
+                keystore_path: temp.path().to_path_buf(),
+            };
+
+            // Build a collect call for position 1
+            let call = INonfungiblePositionManager::collectCall {
+                params: INonfungiblePositionManager::CollectParams {
+                    tokenId: U256::from(1u64),
+                    recipient: state.signer.address(),
+                    amount0Max: u128::MAX,
+                    amount1Max: u128::MAX,
+                },
+            };
+
+            let req = SendRawRequest {
+                to: nft_pm,
+                value: Some(U256::ZERO),
+                data: Some(Bytes::from(call.abi_encode())),
+                chain_id: 1,
+                gas_limit: None,
+            };
+
+            // Should query positions(1), get token0/token1, then DENY by policy
+            let result = handle_send_raw(&state, req).await;
+            assert!(result.is_err(), "should be denied by policy");
+            let err_msg = format!("{:?}", result.unwrap_err());
+            assert!(
+                err_msg.contains("policy denied"),
+                "expected policy denied for position with disallowed tokens (token0={token0}, token1={token1}), got: {err_msg}"
+            );
+        });
+    }
 }

@@ -31,6 +31,13 @@ sol!(
     "abi/IWETH.json"
 );
 
+// Load UniswapV3 NonfungiblePositionManager interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    INonfungiblePositionManager,
+    "abi/INonfungiblePositionManager.json"
+);
+
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
 ///
 /// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
@@ -100,6 +107,143 @@ pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVer
 /// Uses `wrapped_native_address` which provides WETH/WBNB/WMATIC addresses per chain.
 pub fn is_allowed_weth(to: Address, chain: SupportedChainId) -> bool {
     to == wrapped_native_address(chain)
+}
+
+/// NonfungiblePositionManager addresses per chain (Uniswap V3 official deployments).
+///
+/// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
+pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
+    match chain {
+        SupportedChainId::Ethereum
+        | SupportedChainId::Optimism
+        | SupportedChainId::Polygon
+        | SupportedChainId::Arbitrum => {
+            address!("C36442b4a4522E871399CD717aBDD847Ab11FE88")
+        }
+        SupportedChainId::Base => address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+        SupportedChainId::Bnb => address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+    }
+}
+
+/// Returns `true` if `to` is the known NonfungiblePositionManager for the given chain.
+pub fn is_nft_position_manager(to: Address, chain: SupportedChainId) -> bool {
+    to == nft_position_manager_address(chain)
+}
+
+/// Parsed NonfungiblePositionManager parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NftPositionParams {
+    /// Function name (e.g. "mint", "increaseLiquidity").
+    pub function: String,
+    /// First token address (only present for `mint`).
+    pub token0: Option<Address>,
+    /// Second token address (only present for `mint`).
+    pub token1: Option<Address>,
+    /// Position token ID (present for all except `mint`).
+    pub token_id: Option<U256>,
+}
+
+/// Result of validating NonfungiblePositionManager calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NftPositionValidation {
+    /// The calldata is a valid, ABI-decodable NFT position manager call.
+    Allowed(NftPositionParams),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed position manager functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
+}
+
+/// Try to identify a known NonfungiblePositionManager function from a 4-byte selector.
+///
+/// Selectors:
+/// - mint:               0x88316456
+/// - increaseLiquidity:  0x219f5d17
+/// - decreaseLiquidity:  0x0c49ccbe
+/// - collect:            0xfc6f7865
+/// - burn:               0x42966c68
+fn selector_name_nft_position(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0x88, 0x31, 0x64, 0x56] => Some("mint"),
+        [0x21, 0x9f, 0x5d, 0x17] => Some("increaseLiquidity"),
+        [0x0c, 0x49, 0xcc, 0xbe] => Some("decreaseLiquidity"),
+        [0xfc, 0x6f, 0x78, 0x65] => Some("collect"),
+        [0x42, 0x96, 0x6c, 0x68] => Some("burn"),
+        _ => None,
+    }
+}
+
+/// Validate NonfungiblePositionManager calldata.
+///
+/// Whitelists: mint, increaseLiquidity, decreaseLiquidity, collect, burn.
+/// For `mint`, token0 and token1 are extracted for policy checks.
+/// For other operations, only tokenId is available (tokens were validated at mint time).
+pub fn validate_nft_position_calldata(data: &Option<Bytes>) -> NftPositionValidation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return NftPositionValidation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    match INonfungiblePositionManager::INonfungiblePositionManagerCalls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::mint(c) => {
+                    NftPositionParams {
+                        function: "mint".into(),
+                        token0: Some(c.params.token0),
+                        token1: Some(c.params.token1),
+                        token_id: None,
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::increaseLiquidity(c) => {
+                    NftPositionParams {
+                        function: "increaseLiquidity".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::decreaseLiquidity(c) => {
+                    NftPositionParams {
+                        function: "decreaseLiquidity".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::collect(c) => {
+                    NftPositionParams {
+                        function: "collect".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.params.tokenId),
+                    }
+                }
+                INonfungiblePositionManager::INonfungiblePositionManagerCalls::burn(c) => {
+                    NftPositionParams {
+                        function: "burn".into(),
+                        token0: None,
+                        token1: None,
+                        token_id: Some(c.tokenId),
+                    }
+                }
+            };
+            NftPositionValidation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_nft_position(selector) {
+                NftPositionValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                NftPositionValidation::Denied { selector }
+            }
+        }
+    }
 }
 
 /// Try to identify a known function name from a 4-byte selector.
@@ -1701,6 +1845,217 @@ mod tests {
         assert!(matches!(
             validate_liquidity_calldata(&Some(data), SupportedChainId::Ethereum),
             LiquidityValidation::Denied { .. }
+        ));
+    }
+
+    // ---- NonfungiblePositionManager tests ----
+
+    #[test]
+    fn nft_pm_address_per_chain() {
+        // Ethereum, Optimism, Polygon, Arbitrum share the same address
+        let shared = address!("C36442b4a4522E871399CD717aBDD847Ab11FE88");
+        assert!(is_nft_position_manager(shared, SupportedChainId::Ethereum));
+        assert!(is_nft_position_manager(shared, SupportedChainId::Optimism));
+        assert!(is_nft_position_manager(shared, SupportedChainId::Polygon));
+        assert!(is_nft_position_manager(shared, SupportedChainId::Arbitrum));
+
+        // Base has a different address
+        assert!(is_nft_position_manager(
+            address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+            SupportedChainId::Base
+        ));
+        // BNB has a different address
+        assert!(is_nft_position_manager(
+            address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+            SupportedChainId::Bnb
+        ));
+
+        // Random address should not match
+        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        for chain in SupportedChainId::ALL {
+            assert!(
+                !is_nft_position_manager(random, chain),
+                "random address should not match on {chain}"
+            );
+        }
+    }
+
+    #[test]
+    fn nft_pm_mint_valid() {
+        let call = INonfungiblePositionManager::mintCall {
+            params: INonfungiblePositionManager::MintParams {
+                token0: WETH,
+                token1: USDC,
+                fee: Uint::from(3000u32),
+                tickLower: alloy::primitives::Signed::try_from(-887220i32).unwrap(),
+                tickUpper: alloy::primitives::Signed::try_from(887220i32).unwrap(),
+                amount0Desired: U256::from(1_000_000_000_000_000_000u64),
+                amount1Desired: U256::from(1_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                recipient: Address::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "mint");
+                assert_eq!(p.token0, Some(WETH));
+                assert_eq!(p.token1, Some(USDC));
+                assert!(p.token_id.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_increase_liquidity_valid() {
+        let call = INonfungiblePositionManager::increaseLiquidityCall {
+            params: INonfungiblePositionManager::IncreaseLiquidityParams {
+                tokenId: U256::from(12345u64),
+                amount0Desired: U256::from(1_000_000u64),
+                amount1Desired: U256::from(1_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "increaseLiquidity");
+                assert!(p.token0.is_none());
+                assert!(p.token1.is_none());
+                assert_eq!(p.token_id, Some(U256::from(12345u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_decrease_liquidity_valid() {
+        let call = INonfungiblePositionManager::decreaseLiquidityCall {
+            params: INonfungiblePositionManager::DecreaseLiquidityParams {
+                tokenId: U256::from(99u64),
+                liquidity: 500_000,
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                deadline: U256::from(9999999999u64),
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "decreaseLiquidity");
+                assert_eq!(p.token_id, Some(U256::from(99u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_collect_valid() {
+        let call = INonfungiblePositionManager::collectCall {
+            params: INonfungiblePositionManager::CollectParams {
+                tokenId: U256::from(42u64),
+                recipient: Address::ZERO,
+                amount0Max: u128::MAX,
+                amount1Max: u128::MAX,
+            },
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "collect");
+                assert_eq!(p.token_id, Some(U256::from(42u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_burn_valid() {
+        let call = INonfungiblePositionManager::burnCall {
+            tokenId: U256::from(7u64),
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_nft_position_calldata(&Some(data)) {
+            NftPositionValidation::Allowed(p) => {
+                assert_eq!(p.function, "burn");
+                assert_eq!(p.token_id, Some(U256::from(7u64)));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nft_pm_no_selector() {
+        assert_eq!(
+            validate_nft_position_calldata(&None),
+            NftPositionValidation::NoSelector
+        );
+        assert_eq!(
+            validate_nft_position_calldata(&Some(Bytes::new())),
+            NftPositionValidation::NoSelector
+        );
+        assert_eq!(
+            validate_nft_position_calldata(&Some(Bytes::from(vec![0x88, 0x31, 0x64]))),
+            NftPositionValidation::NoSelector
+        );
+    }
+
+    #[test]
+    fn nft_pm_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn nft_pm_mint_selector_only_malformed() {
+        let data = Bytes::from(vec![0x88, 0x31, 0x64, 0x56]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "mint"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_increase_selector_only_malformed() {
+        let data = Bytes::from(vec![0x21, 0x9f, 0x5d, 0x17]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "increaseLiquidity"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_decrease_selector_only_malformed() {
+        let data = Bytes::from(vec![0x0c, 0x49, 0xcc, 0xbe]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "decreaseLiquidity"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_collect_selector_only_malformed() {
+        let data = Bytes::from(vec![0xfc, 0x6f, 0x78, 0x65]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "collect"
+        ));
+    }
+
+    #[test]
+    fn nft_pm_burn_selector_only_malformed() {
+        let data = Bytes::from(vec![0x42, 0x96, 0x6c, 0x68]);
+        assert!(matches!(
+            validate_nft_position_calldata(&Some(data)),
+            NftPositionValidation::MalformedArgs { name, .. } if name == "burn"
         ));
     }
 }

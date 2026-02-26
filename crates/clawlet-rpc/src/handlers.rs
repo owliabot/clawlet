@@ -12,7 +12,7 @@ use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::swap_validation::{
     identify_router, is_allowed_weth, validate_liquidity_calldata, validate_swap_calldata,
-    validate_weth_calldata, LiquidityValidation, SwapValidation, WethValidation,
+    validate_weth_calldata, LiquidityValidation, RouterVersion, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -375,7 +375,36 @@ pub async fn handle_send_raw(
                 )));
             }
             SwapValidation::Denied { selector } => {
-                // Swap validation denied — try liquidity validation for V2 routers.
+                // Liquidity functions only exist on V2 routers.
+                // If this is a V3 router, reject immediately.
+                if version == RouterVersion::V3 {
+                    let sel_hex = format!(
+                        "0x{:02x}{:02x}{:02x}{:02x}",
+                        selector[0], selector[1], selector[2], selector[3]
+                    );
+
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "selector": sel_hex,
+                            }),
+                            format!("denied: unsupported V3 function selector {sel_hex}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+
+                    return Err(HandlerError::BadRequest(format!(
+                        "function selector {sel_hex} is not allowed; \
+                         only Uniswap V3 swap functions are permitted on V3 router"
+                    )));
+                }
+
+                // V2 router — try liquidity validation.
                 match validate_liquidity_calldata(&req.data, supported_chain) {
                     LiquidityValidation::Allowed(liq_params) => {
                         // ---- Value/function consistency check for liquidity ----

@@ -783,21 +783,21 @@ pub fn validate_erc20_calldata(data: &Option<Bytes>) -> Erc20Validation {
             let params = match &call {
                 IERC20::IERC20Calls::transfer(c) => Erc20Params {
                     function: "transfer".into(),
-                    spender_or_recipient: c.to,
-                    amount: c.amount,
+                    spender_or_recipient: c._to,
+                    amount: c._value,
                     from: None,
                 },
                 IERC20::IERC20Calls::approve(c) => Erc20Params {
                     function: "approve".into(),
-                    spender_or_recipient: c.spender,
-                    amount: c.amount,
+                    spender_or_recipient: c._spender,
+                    amount: c._value,
                     from: None,
                 },
                 IERC20::IERC20Calls::transferFrom(c) => Erc20Params {
                     function: "transferFrom".into(),
-                    spender_or_recipient: c.to,
-                    amount: c.amount,
-                    from: Some(c.from),
+                    spender_or_recipient: c._to,
+                    amount: c._value,
+                    from: Some(c._from),
                 },
                 IERC20::IERC20Calls::permit(c) => Erc20Params {
                     function: "permit".into(),
@@ -2276,25 +2276,25 @@ mod tests {
 
     fn encode_erc20_transfer() -> Bytes {
         let call = IERC20::transferCall {
-            to: USDC,
-            amount: U256::from(1_000_000u64),
+            _to: USDC,
+            _value: U256::from(1_000_000u64),
         };
         Bytes::from(call.abi_encode())
     }
 
     fn encode_erc20_approve() -> Bytes {
         let call = IERC20::approveCall {
-            spender: USDC,
-            amount: U256::MAX,
+            _spender: USDC,
+            _value: U256::MAX,
         };
         Bytes::from(call.abi_encode())
     }
 
     fn encode_erc20_transfer_from() -> Bytes {
         let call = IERC20::transferFromCall {
-            from: WETH,
-            to: USDC,
-            amount: U256::from(5_000u64),
+            _from: WETH,
+            _to: USDC,
+            _value: U256::from(5_000u64),
         };
         Bytes::from(call.abi_encode())
     }
@@ -2426,7 +2426,7 @@ mod tests {
     fn erc20_balance_of_denied() {
         // balanceOf is read-only, not allowed via send_raw
         let call = IERC20::balanceOfCall {
-            owner: Address::ZERO,
+            _owner: Address::ZERO,
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
@@ -2439,8 +2439,8 @@ mod tests {
     fn erc20_allowance_denied() {
         // allowance is read-only, not allowed via send_raw
         let call = IERC20::allowanceCall {
-            owner: Address::ZERO,
-            spender: USDC,
+            _owner: Address::ZERO,
+            _spender: USDC,
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(

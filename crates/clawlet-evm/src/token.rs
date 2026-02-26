@@ -29,7 +29,10 @@ pub async fn check_allowance(
     spender: Address,
     token: Address,
 ) -> Result<U256, TokenError> {
-    let call = IERC20::allowanceCall { owner, spender };
+    let call = IERC20::allowanceCall {
+        _owner: owner,
+        _spender: spender,
+    };
     let data = call.abi_encode();
 
     let result: Bytes = adapter
@@ -52,7 +55,10 @@ pub async fn approve_token(
     spender: Address,
     amount: U256,
 ) -> Result<alloy::primitives::B256, TokenError> {
-    let call = IERC20::approveCall { spender, amount };
+    let call = IERC20::approveCall {
+        _spender: spender,
+        _value: amount,
+    };
     let data = call.abi_encode();
 
     let mut tx_req = TransactionRequest::default().to(token).input(data.into());

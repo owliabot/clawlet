@@ -91,7 +91,10 @@ pub fn build_erc20_transfer(
     amount: U256,
     chain_id: u64,
 ) -> TransactionRequest {
-    let call = IERC20::transferCall { to, amount };
+    let call = IERC20::transferCall {
+        _to: to,
+        _value: amount,
+    };
     let data = call.abi_encode();
 
     let mut tx = TransactionRequest::default()

@@ -119,21 +119,6 @@ pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTa
     }
 }
 
-/// Returns the router version if `to` is a known Uniswap router for the given chain.
-#[deprecated(note = "use identify_target instead")]
-pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVersion> {
-    match identify_target(to, chain) {
-        Some(SendRawTarget::Router(v)) => Some(v),
-        _ => None,
-    }
-}
-
-/// Returns `true` if `to` is the known WETH contract for the given chain.
-#[deprecated(note = "use identify_target instead")]
-pub fn is_allowed_weth(to: Address, chain: SupportedChainId) -> bool {
-    matches!(identify_target(to, chain), Some(SendRawTarget::Weth))
-}
-
 /// NonfungiblePositionManager addresses per chain (Uniswap V3 official deployments).
 ///
 /// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
@@ -148,15 +133,6 @@ pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
         SupportedChainId::Base => address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
         SupportedChainId::Bnb => address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
     }
-}
-
-/// Returns `true` if `to` is the known NonfungiblePositionManager for the given chain.
-#[deprecated(note = "use identify_target instead")]
-pub fn is_nft_position_manager(to: Address, chain: SupportedChainId) -> bool {
-    matches!(
-        identify_target(to, chain),
-        Some(SendRawTarget::NftPositionManager)
-    )
 }
 
 /// Parsed NonfungiblePositionManager parameters for policy checks.
@@ -758,104 +734,104 @@ mod tests {
     fn correct_router_per_chain() {
         // Ethereum V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Ethereum
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // Ethereum V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
                 SupportedChainId::Ethereum
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
 
         // Optimism V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Optimism
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // Optimism V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
                 SupportedChainId::Optimism
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
 
         // Polygon V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Polygon
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // Polygon V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
                 SupportedChainId::Polygon
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
 
         // Arbitrum V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Arbitrum
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // Arbitrum V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Arbitrum
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
 
         // Base V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("2626664c2603336E57B271c5C0b26F421741e481"),
                 SupportedChainId::Base
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // Base V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Base
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
 
         // BNB V3
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
                 SupportedChainId::Bnb
             ),
-            Some(RouterVersion::V3)
+            Some(SendRawTarget::Router(RouterVersion::V3))
         );
         // BNB V2
         assert_eq!(
-            identify_router(
+            identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Bnb
             ),
-            Some(RouterVersion::V2)
+            Some(SendRawTarget::Router(RouterVersion::V2))
         );
     }
 
@@ -864,7 +840,7 @@ mod tests {
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
             assert!(
-                identify_router(random, chain).is_none(),
+                identify_target(random, chain).is_none(),
                 "random address should be denied on {chain}"
             );
         }
@@ -876,7 +852,7 @@ mod tests {
         let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
         for chain in SupportedChainId::ALL {
             assert!(
-                identify_router(v1_router, chain).is_none(),
+                identify_target(v1_router, chain).is_none(),
                 "SwapRouter V1 should be denied on {chain}"
             );
         }
@@ -1888,27 +1864,45 @@ mod tests {
     fn nft_pm_address_per_chain() {
         // Ethereum, Optimism, Polygon, Arbitrum share the same address
         let shared = address!("C36442b4a4522E871399CD717aBDD847Ab11FE88");
-        assert!(is_nft_position_manager(shared, SupportedChainId::Ethereum));
-        assert!(is_nft_position_manager(shared, SupportedChainId::Optimism));
-        assert!(is_nft_position_manager(shared, SupportedChainId::Polygon));
-        assert!(is_nft_position_manager(shared, SupportedChainId::Arbitrum));
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Ethereum),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Optimism),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Polygon),
+            Some(SendRawTarget::NftPositionManager)
+        );
+        assert_eq!(
+            identify_target(shared, SupportedChainId::Arbitrum),
+            Some(SendRawTarget::NftPositionManager)
+        );
 
         // Base has a different address
-        assert!(is_nft_position_manager(
-            address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
-            SupportedChainId::Base
-        ));
+        assert_eq!(
+            identify_target(
+                address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+                SupportedChainId::Base
+            ),
+            Some(SendRawTarget::NftPositionManager)
+        );
         // BNB has a different address
-        assert!(is_nft_position_manager(
-            address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
-            SupportedChainId::Bnb
-        ));
+        assert_eq!(
+            identify_target(
+                address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+                SupportedChainId::Bnb
+            ),
+            Some(SendRawTarget::NftPositionManager)
+        );
 
         // Random address should not match
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
             assert!(
-                !is_nft_position_manager(random, chain),
+                identify_target(random, chain).is_none(),
                 "random address should not match on {chain}"
             );
         }

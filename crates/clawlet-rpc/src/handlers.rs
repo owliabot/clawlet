@@ -238,19 +238,15 @@ pub async fn handle_transfer(
     }
 }
 
-/// Send a raw transaction with swap/WETH validation and policy checks.
+/// Send a raw transaction with calldata validation and policy checks.
 ///
-/// Allows two types of operations:
-/// 1. Uniswap router (V2/V3) functions targeting known router addresses
-/// 2. WETH wrap/unwrap operations targeting known WETH contract addresses
+/// Supported target types (see [`SendRawTarget`]):
 ///
-/// For swaps, only these functions are allowed:
-/// - V3: `exactInputSingle`, `exactInput`, `exactOutputSingle`, `exactOutput`
-/// - V2: `swapExactTokensForTokens`, `swapExactETHForTokens`, `swapExactTokensForETH`
-///
-/// For WETH:
-/// - `deposit()` (`0xd0e30db0`) — wrap ETH to WETH
-/// - `withdraw(uint256)` (`0x2e1a7d4d`) — unwrap WETH to ETH
+/// 1. **Uniswap V3 SwapRouter02** — `exactInputSingle`, `exactInput`, `exactOutputSingle`, `exactOutput`
+/// 2. **Uniswap V2 Router02** — `swapExactTokensForTokens`, `swapExactETHForTokens`, `swapExactTokensForETH`,
+///    `addLiquidity`, `addLiquidityETH`, `removeLiquidity`, `removeLiquidityETH`
+/// 3. **WETH/WBNB/WMATIC** — `deposit()`, `withdraw(uint256)`
+/// 4. **Uniswap V3 NonfungiblePositionManager** — `mint`, `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -548,20 +544,9 @@ pub async fn handle_send_raw(
             // ---- NonfungiblePositionManager calldata validation ----
             match validate_nft_position_calldata(&req.data) {
                 NftPositionValidation::Allowed(nft_params) => {
-                    match nft_params.function.as_str() {
-                        // mint and increaseLiquidity are payable (for ETH-paired positions)
-                        "mint" | "increaseLiquidity" => {}
-                        // decreaseLiquidity, collect, burn are non-payable
-                        _ => {
-                            let value = req.value.unwrap_or(U256::ZERO);
-                            if !value.is_zero() {
-                                return Err(HandlerError::BadRequest(format!(
-                                    "{} is non-payable but req.value is nonzero ({})",
-                                    nft_params.function, value
-                                )));
-                            }
-                        }
-                    }
+                    // All 5 NFT PM functions are payable in the Uniswap contract
+                    // (to support multicall + refundETH patterns), so no payability
+                    // restriction is needed here.
 
                     if let (Some(token0), Some(token1)) = (nft_params.token0, nft_params.token1) {
                         // mint — dual token policy check
@@ -2364,7 +2349,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_raw_nft_pm_burn_nonpayable() {
+    async fn send_raw_nft_pm_burn_payable_with_value() {
+        // All NFT PM functions are payable (for multicall + refundETH patterns)
         let (state, _temp) = mock_app_state();
 
         let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
@@ -2376,23 +2362,24 @@ mod tests {
 
         let req = SendRawRequest {
             to: nft_pm,
-            value: Some(U256::from(100u64)), // Sending value to burn
+            value: Some(U256::from(100u64)), // payable — should not be rejected
             data: Some(Bytes::from(calldata)),
             chain_id: 1,
             gas_limit: None,
         };
 
+        // Should pass validation, fail at adapter stage (unsupported chain_id)
         let result = handle_send_raw(&state, req).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
             HandlerError::BadRequest(msg) => {
                 assert!(
-                    msg.contains("is non-payable but req.value is nonzero"),
-                    "expected nonpayable error, got: {msg}"
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error, got: {msg}"
                 );
             }
-            _ => panic!("expected BadRequest error, got {:?}", err),
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
         }
     }
 

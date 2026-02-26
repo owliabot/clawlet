@@ -558,41 +558,14 @@ pub async fn handle_send_raw(
                             HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}"))
                         })?;
 
-                        let (token0, token1) = {
-                            use alloy::primitives::Bytes as ABytes;
-                            use alloy::providers::Provider;
-                            use alloy::rpc::types::TransactionRequest;
-                            use alloy::sol_types::SolCall;
-
-                            let positions_call =
-                                clawlet_evm::send_raw_validation::INonfungiblePositionManager::positionsCall {
-                                    tokenId: token_id,
-                                };
-                            let call_data = positions_call.abi_encode();
-
-                            let result: ABytes = adapter
-                                .provider()
-                                .call(
-                                    TransactionRequest::default()
-                                        .to(req.to)
-                                        .input(call_data.into()),
-                                )
-                                .await
-                                .map_err(|e| {
-                                    HandlerError::Internal(format!(
-                                        "failed to query positions({token_id}): {e}"
-                                    ))
-                                })?;
-
-                            let decoded = clawlet_evm::send_raw_validation::INonfungiblePositionManager::positionsCall::abi_decode_returns(&result)
-                                .map_err(|e| {
-                                    HandlerError::Internal(format!(
-                                        "failed to decode positions({token_id}) response: {e}"
-                                    ))
-                                })?;
-
-                            (decoded.token0, decoded.token1)
-                        };
+                        let (token0, token1) = adapter
+                            .get_nft_position_tokens(req.to, token_id)
+                            .await
+                            .map_err(|e| {
+                                HandlerError::Internal(format!(
+                                    "failed to query positions({token_id}): {e}"
+                                ))
+                            })?;
 
                         RouterOp::Liquidity {
                             operation_type: nft_params.function,

@@ -91,22 +91,47 @@ pub enum RouterVersion {
     V3,
 }
 
-/// Returns the router version if `to` is a known Uniswap router for the given chain.
-pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVersion> {
+/// Identified target contract type for `send_raw` validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendRawTarget {
+    /// Uniswap V2 or V3 swap router.
+    Router(RouterVersion),
+    /// Wrapped native token (WETH/WBNB/WMATIC).
+    Weth,
+    /// Uniswap V3 NonfungiblePositionManager.
+    NftPositionManager,
+}
+
+/// Identify the target contract type from a `to` address and chain.
+///
+/// Returns `None` if the address is not a known whitelisted contract.
+pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTarget> {
     if to == swap_router_v3_address(chain) {
-        Some(RouterVersion::V3)
+        Some(SendRawTarget::Router(RouterVersion::V3))
     } else if to == swap_router_v2_address(chain) {
-        Some(RouterVersion::V2)
+        Some(SendRawTarget::Router(RouterVersion::V2))
+    } else if to == wrapped_native_address(chain) {
+        Some(SendRawTarget::Weth)
+    } else if to == nft_position_manager_address(chain) {
+        Some(SendRawTarget::NftPositionManager)
     } else {
         None
     }
 }
 
+/// Returns the router version if `to` is a known Uniswap router for the given chain.
+#[deprecated(note = "use identify_target instead")]
+pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVersion> {
+    match identify_target(to, chain) {
+        Some(SendRawTarget::Router(v)) => Some(v),
+        _ => None,
+    }
+}
+
 /// Returns `true` if `to` is the known WETH contract for the given chain.
-///
-/// Uses `wrapped_native_address` which provides WETH/WBNB/WMATIC addresses per chain.
+#[deprecated(note = "use identify_target instead")]
 pub fn is_allowed_weth(to: Address, chain: SupportedChainId) -> bool {
-    to == wrapped_native_address(chain)
+    matches!(identify_target(to, chain), Some(SendRawTarget::Weth))
 }
 
 /// NonfungiblePositionManager addresses per chain (Uniswap V3 official deployments).
@@ -126,8 +151,12 @@ pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
 }
 
 /// Returns `true` if `to` is the known NonfungiblePositionManager for the given chain.
+#[deprecated(note = "use identify_target instead")]
 pub fn is_nft_position_manager(to: Address, chain: SupportedChainId) -> bool {
-    to == nft_position_manager_address(chain)
+    matches!(
+        identify_target(to, chain),
+        Some(SendRawTarget::NftPositionManager)
+    )
 }
 
 /// Parsed NonfungiblePositionManager parameters for policy checks.

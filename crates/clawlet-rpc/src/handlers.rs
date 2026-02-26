@@ -11,9 +11,9 @@ use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::swap_validation::{
-    identify_router, is_allowed_weth, is_nft_position_manager, validate_liquidity_calldata,
-    validate_nft_position_calldata, validate_swap_calldata, validate_weth_calldata,
-    LiquidityValidation, NftPositionValidation, RouterVersion, SwapValidation, WethValidation,
+    identify_target, validate_liquidity_calldata, validate_nft_position_calldata,
+    validate_swap_calldata, validate_weth_calldata, LiquidityValidation, NftPositionValidation,
+    RouterVersion, SendRawTarget, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -263,33 +263,32 @@ pub async fn handle_send_raw(
     let supported_chain = SupportedChainId::try_from(chain_id)
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
-    // ---- Determine operation type: Router swap, WETH wrap/unwrap, or NFT position manager ----
-    let router_version = identify_router(req.to, supported_chain);
-    let is_weth = is_allowed_weth(req.to, supported_chain);
-    let is_nft_pm = is_nft_position_manager(req.to, supported_chain);
-
-    if router_version.is_none() && !is_weth && !is_nft_pm {
-        {
-            let event = AuditEvent::new(
-                "send_raw",
-                json!({
-                    "to": format!("{}", req.to),
-                    "chain_id": chain_id,
-                }),
-                format!(
-                    "denied: target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager",
-                    req.to
-                ),
-            );
-            if let Ok(mut audit) = state.audit.lock() {
-                let _ = audit.log_event(event);
+    // ---- Identify target contract type ----
+    let target = match identify_target(req.to, supported_chain) {
+        Some(t) => t,
+        None => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                    }),
+                    format!(
+                        "denied: target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager",
+                        req.to
+                    ),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
             }
+            return Err(HandlerError::BadRequest(format!(
+                "target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager for chain {chain_id}",
+                req.to
+            )));
         }
-        return Err(HandlerError::BadRequest(format!(
-            "target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager for chain {chain_id}",
-            req.to
-        )));
-    }
+    };
 
     // ---- Operation-specific validation and policy checks ----
     //
@@ -317,162 +316,77 @@ pub async fn handle_send_raw(
         },
     }
 
-    let resolved_op = if let Some(version) = router_version {
-        // ---- Swap calldata validation ----
-        let swap_result = validate_swap_calldata(&req.data, version, supported_chain);
+    let resolved_op = match target {
+        SendRawTarget::Router(version) => {
+            // ---- Swap calldata validation ----
+            let swap_result = validate_swap_calldata(&req.data, version, supported_chain);
 
-        match swap_result {
-            SwapValidation::Allowed(swap_params) => {
-                // ---- Value/function consistency check ----
-                let value = req.value.unwrap_or(U256::ZERO);
-                match swap_params.function.as_str() {
-                    "swapExactETHForTokens" => {
-                        if value.is_zero() {
-                            return Err(HandlerError::BadRequest(
-                                "swapExactETHForTokens requires nonzero msg.value (ETH input)"
-                                    .into(),
-                            ));
+            match swap_result {
+                SwapValidation::Allowed(swap_params) => {
+                    // ---- Value/function consistency check ----
+                    let value = req.value.unwrap_or(U256::ZERO);
+                    match swap_params.function.as_str() {
+                        "swapExactETHForTokens" => {
+                            if value.is_zero() {
+                                return Err(HandlerError::BadRequest(
+                                    "swapExactETHForTokens requires nonzero msg.value (ETH input)"
+                                        .into(),
+                                ));
+                            }
                         }
-                    }
-                    "swapExactTokensForTokens" | "swapExactTokensForETH" => {
-                        if !value.is_zero() {
-                            return Err(HandlerError::BadRequest(format!(
-                                "{} is non-payable but req.value is nonzero ({})",
-                                swap_params.function, value
-                            )));
+                        "swapExactTokensForTokens" | "swapExactTokensForETH" => {
+                            if !value.is_zero() {
+                                return Err(HandlerError::BadRequest(format!(
+                                    "{} is non-payable but req.value is nonzero ({})",
+                                    swap_params.function, value
+                                )));
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                }
 
-                let amount_str = if swap_params.function == "swapExactETHForTokens" {
-                    value.to_string()
-                } else {
-                    swap_params.amount_in.to_string()
-                };
+                    let amount_str = if swap_params.function == "swapExactETHForTokens" {
+                        value.to_string()
+                    } else {
+                        swap_params.amount_in.to_string()
+                    };
 
-                RouterOp::Swap {
-                    operation_type: swap_params.function,
-                    token_str: format!("{}", swap_params.token_in),
-                    amount_str,
-                }
-            }
-            SwapValidation::NoSelector => {
-                return Err(HandlerError::BadRequest(
-                    "send_raw requires calldata with a valid Uniswap router function selector"
-                        .into(),
-                ));
-            }
-            SwapValidation::MalformedArgs { name, reason } => {
-                {
-                    let event = AuditEvent::new(
-                        "send_raw",
-                        json!({
-                            "to": format!("{}", req.to),
-                            "chain_id": chain_id,
-                            "function": name,
-                            "decode_error": reason,
-                        }),
-                        format!("denied: malformed calldata for {name}"),
-                    );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
+                    RouterOp::Swap {
+                        operation_type: swap_params.function,
+                        token_str: format!("{}", swap_params.token_in),
+                        amount_str,
                     }
                 }
-                return Err(HandlerError::BadRequest(format!(
-                    "malformed calldata for {name}: ABI decode failed — {reason}"
-                )));
-            }
-            SwapValidation::Denied { selector } => {
-                // Liquidity functions only exist on V2 routers.
-                // If this is a V3 router, reject immediately.
-                if version == RouterVersion::V3 {
-                    let sel_hex = format!(
-                        "0x{:02x}{:02x}{:02x}{:02x}",
-                        selector[0], selector[1], selector[2], selector[3]
-                    );
-
+                SwapValidation::NoSelector => {
+                    return Err(HandlerError::BadRequest(
+                        "send_raw requires calldata with a valid Uniswap router function selector"
+                            .into(),
+                    ));
+                }
+                SwapValidation::MalformedArgs { name, reason } => {
                     {
                         let event = AuditEvent::new(
                             "send_raw",
                             json!({
                                 "to": format!("{}", req.to),
                                 "chain_id": chain_id,
-                                "selector": sel_hex,
+                                "function": name,
+                                "decode_error": reason,
                             }),
-                            format!("denied: unsupported V3 function selector {sel_hex}"),
+                            format!("denied: malformed calldata for {name}"),
                         );
                         if let Ok(mut audit) = state.audit.lock() {
                             let _ = audit.log_event(event);
                         }
                     }
-
                     return Err(HandlerError::BadRequest(format!(
-                        "function selector {sel_hex} is not allowed; \
-                         only Uniswap V3 swap functions are permitted on V3 router"
+                        "malformed calldata for {name}: ABI decode failed — {reason}"
                     )));
                 }
-
-                // V2 router — try liquidity validation.
-                match validate_liquidity_calldata(&req.data, supported_chain) {
-                    LiquidityValidation::Allowed(liq_params) => {
-                        // ---- Value/function consistency check for liquidity ----
-                        let value = req.value.unwrap_or(U256::ZERO);
-                        match liq_params.function.as_str() {
-                            "addLiquidityETH" => {
-                                if value.is_zero() {
-                                    return Err(HandlerError::BadRequest(
-                                        "addLiquidityETH requires nonzero msg.value (ETH input)"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                            "addLiquidity" | "removeLiquidity" | "removeLiquidityETH" => {
-                                if !value.is_zero() {
-                                    return Err(HandlerError::BadRequest(format!(
-                                        "{} is non-payable but req.value is nonzero ({})",
-                                        liq_params.function, value
-                                    )));
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        let amount_str = format!(
-                            "tokenA={},tokenB={}",
-                            liq_params.amount_a, liq_params.amount_b
-                        );
-
-                        RouterOp::Liquidity {
-                            operation_type: liq_params.function,
-                            token_a_str: format!("{}", liq_params.token_a),
-                            token_b_str: format!("{}", liq_params.token_b),
-                            amount_str,
-                        }
-                    }
-                    LiquidityValidation::MalformedArgs { name, reason } => {
-                        {
-                            let event = AuditEvent::new(
-                                "send_raw",
-                                json!({
-                                    "to": format!("{}", req.to),
-                                    "chain_id": chain_id,
-                                    "function": name,
-                                    "decode_error": reason,
-                                }),
-                                format!("denied: malformed calldata for {name}"),
-                            );
-                            if let Ok(mut audit) = state.audit.lock() {
-                                let _ = audit.log_event(event);
-                            }
-                        }
-                        return Err(HandlerError::BadRequest(format!(
-                            "malformed calldata for {name}: ABI decode failed — {reason}"
-                        )));
-                    }
-                    // Liquidity validation also denied or no selector — report original
-                    // swap denial.
-                    _ => {
+                SwapValidation::Denied { selector } => {
+                    // Liquidity functions only exist on V2 routers.
+                    // If this is a V3 router, reject immediately.
+                    if version == RouterVersion::V3 {
                         let sel_hex = format!(
                             "0x{:02x}{:02x}{:02x}{:02x}",
                             selector[0], selector[1], selector[2], selector[3]
@@ -486,7 +400,7 @@ pub async fn handle_send_raw(
                                     "chain_id": chain_id,
                                     "selector": sel_hex,
                                 }),
-                                format!("denied: unsupported function selector {sel_hex}"),
+                                format!("denied: unsupported V3 function selector {sel_hex}"),
                             );
                             if let Ok(mut audit) = state.audit.lock() {
                                 let _ = audit.log_event(event);
@@ -495,127 +409,215 @@ pub async fn handle_send_raw(
 
                         return Err(HandlerError::BadRequest(format!(
                             "function selector {sel_hex} is not allowed; \
-                             only Uniswap V2/V3 swap and liquidity functions are permitted"
+                         only Uniswap V3 swap functions are permitted on V3 router"
                         )));
                     }
-                }
-            }
-        }
-    } else if is_weth {
-        // ---- WETH calldata validation ----
-        match validate_weth_calldata(&req.data, req.value) {
-            WethValidation::Wrap(amount) => RouterOp::Swap {
-                operation_type: "wrap_native".to_string(),
-                token_str: "ETH".to_string(),
-                amount_str: amount.to_string(),
-            },
-            WethValidation::Unwrap(amount) => {
-                // WETH withdraw is nonpayable — reject if value is sent
-                if req.value.unwrap_or(U256::ZERO) > U256::ZERO {
-                    return Err(HandlerError::BadRequest(
-                        "WETH withdraw is nonpayable; cannot send value".to_string(),
-                    ));
-                }
-                RouterOp::Swap {
-                    operation_type: "unwrap_native".to_string(),
-                    token_str: format!("{}", req.to),
-                    amount_str: amount.to_string(),
-                }
-            }
-            WethValidation::Invalid { reason } => {
-                {
-                    let event = AuditEvent::new(
-                        "send_raw",
-                        json!({
-                            "to": format!("{}", req.to),
-                            "chain_id": chain_id,
-                            "error": reason,
-                        }),
-                        format!("denied: invalid WETH calldata — {reason}"),
-                    );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
-                    }
-                }
-                return Err(HandlerError::BadRequest(format!(
-                    "invalid WETH calldata: {reason}"
-                )));
-            }
-        }
-    } else {
-        // ---- NonfungiblePositionManager calldata validation ----
-        match validate_nft_position_calldata(&req.data) {
-            NftPositionValidation::Allowed(nft_params) => {
-                match nft_params.function.as_str() {
-                    // mint and increaseLiquidity are payable (for ETH-paired positions)
-                    "mint" | "increaseLiquidity" => {}
-                    // decreaseLiquidity, collect, burn are non-payable
-                    _ => {
-                        let value = req.value.unwrap_or(U256::ZERO);
-                        if !value.is_zero() {
+
+                    // V2 router — try liquidity validation.
+                    match validate_liquidity_calldata(&req.data, supported_chain) {
+                        LiquidityValidation::Allowed(liq_params) => {
+                            // ---- Value/function consistency check for liquidity ----
+                            let value = req.value.unwrap_or(U256::ZERO);
+                            match liq_params.function.as_str() {
+                                "addLiquidityETH" => {
+                                    if value.is_zero() {
+                                        return Err(HandlerError::BadRequest(
+                                        "addLiquidityETH requires nonzero msg.value (ETH input)"
+                                            .into(),
+                                    ));
+                                    }
+                                }
+                                "addLiquidity" | "removeLiquidity" | "removeLiquidityETH" => {
+                                    if !value.is_zero() {
+                                        return Err(HandlerError::BadRequest(format!(
+                                            "{} is non-payable but req.value is nonzero ({})",
+                                            liq_params.function, value
+                                        )));
+                                    }
+                                }
+                                _ => {}
+                            }
+
+                            let amount_str = format!(
+                                "tokenA={},tokenB={}",
+                                liq_params.amount_a, liq_params.amount_b
+                            );
+
+                            RouterOp::Liquidity {
+                                operation_type: liq_params.function,
+                                token_a_str: format!("{}", liq_params.token_a),
+                                token_b_str: format!("{}", liq_params.token_b),
+                                amount_str,
+                            }
+                        }
+                        LiquidityValidation::MalformedArgs { name, reason } => {
+                            {
+                                let event = AuditEvent::new(
+                                    "send_raw",
+                                    json!({
+                                        "to": format!("{}", req.to),
+                                        "chain_id": chain_id,
+                                        "function": name,
+                                        "decode_error": reason,
+                                    }),
+                                    format!("denied: malformed calldata for {name}"),
+                                );
+                                if let Ok(mut audit) = state.audit.lock() {
+                                    let _ = audit.log_event(event);
+                                }
+                            }
                             return Err(HandlerError::BadRequest(format!(
-                                "{} is non-payable but req.value is nonzero ({})",
-                                nft_params.function, value
+                                "malformed calldata for {name}: ABI decode failed — {reason}"
+                            )));
+                        }
+                        // Liquidity validation also denied or no selector — report original
+                        // swap denial.
+                        _ => {
+                            let sel_hex = format!(
+                                "0x{:02x}{:02x}{:02x}{:02x}",
+                                selector[0], selector[1], selector[2], selector[3]
+                            );
+
+                            {
+                                let event = AuditEvent::new(
+                                    "send_raw",
+                                    json!({
+                                        "to": format!("{}", req.to),
+                                        "chain_id": chain_id,
+                                        "selector": sel_hex,
+                                    }),
+                                    format!("denied: unsupported function selector {sel_hex}"),
+                                );
+                                if let Ok(mut audit) = state.audit.lock() {
+                                    let _ = audit.log_event(event);
+                                }
+                            }
+
+                            return Err(HandlerError::BadRequest(format!(
+                                "function selector {sel_hex} is not allowed; \
+                             only Uniswap V2/V3 swap and liquidity functions are permitted"
                             )));
                         }
                     }
                 }
-
-                if let (Some(token0), Some(token1)) = (nft_params.token0, nft_params.token1) {
-                    // mint — dual token policy check
-                    let amount_str = "position_mint".to_string();
-                    RouterOp::Liquidity {
-                        operation_type: nft_params.function,
-                        token_a_str: format!("{token0}"),
-                        token_b_str: format!("{token1}"),
-                        amount_str,
+            }
+        }
+        SendRawTarget::Weth => {
+            // ---- WETH calldata validation ----
+            match validate_weth_calldata(&req.data, req.value) {
+                WethValidation::Wrap(amount) => RouterOp::Swap {
+                    operation_type: "wrap_native".to_string(),
+                    token_str: "ETH".to_string(),
+                    amount_str: amount.to_string(),
+                },
+                WethValidation::Unwrap(amount) => {
+                    // WETH withdraw is nonpayable — reject if value is sent
+                    if req.value.unwrap_or(U256::ZERO) > U256::ZERO {
+                        return Err(HandlerError::BadRequest(
+                            "WETH withdraw is nonpayable; cannot send value".to_string(),
+                        ));
                     }
-                } else {
-                    // increaseLiquidity, decreaseLiquidity, collect, burn — no token info in calldata,
-                    // position was validated at mint time
-                    let token_id_str = nft_params
-                        .token_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_default();
-                    RouterOp::NftPositionNoTokenCheck {
-                        operation_type: nft_params.function,
-                        amount_str: format!("tokenId={token_id_str}"),
+                    RouterOp::Swap {
+                        operation_type: "unwrap_native".to_string(),
+                        token_str: format!("{}", req.to),
+                        amount_str: amount.to_string(),
                     }
                 }
+                WethValidation::Invalid { reason } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "error": reason,
+                            }),
+                            format!("denied: invalid WETH calldata — {reason}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "invalid WETH calldata: {reason}"
+                    )));
+                }
             }
-            NftPositionValidation::NoSelector => {
-                return Err(HandlerError::BadRequest(
+        }
+        SendRawTarget::NftPositionManager => {
+            // ---- NonfungiblePositionManager calldata validation ----
+            match validate_nft_position_calldata(&req.data) {
+                NftPositionValidation::Allowed(nft_params) => {
+                    match nft_params.function.as_str() {
+                        // mint and increaseLiquidity are payable (for ETH-paired positions)
+                        "mint" | "increaseLiquidity" => {}
+                        // decreaseLiquidity, collect, burn are non-payable
+                        _ => {
+                            let value = req.value.unwrap_or(U256::ZERO);
+                            if !value.is_zero() {
+                                return Err(HandlerError::BadRequest(format!(
+                                    "{} is non-payable but req.value is nonzero ({})",
+                                    nft_params.function, value
+                                )));
+                            }
+                        }
+                    }
+
+                    if let (Some(token0), Some(token1)) = (nft_params.token0, nft_params.token1) {
+                        // mint — dual token policy check
+                        let amount_str = "position_mint".to_string();
+                        RouterOp::Liquidity {
+                            operation_type: nft_params.function,
+                            token_a_str: format!("{token0}"),
+                            token_b_str: format!("{token1}"),
+                            amount_str,
+                        }
+                    } else {
+                        // increaseLiquidity, decreaseLiquidity, collect, burn — no token info in calldata,
+                        // position was validated at mint time
+                        let token_id_str = nft_params
+                            .token_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_default();
+                        RouterOp::NftPositionNoTokenCheck {
+                            operation_type: nft_params.function,
+                            amount_str: format!("tokenId={token_id_str}"),
+                        }
+                    }
+                }
+                NftPositionValidation::NoSelector => {
+                    return Err(HandlerError::BadRequest(
                     "send_raw requires calldata with a valid NonfungiblePositionManager function selector"
                         .into(),
                 ));
-            }
-            NftPositionValidation::MalformedArgs { name, reason } => {
-                {
-                    let event = AuditEvent::new(
-                        "send_raw",
-                        json!({
-                            "to": format!("{}", req.to),
-                            "chain_id": chain_id,
-                            "function": name,
-                            "decode_error": reason,
-                        }),
-                        format!("denied: malformed calldata for {name}"),
-                    );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
-                    }
                 }
-                return Err(HandlerError::BadRequest(format!(
-                    "malformed calldata for {name}: ABI decode failed — {reason}"
-                )));
-            }
-            NftPositionValidation::Denied { selector } => {
-                let sel_hex = format!(
-                    "0x{:02x}{:02x}{:02x}{:02x}",
-                    selector[0], selector[1], selector[2], selector[3]
-                );
-                {
-                    let event = AuditEvent::new(
+                NftPositionValidation::MalformedArgs { name, reason } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "function": name,
+                                "decode_error": reason,
+                            }),
+                            format!("denied: malformed calldata for {name}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "malformed calldata for {name}: ABI decode failed — {reason}"
+                    )));
+                }
+                NftPositionValidation::Denied { selector } => {
+                    let sel_hex = format!(
+                        "0x{:02x}{:02x}{:02x}{:02x}",
+                        selector[0], selector[1], selector[2], selector[3]
+                    );
+                    {
+                        let event = AuditEvent::new(
                         "send_raw",
                         json!({
                             "to": format!("{}", req.to),
@@ -624,14 +626,15 @@ pub async fn handle_send_raw(
                         }),
                         format!("denied: unsupported NonfungiblePositionManager function selector {sel_hex}"),
                     );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
                     }
-                }
-                return Err(HandlerError::BadRequest(format!(
+                    return Err(HandlerError::BadRequest(format!(
                     "function selector {sel_hex} is not allowed; \
                      only mint, increaseLiquidity, decreaseLiquidity, collect, and burn are permitted on NonfungiblePositionManager"
                 )));
+                }
             }
         }
     };

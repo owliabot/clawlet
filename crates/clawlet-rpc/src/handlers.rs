@@ -537,41 +537,35 @@ pub async fn handle_send_raw(
             // ---- NonfungiblePositionManager calldata validation ----
             match validate_nft_position_calldata(&req.data) {
                 NftPositionValidation::Allowed(nft_params) => {
-                    // Only mint and increaseLiquidity should carry native value
-                    // (for ETH-paired positions). Other functions don't have a
-                    // refund path since we deny multicall/refundETH, so sending
-                    // value would strand ETH in the contract.
-                    match nft_params.function.as_str() {
-                        "mint" | "increaseLiquidity" => {}
-                        _ => {
-                            let value = req.value.unwrap_or(U256::ZERO);
-                            if !value.is_zero() {
+                    // Early reject: decreaseLiquidity/collect/burn should never
+                    // carry native value (no refund path since multicall/refundETH
+                    // are denied). Check this before any RPC calls.
+                    let value = req.value.unwrap_or(U256::ZERO);
+                    if !value.is_zero() {
+                        match nft_params.function.as_str() {
+                            "mint" | "increaseLiquidity" => {} // checked below with token info
+                            _ => {
                                 return Err(HandlerError::BadRequest(format!(
-                                    "{} should not carry native value (no refund path available); got {}",
-                                    nft_params.function, value
+                                    "{} should not carry native value (no refund path available); got {value}",
+                                    nft_params.function
                                 )));
                             }
                         }
                     }
 
-                    if let (Some(token0), Some(token1)) = (nft_params.token0, nft_params.token1) {
-                        // mint — dual token policy check
-                        let amount_str = "position_mint".to_string();
-                        RouterOp::Liquidity {
-                            operation_type: nft_params.function,
-                            token_a_str: format!("{token0}"),
-                            token_b_str: format!("{token1}"),
-                            amount_str,
-                        }
+                    // Resolve token0/token1 for the position:
+                    // - mint: from calldata params
+                    // - others: from on-chain positions(tokenId) query
+                    let (token0, token1) = if let (Some(t0), Some(t1)) =
+                        (nft_params.token0, nft_params.token1)
+                    {
+                        (t0, t1)
                     } else {
-                        // increaseLiquidity, decreaseLiquidity, collect, burn —
-                        // query on-chain positions(tokenId) to get token0/token1 for policy check
                         let token_id = nft_params.token_id.unwrap_or(U256::ZERO);
                         let adapter = state.adapters.get(&chain_id).ok_or_else(|| {
                             HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}"))
                         })?;
-
-                        let (token0, token1) = adapter
+                        adapter
                             .get_nft_position_tokens(req.to, token_id)
                             .await
                             .map_err(|e| {
@@ -579,7 +573,36 @@ pub async fn handle_send_raw(
                                     "failed to query positions({token_id}): {e} — \
                                      the tokenId may be invalid or the position may not exist"
                                 ))
-                            })?;
+                            })?
+                    };
+
+                    // ETH stranding prevention for mint/increaseLiquidity:
+                    // Only allow value if one of the tokens is the wrapped native token.
+                    if !value.is_zero() {
+                        let weth = clawlet_evm::send_raw_validation::wrapped_native_address(
+                            supported_chain,
+                        );
+                        let has_native_token = token0 == weth || token1 == weth;
+                        if !has_native_token {
+                            return Err(HandlerError::BadRequest(format!(
+                                "{} with value={value} but neither token is the wrapped native token ({weth}); \
+                                 ETH would be stranded (multicall/refundETH are not available)",
+                                nft_params.function
+                            )));
+                        }
+                    }
+
+                    if nft_params.token0.is_some() {
+                        // mint path
+                        RouterOp::Liquidity {
+                            operation_type: nft_params.function,
+                            token_a_str: format!("{token0}"),
+                            token_b_str: format!("{token1}"),
+                            amount_str: "position_mint".to_string(),
+                        }
+                    } else {
+                        // increaseLiquidity, decreaseLiquidity, collect, burn
+                        let token_id = nft_params.token_id.unwrap_or(U256::ZERO);
 
                         RouterOp::Liquidity {
                             operation_type: nft_params.function,
@@ -2361,6 +2384,7 @@ mod tests {
     #[tokio::test]
     async fn send_raw_nft_pm_burn_rejects_value() {
         // burn should reject nonzero value (no refund path since multicall/refundETH are denied)
+        // The early check catches this before any adapter/RPC calls
         let (state, _temp) = mock_app_state();
 
         let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
@@ -2480,6 +2504,107 @@ mod tests {
                 );
             }
             _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_nft_pm_mint_value_on_non_weth_pair_rejected() {
+        // mint with value > 0 but neither token is WETH → ETH would strand
+        let (state, _temp) = mock_app_state();
+
+        let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = INonfungiblePositionManager::mintCall {
+            params: INonfungiblePositionManager::MintParams {
+                token0: dai,
+                token1: usdc,
+                fee: alloy::primitives::Uint::from(500u32),
+                tickLower: alloy::primitives::Signed::try_from(-887220i32).unwrap(),
+                tickUpper: alloy::primitives::Signed::try_from(887220i32).unwrap(),
+                amount0Desired: U256::from(1_000_000_000_000_000_000u64),
+                amount1Desired: U256::from(1_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                recipient: state.signer.address(),
+                deadline: U256::from(9999999999u64),
+            },
+        };
+
+        let req = SendRawRequest {
+            to: nft_pm,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("neither token is the wrapped native token"),
+                    "expected ETH stranding error, got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest error, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_nft_pm_mint_value_on_weth_pair_passes() {
+        // mint with value > 0 and one token is WETH → should pass validation
+        let (state, _temp) = mock_app_state();
+
+        let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let weth = wrapped_native_address(SupportedChainId::Ethereum);
+
+        let call = INonfungiblePositionManager::mintCall {
+            params: INonfungiblePositionManager::MintParams {
+                token0: usdc,
+                token1: weth,
+                fee: alloy::primitives::Uint::from(3000u32),
+                tickLower: alloy::primitives::Signed::try_from(-887220i32).unwrap(),
+                tickUpper: alloy::primitives::Signed::try_from(887220i32).unwrap(),
+                amount0Desired: U256::from(1_000_000u64),
+                amount1Desired: U256::from(1_000_000_000_000_000_000u64),
+                amount0Min: U256::ZERO,
+                amount1Min: U256::ZERO,
+                recipient: state.signer.address(),
+                deadline: U256::from(9999999999u64),
+            },
+        };
+
+        let req = SendRawRequest {
+            to: nft_pm,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass value check, fail at adapter lookup (unsupported chain_id)
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected missing adapter error (value check should pass), got: {msg}"
+                );
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
         }
     }
 }

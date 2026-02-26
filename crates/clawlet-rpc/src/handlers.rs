@@ -10,7 +10,7 @@ use clawlet_core::ais::AisSpec;
 use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
-use clawlet_evm::swap_validation::{
+use clawlet_evm::send_raw_validation::{
     identify_target, validate_liquidity_calldata, validate_nft_position_calldata,
     validate_swap_calldata, validate_weth_calldata, LiquidityValidation, NftPositionValidation,
     SendRawTarget, SwapValidation, WethValidation,
@@ -1065,7 +1065,7 @@ mod tests {
     use alloy::sol_types::SolCall;
 
     use clawlet_core::chain::SupportedChainId;
-    use clawlet_evm::swap_validation::{wrapped_native_address, IUniswapV2Router, IWETH};
+    use clawlet_evm::send_raw_validation::{wrapped_native_address, IUniswapV2Router, IWETH};
 
     use crate::server::AppState;
 
@@ -2180,7 +2180,9 @@ mod tests {
 
     // ---- NonfungiblePositionManager handler tests ----
 
-    use clawlet_evm::swap_validation::{nft_position_manager_address, INonfungiblePositionManager};
+    use clawlet_evm::send_raw_validation::{
+        nft_position_manager_address, INonfungiblePositionManager,
+    };
 
     #[tokio::test]
     async fn send_raw_nft_pm_mint_passes_validation() {

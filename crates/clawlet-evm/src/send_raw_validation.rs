@@ -1,9 +1,11 @@
-//! Calldata validation for `send_raw` — only allows whitelisted Uniswap router functions
-//! targeting known router contract addresses.
+//! Calldata validation for `send_raw` — only allows whitelisted functions
+//! targeting known contract addresses.
 //!
-//! The allowed functions are defined by the ABI JSON files at:
-//! - `abi/ISwapRouter.json` (Uniswap V3 SwapRouter02 / IV3SwapRouter)
-//! - `abi/IUniswapV2Router.json` (UniswapV2-like Router02 interfaces)
+//! Supported targets:
+//! - Uniswap V3 SwapRouter02 (`abi/ISwapRouter.json`)
+//! - Uniswap V2 Router02 (`abi/IUniswapV2Router.json`)
+//! - WETH/WBNB/WMATIC (`abi/IWETH.json`)
+//! - Uniswap V3 NonfungiblePositionManager (`abi/INonfungiblePositionManager.json`)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;

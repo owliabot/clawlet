@@ -2607,4 +2607,13 @@ mod tests {
             _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
         }
     }
+
+    // NOTE: increaseLiquidity value checks require an adapter (to query positions()),
+    // so they are tested in the anvil fork integration tests rather than here.
+    // See tests/integration/src/lib.rs: test_nft_pm_send_raw_collect_policy_denied
+    // TODO: ETH overpay prevention — currently we only check that at least one token
+    // is WETH when value > 0, but don't cap value at the actual amount needed.
+    // Excess ETH would strand in the NonfungiblePositionManager contract since
+    // multicall/refundETH are denied. This requires parsing amountDesired fields
+    // and accounting for slippage, so it's deferred as a follow-up.
 }

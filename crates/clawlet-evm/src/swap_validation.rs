@@ -88,6 +88,13 @@ pub fn identify_router(to: Address, chain: SupportedChainId) -> Option<RouterVer
     }
 }
 
+/// Returns `true` if `to` is the known WETH contract for the given chain.
+///
+/// Uses `wrapped_native_address` which provides WETH/WBNB/WMATIC addresses per chain.
+pub fn is_allowed_weth(to: Address, chain: SupportedChainId) -> bool {
+    to == wrapped_native_address(chain)
+}
+
 /// Try to identify a known function name from a 4-byte selector.
 ///
 /// SwapRouter02 (IV3SwapRouter) selectors:
@@ -136,6 +143,17 @@ pub enum SwapValidation {
     Denied { selector: [u8; 4] },
     /// The function selector matches but ABI decoding failed (malformed args).
     MalformedArgs { name: String, reason: String },
+}
+
+/// Result of validating WETH wrap/unwrap calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WethValidation {
+    /// The calldata is a valid WETH deposit (wrap) operation.
+    Wrap(U256),
+    /// The calldata is a valid WETH withdraw (unwrap) operation.
+    Unwrap(U256),
+    /// The calldata doesn't match deposit or withdraw patterns.
+    Invalid { reason: String },
 }
 
 /// A decoded hop in a Uniswap V3 multi-hop path.
@@ -374,6 +392,82 @@ fn validate_v2(data: &Bytes, selector: [u8; 4], chain: SupportedChainId) -> Swap
                 SwapValidation::Denied { selector }
             }
         }
+    }
+}
+
+/// Validate WETH wrap/unwrap calldata.
+///
+/// - **deposit()** (wrap): selector `0xd0e30db0`, no args (or empty), value > 0
+/// - **withdraw(uint256)** (unwrap): selector `0x2e1a7d4d`, one uint256 arg
+pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> WethValidation {
+    const DEPOSIT_SELECTOR: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0];
+    const WITHDRAW_SELECTOR: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d];
+
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        Some(d) if d.is_empty() => {
+            // Empty data + value > 0 → fallback deposit
+            let amount = value.unwrap_or(U256::ZERO);
+            if amount.is_zero() {
+                return WethValidation::Invalid {
+                    reason: "empty calldata with zero value is not a valid WETH operation".into(),
+                };
+            }
+            return WethValidation::Wrap(amount);
+        }
+        _ => {
+            return WethValidation::Invalid {
+                reason: "calldata too short for WETH operation".into(),
+            };
+        }
+    };
+
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    if selector == DEPOSIT_SELECTOR {
+        // deposit() — no args or just the selector
+        if data.len() != 4 {
+            return WethValidation::Invalid {
+                reason: format!(
+                    "deposit() expects 4-byte calldata (selector only), got {} bytes",
+                    data.len()
+                ),
+            };
+        }
+        let amount = value.unwrap_or(U256::ZERO);
+        if amount.is_zero() {
+            return WethValidation::Invalid {
+                reason: "deposit() requires value > 0".into(),
+            };
+        }
+        return WethValidation::Wrap(amount);
+    }
+
+    if selector == WITHDRAW_SELECTOR {
+        // withdraw(uint256 wad) — selector + 32 bytes
+        if data.len() != 36 {
+            return WethValidation::Invalid {
+                reason: format!(
+                    "withdraw(uint256) expects 36-byte calldata (4 + 32), got {} bytes",
+                    data.len()
+                ),
+            };
+        }
+        // Decode the uint256 amount from bytes 4..36
+        let amount = U256::from_be_slice(&data[4..36]);
+        if amount.is_zero() {
+            return WethValidation::Invalid {
+                reason: "withdraw amount must be > 0".into(),
+            };
+        }
+        return WethValidation::Unwrap(amount);
+    }
+
+    WethValidation::Invalid {
+        reason: format!(
+            "unknown WETH selector: 0x{:02x}{:02x}{:02x}{:02x}",
+            selector[0], selector[1], selector[2], selector[3]
+        ),
     }
 }
 

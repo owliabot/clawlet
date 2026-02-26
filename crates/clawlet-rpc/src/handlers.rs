@@ -13,7 +13,7 @@ use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::swap_validation::{
     identify_target, validate_liquidity_calldata, validate_nft_position_calldata,
     validate_swap_calldata, validate_weth_calldata, LiquidityValidation, NftPositionValidation,
-    RouterVersion, SendRawTarget, SwapValidation, WethValidation,
+    SendRawTarget, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -317,9 +317,9 @@ pub async fn handle_send_raw(
     }
 
     let resolved_op = match target {
-        SendRawTarget::Router(version) => {
+        target @ (SendRawTarget::UniswapV3Router | SendRawTarget::UniswapV2Router) => {
             // ---- Swap calldata validation ----
-            let swap_result = validate_swap_calldata(&req.data, version, supported_chain);
+            let swap_result = validate_swap_calldata(&req.data, target, supported_chain);
 
             match swap_result {
                 SwapValidation::Allowed(swap_params) => {
@@ -386,7 +386,7 @@ pub async fn handle_send_raw(
                 SwapValidation::Denied { selector } => {
                     // Liquidity functions only exist on V2 routers.
                     // If this is a V3 router, reject immediately.
-                    if version == RouterVersion::V3 {
+                    if target == SendRawTarget::UniswapV3Router {
                         let sel_hex = format!(
                             "0x{:02x}{:02x}{:02x}{:02x}",
                             selector[0], selector[1], selector[2], selector[3]

@@ -84,18 +84,13 @@ pub fn wrapped_native_address(chain: SupportedChainId) -> Address {
     }
 }
 
-/// Uniswap router version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouterVersion {
-    V2,
-    V3,
-}
-
 /// Identified target contract type for `send_raw` validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendRawTarget {
-    /// Uniswap V2 or V3 swap router.
-    Router(RouterVersion),
+    /// Uniswap V3 SwapRouter02.
+    UniswapV3Router,
+    /// Uniswap V2 Router02.
+    UniswapV2Router,
     /// Wrapped native token (WETH/WBNB/WMATIC).
     Weth,
     /// Uniswap V3 NonfungiblePositionManager.
@@ -107,9 +102,9 @@ pub enum SendRawTarget {
 /// Returns `None` if the address is not a known whitelisted contract.
 pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTarget> {
     if to == swap_router_v3_address(chain) {
-        Some(SendRawTarget::Router(RouterVersion::V3))
+        Some(SendRawTarget::UniswapV3Router)
     } else if to == swap_router_v2_address(chain) {
-        Some(SendRawTarget::Router(RouterVersion::V2))
+        Some(SendRawTarget::UniswapV2Router)
     } else if to == wrapped_native_address(chain) {
         Some(SendRawTarget::Weth)
     } else if to == nft_position_manager_address(chain) {
@@ -418,14 +413,14 @@ fn last_token_from_path(path: &Bytes) -> Option<Address> {
     decode_v3_path(path).map(|hops| hops.last().unwrap().token_out)
 }
 
-/// Validate calldata against the identified router version.
+/// Validate calldata against the identified router target.
 ///
-/// Uses the router version (determined from the `to` address) to decode
+/// Uses the target type (determined from the `to` address) to decode
 /// calldata with the correct ABI, avoiding cross-version false matches.
 /// For V2, `chain` is used to validate WETH endpoints in ETH-path swaps.
 pub fn validate_swap_calldata(
     data: &Option<Bytes>,
-    version: RouterVersion,
+    target: SendRawTarget,
     chain: SupportedChainId,
 ) -> SwapValidation {
     let data = match data {
@@ -434,9 +429,10 @@ pub fn validate_swap_calldata(
     };
     let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
 
-    match version {
-        RouterVersion::V3 => validate_v3(data, selector),
-        RouterVersion::V2 => validate_v2(data, selector, chain),
+    match target {
+        SendRawTarget::UniswapV3Router => validate_v3(data, selector),
+        SendRawTarget::UniswapV2Router => validate_v2(data, selector, chain),
+        _ => SwapValidation::Denied { selector },
     }
 }
 
@@ -738,7 +734,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Ethereum V2
         assert_eq!(
@@ -746,7 +742,7 @@ mod tests {
                 address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
                 SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Optimism V3
@@ -755,7 +751,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Optimism V2
         assert_eq!(
@@ -763,7 +759,7 @@ mod tests {
                 address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
                 SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Polygon V3
@@ -772,7 +768,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Polygon V2
         assert_eq!(
@@ -780,7 +776,7 @@ mod tests {
                 address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
                 SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Arbitrum V3
@@ -789,7 +785,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Arbitrum V2
         assert_eq!(
@@ -797,7 +793,7 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // Base V3
@@ -806,7 +802,7 @@ mod tests {
                 address!("2626664c2603336E57B271c5C0b26F421741e481"),
                 SupportedChainId::Base
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // Base V2
         assert_eq!(
@@ -814,7 +810,7 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Base
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
 
         // BNB V3
@@ -823,7 +819,7 @@ mod tests {
                 address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
                 SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::Router(RouterVersion::V3))
+            Some(SendRawTarget::UniswapV3Router)
         );
         // BNB V2
         assert_eq!(
@@ -831,7 +827,7 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::Router(RouterVersion::V2))
+            Some(SendRawTarget::UniswapV2Router)
         );
     }
 
@@ -940,7 +936,7 @@ mod tests {
     fn exact_input_single_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_input_single()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -956,7 +952,7 @@ mod tests {
     fn exact_input_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_input()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -973,7 +969,7 @@ mod tests {
     fn exact_output_single_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_output_single()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -990,7 +986,7 @@ mod tests {
     fn exact_output_valid() {
         match validate_swap_calldata(
             &Some(encode_exact_output()),
-            RouterVersion::V3,
+            SendRawTarget::UniswapV3Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -1010,7 +1006,7 @@ mod tests {
     fn unknown_selector_denied() {
         let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
         ));
     }
@@ -1022,7 +1018,11 @@ mod tests {
         v.extend(vec![0x00u8; 260]);
         let data = Bytes::from(v);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -1030,13 +1030,17 @@ mod tests {
     #[test]
     fn empty_data_no_selector() {
         assert_eq!(
-            validate_swap_calldata(&None, RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &None,
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::NoSelector
         );
         assert_eq!(
             validate_swap_calldata(
                 &Some(Bytes::new()),
-                RouterVersion::V3,
+                SendRawTarget::UniswapV3Router,
                 SupportedChainId::Ethereum
             ),
             SwapValidation::NoSelector
@@ -1047,7 +1051,11 @@ mod tests {
     fn short_data_no_selector() {
         let data = Bytes::from(vec![0x04, 0xe4, 0x5a]);
         assert_eq!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::NoSelector
         );
     }
@@ -1057,7 +1065,7 @@ mod tests {
         // exactInputSingle selector (0x04e45aaf) with garbage
         let data = Bytes::from(vec![0x04, 0xe4, 0x5a, 0xaf, 0xff, 0xff]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInputSingle"
         ));
     }
@@ -1067,7 +1075,7 @@ mod tests {
         // exactInput selector (0xb858183f) with no args
         let data = Bytes::from(vec![0xb8, 0x58, 0x18, 0x3f]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }
@@ -1110,7 +1118,7 @@ mod tests {
     fn swap_exact_tokens_for_tokens_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_tokens_for_tokens()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -1126,7 +1134,7 @@ mod tests {
     fn swap_exact_eth_for_tokens_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_eth_for_tokens()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -1142,7 +1150,7 @@ mod tests {
     fn swap_exact_tokens_for_eth_valid() {
         match validate_swap_calldata(
             &Some(encode_swap_exact_tokens_for_eth()),
-            RouterVersion::V2,
+            SendRawTarget::UniswapV2Router,
             SupportedChainId::Ethereum,
         ) {
             SwapValidation::Allowed(p) => {
@@ -1159,7 +1167,7 @@ mod tests {
         // swapExactTokensForTokens selector (0x38ed1739) with no args
         let data = Bytes::from(vec![0x38, 0xed, 0x17, 0x39]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
         ));
     }
@@ -1169,7 +1177,7 @@ mod tests {
         // swapExactETHForTokens selector (0x7ff36ab5) with no args
         let data = Bytes::from(vec![0x7f, 0xf3, 0x6a, 0xb5]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
         ));
     }
@@ -1179,7 +1187,7 @@ mod tests {
         // swapExactTokensForETH selector (0x18cbafe5) with no args
         let data = Bytes::from(vec![0x18, 0xcb, 0xaf, 0xe5]);
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
         ));
     }
@@ -1195,7 +1203,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForETH"
         ));
     }
@@ -1211,7 +1219,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactTokensForTokens"
         ));
     }
@@ -1226,7 +1234,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "swapExactETHForTokens"
         ));
     }
@@ -1243,7 +1251,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForTokens" && reason.contains("at least 2")
         ));
 
@@ -1255,7 +1263,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactETHForTokens" && reason.contains("at least 2")
         ));
 
@@ -1268,7 +1276,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason } if name == "swapExactTokensForETH" && reason.contains("at least 2")
         ));
     }
@@ -1280,7 +1288,11 @@ mod tests {
         // V2 swapExactTokensForTokens calldata validated as V3 → Denied
         let data = encode_swap_exact_tokens_for_tokens();
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV3Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -1290,7 +1302,11 @@ mod tests {
         // V3 exactInputSingle calldata validated as V2 → Denied
         let data = encode_exact_input_single();
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(
+                &Some(data),
+                SendRawTarget::UniswapV2Router,
+                SupportedChainId::Ethereum
+            ),
             SwapValidation::Denied { .. }
         ));
     }
@@ -1308,7 +1324,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason }
                 if name == "swapExactETHForTokens" && reason.contains("wrapped native token")
         ));
@@ -1326,7 +1342,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V2, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV2Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, reason }
                 if name == "swapExactTokensForETH" && reason.contains("wrapped native token")
         ));
@@ -1347,7 +1363,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactInput"
         ));
     }
@@ -1365,7 +1381,7 @@ mod tests {
         };
         let data = Bytes::from(call.abi_encode());
         assert!(matches!(
-            validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum),
+            validate_swap_calldata(&Some(data), SendRawTarget::UniswapV3Router, SupportedChainId::Ethereum),
             SwapValidation::MalformedArgs { name, .. } if name == "exactOutput"
         ));
     }
@@ -1390,7 +1406,11 @@ mod tests {
             },
         };
         let data = Bytes::from(call.abi_encode());
-        match validate_swap_calldata(&Some(data), RouterVersion::V3, SupportedChainId::Ethereum) {
+        match validate_swap_calldata(
+            &Some(data),
+            SendRawTarget::UniswapV3Router,
+            SupportedChainId::Ethereum,
+        ) {
             SwapValidation::Allowed(p) => {
                 assert_eq!(p.function, "exactInput");
                 assert_eq!(

@@ -801,4 +801,464 @@ mod tests {
         let amount = U256::from(1_000_000_000u64);
         assert_eq!(from_raw(amount, 6).to_string(), "1000");
     }
+
+    // ---- handle_send_raw tests ----
+
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    use clawlet_core::audit::AuditLogger;
+    use clawlet_core::policy::{Policy, PolicyEngine};
+    use clawlet_evm::EvmAdapter;
+    use clawlet_signer::signer::LocalSigner;
+
+    use alloy::primitives::Bytes;
+    use alloy::sol_types::SolCall;
+
+    use clawlet_core::chain::SupportedChainId;
+    use clawlet_evm::swap_validation::{wrapped_native_address, IUniswapV2Router, IWETH};
+
+    use crate::server::AppState;
+
+    /// Helper to create a minimal AppState for testing.
+    ///
+    /// Uses a permissive policy, dummy audit logger, and an empty adapters map
+    /// (tests will fail before needing network if they test validation paths).
+    fn mock_app_state() -> (AppState, TempDir) {
+        use clawlet_core::auth::SessionStore;
+        use clawlet_core::config::AuthConfig;
+        use std::sync::RwLock;
+
+        // Create temp dir for audit log
+        let temp_dir = TempDir::new().unwrap();
+        let audit_path = temp_dir.path().join("audit.jsonl");
+        let keystore_path = temp_dir.path().join("keystore");
+
+        // Permissive policy: allow all chains and tokens
+        let policy = Policy {
+            daily_transfer_limit_usd: 1_000_000.0,
+            per_tx_limit_usd: 100_000.0,
+            allowed_tokens: vec![], // empty = all allowed
+            allowed_chains: vec![], // empty = all allowed
+            require_approval_above_usd: None,
+        };
+        let policy_engine = PolicyEngine::new(policy);
+
+        let audit = AuditLogger::new(&audit_path).unwrap();
+
+        // No adapters — tests will fail before needing network access
+        let adapters: HashMap<u64, EvmAdapter> = HashMap::new();
+
+        // Dummy signer (private key for testing only - Anvil test account #0)
+        let private_key_bytes: [u8; 32] = [
+            0xac, 0x09, 0x74, 0xbe, 0xc3, 0x9a, 0x17, 0xe3, 0x6b, 0xa4, 0xa6, 0xb4, 0xd2, 0x38,
+            0xff, 0x94, 0x4b, 0xac, 0xb4, 0x78, 0xcb, 0xed, 0x5e, 0xfc, 0xae, 0x78, 0x4d, 0x7b,
+            0xf4, 0xf2, 0xff, 0x80,
+        ];
+        let signer = LocalSigner::from_bytes(&private_key_bytes).unwrap();
+
+        let session_store = SessionStore::new();
+        let auth_config = AuthConfig {
+            default_session_ttl_hours: 24,
+            max_failed_attempts: 5,
+            lockout_minutes: 15,
+        };
+
+        let state = AppState {
+            policy: Arc::new(policy_engine),
+            audit: Arc::new(Mutex::new(audit)),
+            adapters: Arc::new(adapters),
+            session_store: Arc::new(RwLock::new(session_store)),
+            auth_config,
+            signer: Arc::new(signer),
+            skills_dir: PathBuf::from("skills"),
+            keystore_path,
+        };
+
+        (state, temp_dir)
+    }
+
+    // ---- Target validation ----
+
+    #[tokio::test]
+    async fn send_raw_unknown_address_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let unknown_addr: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: unknown_addr,
+            value: None,
+            data: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+            chain_id: 1, // Ethereum
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("not a known Uniswap router or WETH contract"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    // ---- WETH wrap path ----
+
+    #[tokio::test]
+    async fn send_raw_weth_wrap_with_deposit_calldata() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let deposit_call = IWETH::depositCall {};
+        let calldata = deposit_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // This should pass validation and policy check, but fail when trying to send
+        // (no adapter configured). We're testing that it reaches the "send tx" stage
+        // rather than being rejected early.
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            // Should fail with "unsupported chain_id" since we have no adapters
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            _ => panic!("expected BadRequest for missing adapter, got {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_deposit_requires_value() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let deposit_call = IWETH::depositCall {};
+        let calldata = deposit_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::ZERO), // No value
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("deposit() requires value > 0"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_fallback_deposit() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::new()),                              // Empty calldata
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass validation and fail at adapter stage
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            _ => panic!("expected BadRequest for missing adapter"),
+        }
+    }
+
+    // ---- WETH unwrap path ----
+
+    #[tokio::test]
+    async fn send_raw_weth_unwrap() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let withdraw_call = IWETH::withdrawCall {
+            wad: U256::from(1_000_000_000_000_000_000u64), // 1 WETH
+        };
+        let calldata = withdraw_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::ZERO), // No value (nonpayable)
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        // Should pass validation and fail at adapter stage
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            _ => panic!("expected BadRequest for missing adapter"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_unwrap_nonpayable() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let withdraw_call = IWETH::withdrawCall {
+            wad: U256::from(1_000_000_000_000_000_000u64),
+        };
+        let calldata = withdraw_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::from(100u64)), // Sending value to nonpayable function
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("WETH withdraw is nonpayable"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_unwrap_zero_amount() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let withdraw_call = IWETH::withdrawCall { wad: U256::ZERO };
+        let calldata = withdraw_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: None,
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("withdraw amount must be > 0"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    // ---- Swap value/payability (V2) ----
+
+    #[tokio::test]
+    async fn send_raw_v2_swap_exact_eth_requires_value() {
+        let (state, _temp) = mock_app_state();
+
+        // Use Ethereum V2 router address
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let weth = wrapped_native_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::swapExactETHForTokensCall {
+            amountOutMin: U256::from(1000u64),
+            path: vec![weth, usdc],
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::ZERO), // No value sent
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("swapExactETHForTokens requires nonzero msg.value"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_v2_swap_exact_tokens_nonpayable() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+            .parse()
+            .unwrap();
+
+        let call = IUniswapV2Router::swapExactTokensForTokensCall {
+            amountIn: U256::from(1_000_000u64),
+            amountOutMin: U256::from(1u64),
+            path: vec![usdc, dai],
+            to: state.signer.address(),
+            deadline: U256::from(9999999999u64),
+        };
+        let calldata = call.abi_encode();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: Some(U256::from(1_000_000_000u64)), // Sending value to nonpayable
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("is non-payable but req.value is nonzero"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    // ---- Invalid calldata ----
+
+    #[tokio::test]
+    async fn send_raw_router_unknown_selector() {
+        let (state, _temp) = mock_app_state();
+
+        let router_v2: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: router_v2,
+            value: None,
+            data: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])), // Unknown selector
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("is not allowed"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_weth_approve_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+
+        // ERC20 approve selector: 0x095ea7b3
+        let spender: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        let amount = U256::from(1_000_000u64);
+
+        // Manually construct approve calldata
+        let mut calldata = vec![0x09, 0x5e, 0xa7, 0xb3]; // approve selector
+        calldata.extend_from_slice(&[0u8; 12]); // padding
+        calldata.extend_from_slice(spender.as_slice());
+        calldata.extend_from_slice(&amount.to_be_bytes::<32>());
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: None,
+            data: Some(Bytes::from(calldata)),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("only deposit and withdraw functions are allowed"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
+
+    // ---- Chain validation ----
+
+    #[tokio::test]
+    async fn send_raw_unsupported_chain_id() {
+        let (state, _temp) = mock_app_state();
+
+        let weth_addr = wrapped_native_address(SupportedChainId::Ethereum);
+        let deposit_call = IWETH::depositCall {};
+        let calldata = deposit_call.abi_encode();
+
+        let req = SendRawRequest {
+            to: weth_addr,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)),
+            data: Some(Bytes::from(calldata)),
+            chain_id: 99999, // Unsupported chain
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain"));
+            }
+            _ => panic!("expected BadRequest error"),
+        }
+    }
 }

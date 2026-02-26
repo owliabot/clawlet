@@ -303,13 +303,6 @@ pub async fn handle_send_raw(
             token_b_str: String,
             amount_str: String,
         },
-        /// NFT position operations without token info (increaseLiquidity, decreaseLiquidity,
-        /// collect, burn). Only chain policy is checked, not token policy, because the
-        /// position's tokens were validated at mint time.
-        NftPositionNoTokenCheck {
-            operation_type: String,
-            amount_str: String,
-        },
     }
 
     let resolved_op = match target {
@@ -558,15 +551,54 @@ pub async fn handle_send_raw(
                             amount_str,
                         }
                     } else {
-                        // increaseLiquidity, decreaseLiquidity, collect, burn — no token info in calldata,
-                        // position was validated at mint time
-                        let token_id_str = nft_params
-                            .token_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_default();
-                        RouterOp::NftPositionNoTokenCheck {
+                        // increaseLiquidity, decreaseLiquidity, collect, burn —
+                        // query on-chain positions(tokenId) to get token0/token1 for policy check
+                        let token_id = nft_params.token_id.unwrap_or(U256::ZERO);
+                        let adapter = state.adapters.get(&chain_id).ok_or_else(|| {
+                            HandlerError::BadRequest(format!("unsupported chain_id: {chain_id}"))
+                        })?;
+
+                        let (token0, token1) = {
+                            use alloy::primitives::Bytes as ABytes;
+                            use alloy::providers::Provider;
+                            use alloy::rpc::types::TransactionRequest;
+                            use alloy::sol_types::SolCall;
+
+                            let positions_call =
+                                clawlet_evm::send_raw_validation::INonfungiblePositionManager::positionsCall {
+                                    tokenId: token_id,
+                                };
+                            let call_data = positions_call.abi_encode();
+
+                            let result: ABytes = adapter
+                                .provider()
+                                .call(
+                                    TransactionRequest::default()
+                                        .to(req.to)
+                                        .input(call_data.into()),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    HandlerError::Internal(format!(
+                                        "failed to query positions({token_id}): {e}"
+                                    ))
+                                })?;
+
+                            let decoded = clawlet_evm::send_raw_validation::INonfungiblePositionManager::positionsCall::abi_decode_returns(&result)
+                                .map_err(|e| {
+                                    HandlerError::Internal(format!(
+                                        "failed to decode positions({token_id}) response: {e}"
+                                    ))
+                                })?;
+
+                            (decoded.token0, decoded.token1)
+                        };
+
+                        RouterOp::Liquidity {
                             operation_type: nft_params.function,
-                            amount_str: format!("tokenId={token_id_str}"),
+                            token_a_str: format!("{token0}"),
+                            token_b_str: format!("{token1}"),
+                            amount_str: format!("tokenId={token_id}"),
                         }
                     }
                 }
@@ -647,15 +679,6 @@ pub async fn handle_send_raw(
             check_policy(state, &token_b_str, chain_id, &operation_type, &req)?;
 
             let token_str = format!("{token_a_str},{token_b_str}");
-            (operation_type, token_str, amount_str)
-        }
-        RouterOp::NftPositionNoTokenCheck {
-            operation_type,
-            amount_str,
-        } => {
-            // No token policy check — position tokens were validated at mint time.
-            // Only chain allowlist is enforced (already checked via SupportedChainId above).
-            let token_str = "nft_position".to_string();
             (operation_type, token_str, amount_str)
         }
     };
@@ -2308,9 +2331,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_raw_nft_pm_collect_restrictive_policy_passes() {
-        // collect should NOT be denied by restrictive token policy
-        // because we skip token checks for non-mint operations
+    async fn send_raw_nft_pm_collect_queries_position_tokens() {
+        // collect now queries on-chain positions(tokenId) for token policy check;
+        // with no adapter configured, it fails at the adapter lookup stage
         let (state, _temp) = mock_app_state_restrictive();
 
         let nft_pm = nft_position_manager_address(SupportedChainId::Ethereum);

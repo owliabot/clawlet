@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 //! # clawlet-evm
 //!
 //! EVM chain adapter — balance queries, transaction building, and broadcasting.

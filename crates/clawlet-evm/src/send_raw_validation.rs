@@ -6,11 +6,14 @@
 //! - Uniswap V2 Router02 (`abi/IUniswapV2Router.json`)
 //! - WETH/WBNB/WMATIC (`abi/IWETH.json`)
 //! - Uniswap V3 NonfungiblePositionManager (`abi/INonfungiblePositionManager.json`)
+//! - ERC-20 tokens (transfer, approve, transferFrom, permit)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
 use alloy::sol_types::SolInterface;
 use clawlet_core::chain::SupportedChainId;
+
+use crate::abi::IERC20;
 
 // Load UniswapV3 SwapRouter02 (IV3SwapRouter) interface from ABI JSON.
 sol!(
@@ -715,6 +718,109 @@ pub fn validate_liquidity_calldata(
                 }
             } else {
                 LiquidityValidation::Denied { selector }
+            }
+        }
+    }
+}
+
+// ---- ERC-20 token validation ----
+
+/// Parsed ERC-20 call parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Erc20Params {
+    /// Function name (e.g. "transfer", "approve", "transferFrom", "permit").
+    pub function: String,
+    /// The spender (approve/permit) or recipient (transfer/transferFrom).
+    pub spender_or_recipient: Address,
+    /// The amount/value.
+    pub amount: U256,
+    /// For transferFrom/permit: the `from`/`owner` address.
+    pub from: Option<Address>,
+}
+
+/// Result of validating ERC-20 calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Erc20Validation {
+    /// The calldata is a valid, ABI-decodable ERC-20 call.
+    Allowed(Erc20Params),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed ERC-20 functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
+}
+
+/// Try to identify a known ERC-20 function name from a 4-byte selector.
+///
+/// Selectors:
+/// - transfer:     0xa9059cbb
+/// - approve:      0x095ea7b3
+/// - transferFrom: 0x23b872dd
+/// - permit:       0xd505accf
+fn selector_name_erc20(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0xa9, 0x05, 0x9c, 0xbb] => Some("transfer"),
+        [0x09, 0x5e, 0xa7, 0xb3] => Some("approve"),
+        [0x23, 0xb8, 0x72, 0xdd] => Some("transferFrom"),
+        [0xd5, 0x05, 0xac, 0xcf] => Some("permit"),
+        _ => None,
+    }
+}
+
+/// Validate ERC-20 token calldata.
+///
+/// Whitelists: transfer, approve, transferFrom, permit.
+pub fn validate_erc20_calldata(data: &Option<Bytes>) -> Erc20Validation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return Erc20Validation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    match IERC20::IERC20Calls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                IERC20::IERC20Calls::transfer(c) => Erc20Params {
+                    function: "transfer".into(),
+                    spender_or_recipient: c.to,
+                    amount: c.amount,
+                    from: None,
+                },
+                IERC20::IERC20Calls::approve(c) => Erc20Params {
+                    function: "approve".into(),
+                    spender_or_recipient: c.spender,
+                    amount: c.amount,
+                    from: None,
+                },
+                IERC20::IERC20Calls::transferFrom(c) => Erc20Params {
+                    function: "transferFrom".into(),
+                    spender_or_recipient: c.to,
+                    amount: c.amount,
+                    from: Some(c.from),
+                },
+                IERC20::IERC20Calls::permit(c) => Erc20Params {
+                    function: "permit".into(),
+                    spender_or_recipient: c.spender,
+                    amount: c.value,
+                    from: Some(c.owner),
+                },
+                // Other IERC20 functions (balanceOf, allowance, name, symbol, decimals)
+                // are read-only and not allowed via send_raw.
+                _ => {
+                    return Erc20Validation::Denied { selector };
+                }
+            };
+            Erc20Validation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_erc20(selector) {
+                Erc20Validation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                Erc20Validation::Denied { selector }
             }
         }
     }
@@ -2163,6 +2269,183 @@ mod tests {
         assert!(matches!(
             validate_nft_position_calldata(&Some(data)),
             NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    // ---- ERC-20 validation tests ----
+
+    fn encode_erc20_transfer() -> Bytes {
+        let call = IERC20::transferCall {
+            to: USDC,
+            amount: U256::from(1_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_approve() -> Bytes {
+        let call = IERC20::approveCall {
+            spender: USDC,
+            amount: U256::MAX,
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_transfer_from() -> Bytes {
+        let call = IERC20::transferFromCall {
+            from: WETH,
+            to: USDC,
+            amount: U256::from(5_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_permit() -> Bytes {
+        let call = IERC20::permitCall {
+            owner: WETH,
+            spender: USDC,
+            value: U256::from(1_000_000u64),
+            deadline: U256::from(9999999999u64),
+            v: 27,
+            r: alloy::primitives::B256::ZERO,
+            s: alloy::primitives::B256::ZERO,
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    #[test]
+    fn erc20_transfer_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_transfer())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "transfer");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(1_000_000u64));
+                assert!(p.from.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_approve_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_approve())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "approve");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::MAX);
+                assert!(p.from.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_transfer_from_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_transfer_from())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "transferFrom");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(5_000u64));
+                assert_eq!(p.from, Some(WETH));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_permit_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_permit())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "permit");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(1_000_000u64));
+                assert_eq!(p.from, Some(WETH));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_no_selector() {
+        assert_eq!(validate_erc20_calldata(&None), Erc20Validation::NoSelector);
+        assert_eq!(
+            validate_erc20_calldata(&Some(Bytes::new())),
+            Erc20Validation::NoSelector
+        );
+        assert_eq!(
+            validate_erc20_calldata(&Some(Bytes::from(vec![0xa9, 0x05, 0x9c]))),
+            Erc20Validation::NoSelector
+        );
+    }
+
+    #[test]
+    fn erc20_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn erc20_transfer_selector_only_malformed() {
+        let data = Bytes::from(vec![0xa9, 0x05, 0x9c, 0xbb]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "transfer"
+        ));
+    }
+
+    #[test]
+    fn erc20_approve_selector_only_malformed() {
+        let data = Bytes::from(vec![0x09, 0x5e, 0xa7, 0xb3]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "approve"
+        ));
+    }
+
+    #[test]
+    fn erc20_transfer_from_selector_only_malformed() {
+        let data = Bytes::from(vec![0x23, 0xb8, 0x72, 0xdd]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "transferFrom"
+        ));
+    }
+
+    #[test]
+    fn erc20_permit_selector_only_malformed() {
+        let data = Bytes::from(vec![0xd5, 0x05, 0xac, 0xcf]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "permit"
+        ));
+    }
+
+    #[test]
+    fn erc20_balance_of_denied() {
+        // balanceOf is read-only, not allowed via send_raw
+        let call = IERC20::balanceOfCall {
+            owner: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn erc20_allowance_denied() {
+        // allowance is read-only, not allowed via send_raw
+        let call = IERC20::allowanceCall {
+            owner: Address::ZERO,
+            spender: USDC,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { .. }
         ));
     }
 }

@@ -11,9 +11,10 @@ use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::send_raw_validation::{
-    identify_target, validate_liquidity_calldata, validate_nft_position_calldata,
-    validate_swap_calldata, validate_weth_calldata, LiquidityValidation, NftPositionValidation,
-    SendRawTarget, SwapValidation, WethValidation,
+    identify_target, validate_erc20_calldata, validate_liquidity_calldata,
+    validate_nft_position_calldata, validate_swap_calldata, validate_weth_calldata,
+    Erc20Validation, LiquidityValidation, NftPositionValidation, SendRawTarget, SwapValidation,
+    WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -260,31 +261,7 @@ pub async fn handle_send_raw(
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
     // ---- Identify target contract type ----
-    let target = match identify_target(req.to, supported_chain) {
-        Some(t) => t,
-        None => {
-            {
-                let event = AuditEvent::new(
-                    "send_raw",
-                    json!({
-                        "to": format!("{}", req.to),
-                        "chain_id": chain_id,
-                    }),
-                    format!(
-                        "denied: target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager",
-                        req.to
-                    ),
-                );
-                if let Ok(mut audit) = state.audit.lock() {
-                    let _ = audit.log_event(event);
-                }
-            }
-            return Err(HandlerError::BadRequest(format!(
-                "target address {} is not a known Uniswap router, WETH contract, or NonfungiblePositionManager for chain {chain_id}",
-                req.to
-            )));
-        }
-    };
+    let target = identify_target(req.to, supported_chain);
 
     // ---- Operation-specific validation and policy checks ----
     //
@@ -306,7 +283,7 @@ pub async fn handle_send_raw(
     }
 
     let resolved_op = match target {
-        target @ (SendRawTarget::UniswapV3Router | SendRawTarget::UniswapV2Router) => {
+        Some(target @ (SendRawTarget::UniswapV3Router | SendRawTarget::UniswapV2Router)) => {
             // ---- Swap calldata validation ----
             let swap_result = validate_swap_calldata(&req.data, target, supported_chain);
 
@@ -491,7 +468,7 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        SendRawTarget::Weth => {
+        Some(SendRawTarget::Weth) => {
             // ---- WETH calldata validation ----
             match validate_weth_calldata(&req.data, req.value) {
                 WethValidation::Wrap(amount) => RouterOp::Swap {
@@ -533,7 +510,7 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        SendRawTarget::NftPositionManager => {
+        Some(SendRawTarget::NftPositionManager) => {
             // ---- NonfungiblePositionManager calldata validation ----
             match validate_nft_position_calldata(&req.data) {
                 NftPositionValidation::Allowed(nft_params) => {
@@ -661,6 +638,70 @@ pub async fn handle_send_raw(
                     "function selector {sel_hex} is not allowed; \
                      only mint, increaseLiquidity, decreaseLiquidity, collect, and burn are permitted on NonfungiblePositionManager"
                 )));
+                }
+            }
+        }
+        None => {
+            // Fallback: try ERC-20 token operations (any address can be an ERC-20 token)
+            match validate_erc20_calldata(&req.data) {
+                Erc20Validation::Allowed(erc20_params) => {
+                    // ERC-20 calls are non-payable
+                    let value = req.value.unwrap_or(U256::ZERO);
+                    if !value.is_zero() {
+                        return Err(HandlerError::BadRequest(format!(
+                            "ERC-20 {} is non-payable but req.value is nonzero ({})",
+                            erc20_params.function, value
+                        )));
+                    }
+
+                    RouterOp::Swap {
+                        operation_type: format!("erc20_{}", erc20_params.function),
+                        token_str: format!("{}", req.to),
+                        amount_str: erc20_params.amount.to_string(),
+                    }
+                }
+                Erc20Validation::MalformedArgs { name, reason } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "function": name,
+                                "decode_error": reason,
+                            }),
+                            format!("denied: malformed ERC-20 calldata for {name}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "malformed calldata for ERC-20 {name}: ABI decode failed — {reason}"
+                    )));
+                }
+                Erc20Validation::NoSelector | Erc20Validation::Denied { .. } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                            }),
+                            format!(
+                                "denied: target address {} is not a known contract or ERC-20 token operation",
+                                req.to
+                            ),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "target address {} is not a known contract for chain {chain_id}, \
+                         and calldata does not match any allowed ERC-20 function (transfer, approve, transferFrom, permit)",
+                        req.to
+                    )));
                 }
             }
         }
@@ -1168,9 +1209,7 @@ mod tests {
         let err = result.unwrap_err();
         match err {
             HandlerError::BadRequest(msg) => {
-                assert!(msg.contains(
-                    "not a known Uniswap router, WETH contract, or NonfungiblePositionManager"
-                ));
+                assert!(msg.contains("not a known contract"));
             }
             _ => panic!("expected BadRequest error"),
         }

@@ -1,6 +1,6 @@
 //! Supported chain identifiers.
 //!
-//! Only chains with verified UniswapV3 SwapRouter deployments are included.
+//! Only chains with verified Uniswap V2/V3 router and WETH contract deployments are included.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

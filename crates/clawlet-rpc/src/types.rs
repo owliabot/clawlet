@@ -57,7 +57,7 @@ pub enum RpcMethod {
     Transfer,
     Skills,
     Execute,
-    /// Send a raw transaction (UniswapV3 swap only, policy-gated).
+    /// Send a raw transaction (Uniswap V2/V3 swap or WETH wrap/unwrap, policy-gated).
     SendRaw,
     /// Grant a new session token (Admin only).
     AuthGrant,

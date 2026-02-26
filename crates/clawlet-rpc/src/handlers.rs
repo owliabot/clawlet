@@ -343,11 +343,37 @@ pub async fn handle_send_raw(
 
                 return Err(HandlerError::BadRequest(format!(
                     "function selector {sel_hex} is not allowed; \
-                     only UniswapV3 SwapRouter functions are permitted \
-                     (exactInputSingle, exactInput, exactOutputSingle, exactOutput)"
+                     only Uniswap V2/V3 swap functions are permitted"
                 )));
             }
         };
+
+        // ---- Value/function consistency check ----
+        // V2 swapExactETHForTokens is payable and requires nonzero value (ETH input).
+        // V2 swapExactTokensForTokens / swapExactTokensForETH are non-payable.
+        // V3 functions (exactInput*, exactOutput*) are payable in ABI (SwapRouter02
+        // accepts ETH for wrapping), so we allow nonzero value for them.
+        let value = req.value.unwrap_or(U256::ZERO);
+        match swap_params.function.as_str() {
+            "swapExactETHForTokens" => {
+                if value.is_zero() {
+                    return Err(HandlerError::BadRequest(
+                        "swapExactETHForTokens requires nonzero msg.value (ETH input)".into(),
+                    ));
+                }
+            }
+            "swapExactTokensForTokens" | "swapExactTokensForETH" => {
+                if !value.is_zero() {
+                    return Err(HandlerError::BadRequest(format!(
+                        "{} is non-payable but req.value is nonzero ({})",
+                        swap_params.function, value
+                    )));
+                }
+            }
+            // V3 exactInput*/exactOutput* are payable in SwapRouter02 ABI
+            // (router accepts ETH and wraps to WETH internally), so allow any value.
+            _ => {}
+        }
 
         (
             swap_params.function,

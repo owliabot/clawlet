@@ -415,6 +415,16 @@ pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> Weth
             }
             return WethValidation::Wrap(amount);
         }
+        None => {
+            // None (no calldata) + value > 0 → fallback deposit
+            let amount = value.unwrap_or(U256::ZERO);
+            if amount.is_zero() {
+                return WethValidation::Invalid {
+                    reason: "no calldata with zero value is not a valid WETH operation".into(),
+                };
+            }
+            return WethValidation::Wrap(amount);
+        }
         _ => {
             return WethValidation::Invalid {
                 reason: "calldata too short for WETH operation".into(),

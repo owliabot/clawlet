@@ -24,6 +24,13 @@ sol!(
     "abi/IUniswapV2Router.json"
 );
 
+// Load WETH interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    IWETH,
+    "abi/IWETH.json"
+);
+
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
 ///
 /// Source: <https://docs.uniswap.org/contracts/v3/reference/deployments>
@@ -397,12 +404,12 @@ fn validate_v2(data: &Bytes, selector: [u8; 4], chain: SupportedChainId) -> Swap
 
 /// Validate WETH wrap/unwrap calldata.
 ///
-/// - **deposit()** (wrap): selector `0xd0e30db0`, no args (or empty), value > 0
-/// - **withdraw(uint256)** (unwrap): selector `0x2e1a7d4d`, one uint256 arg
+/// - **deposit()** (wrap): no args (or empty/None calldata), value > 0
+/// - **withdraw(uint256)** (unwrap): one uint256 arg
+///
+/// Uses alloy's `sol!` macro with the WETH ABI JSON for calldata decoding.
+/// Only deposit and withdraw functions are allowed; other functions (approve, transfer, etc.) are rejected.
 pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> WethValidation {
-    const DEPOSIT_SELECTOR: [u8; 4] = [0xd0, 0xe3, 0x0d, 0xb0];
-    const WITHDRAW_SELECTOR: [u8; 4] = [0x2e, 0x1a, 0x7d, 0x4d];
-
     let data = match data {
         Some(d) if d.len() >= 4 => d,
         Some(d) if d.is_empty() => {
@@ -425,59 +432,54 @@ pub fn validate_weth_calldata(data: &Option<Bytes>, value: Option<U256>) -> Weth
             }
             return WethValidation::Wrap(amount);
         }
-        _ => {
+        Some(_) => {
             return WethValidation::Invalid {
-                reason: "calldata too short for WETH operation".into(),
+                reason:
+                    "calldata too short for WETH operation (need at least 4 bytes for selector)"
+                        .into(),
             };
         }
     };
 
-    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
-
-    if selector == DEPOSIT_SELECTOR {
-        // deposit() — no args or just the selector
-        if data.len() != 4 {
-            return WethValidation::Invalid {
+    // Decode the calldata using the WETH ABI
+    match IWETH::IWETHCalls::abi_decode(data) {
+        Ok(call) => match call {
+            IWETH::IWETHCalls::deposit(_) => {
+                // deposit() is payable and requires value > 0
+                let amount = value.unwrap_or(U256::ZERO);
+                if amount.is_zero() {
+                    return WethValidation::Invalid {
+                        reason: "deposit() requires value > 0".into(),
+                    };
+                }
+                WethValidation::Wrap(amount)
+            }
+            IWETH::IWETHCalls::withdraw(w) => {
+                // withdraw(uint256 wad) — extract amount from parameter
+                let amount = w.wad;
+                if amount.is_zero() {
+                    return WethValidation::Invalid {
+                        reason: "withdraw amount must be > 0".into(),
+                    };
+                }
+                WethValidation::Unwrap(amount)
+            }
+            // All other WETH functions (approve, transfer, transferFrom, etc.) are not allowed
+            _ => WethValidation::Invalid {
+                reason: "only deposit and withdraw functions are allowed for WETH operations"
+                    .into(),
+            },
+        },
+        Err(_) => {
+            // Decode failed — extract selector for error message
+            let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+            WethValidation::Invalid {
                 reason: format!(
-                    "deposit() expects 4-byte calldata (selector only), got {} bytes",
-                    data.len()
+                    "unknown or invalid WETH function selector: 0x{:02x}{:02x}{:02x}{:02x}",
+                    selector[0], selector[1], selector[2], selector[3]
                 ),
-            };
+            }
         }
-        let amount = value.unwrap_or(U256::ZERO);
-        if amount.is_zero() {
-            return WethValidation::Invalid {
-                reason: "deposit() requires value > 0".into(),
-            };
-        }
-        return WethValidation::Wrap(amount);
-    }
-
-    if selector == WITHDRAW_SELECTOR {
-        // withdraw(uint256 wad) — selector + 32 bytes
-        if data.len() != 36 {
-            return WethValidation::Invalid {
-                reason: format!(
-                    "withdraw(uint256) expects 36-byte calldata (4 + 32), got {} bytes",
-                    data.len()
-                ),
-            };
-        }
-        // Decode the uint256 amount from bytes 4..36
-        let amount = U256::from_be_slice(&data[4..36]);
-        if amount.is_zero() {
-            return WethValidation::Invalid {
-                reason: "withdraw amount must be > 0".into(),
-            };
-        }
-        return WethValidation::Unwrap(amount);
-    }
-
-    WethValidation::Invalid {
-        reason: format!(
-            "unknown WETH selector: 0x{:02x}{:02x}{:02x}{:02x}",
-            selector[0], selector[1], selector[2], selector[3]
-        ),
     }
 }
 
@@ -1203,5 +1205,170 @@ mod tests {
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 43])).is_some());
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 66])).is_some());
         assert!(decode_v3_path(&Bytes::from(vec![0u8; 89])).is_some());
+    }
+
+    // ---- WETH validation tests ----
+
+    #[test]
+    fn weth_deposit_with_selector_and_value_valid() {
+        // deposit() selector only + value > 0 → Wrap
+        let call = IWETH::depositCall {};
+        let data = Some(Bytes::from(call.abi_encode()));
+        let value = Some(U256::from(1_000_000_000_000_000_000u64));
+        match validate_weth_calldata(&data, value) {
+            WethValidation::Wrap(amount) => {
+                assert_eq!(amount, U256::from(1_000_000_000_000_000_000u64));
+            }
+            other => panic!("expected Wrap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weth_deposit_with_selector_no_value_invalid() {
+        // deposit() selector only + value == 0 → Invalid
+        let call = IWETH::depositCall {};
+        let data = Some(Bytes::from(call.abi_encode()));
+        let value = Some(U256::ZERO);
+        assert!(matches!(
+            validate_weth_calldata(&data, value),
+            WethValidation::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_empty_calldata_with_value_wrap() {
+        // empty calldata + value > 0 → Wrap (fallback)
+        let data = Some(Bytes::new());
+        let value = Some(U256::from(500_000_000_000_000_000u64));
+        match validate_weth_calldata(&data, value) {
+            WethValidation::Wrap(amount) => {
+                assert_eq!(amount, U256::from(500_000_000_000_000_000u64));
+            }
+            other => panic!("expected Wrap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weth_none_calldata_with_value_wrap() {
+        // None calldata + value > 0 → Wrap (fallback)
+        let value = Some(U256::from(250_000_000_000_000_000u64));
+        match validate_weth_calldata(&None, value) {
+            WethValidation::Wrap(amount) => {
+                assert_eq!(amount, U256::from(250_000_000_000_000_000u64));
+            }
+            other => panic!("expected Wrap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weth_empty_calldata_no_value_invalid() {
+        // empty/None + value == 0 → Invalid
+        assert!(matches!(
+            validate_weth_calldata(&Some(Bytes::new()), Some(U256::ZERO)),
+            WethValidation::Invalid { .. }
+        ));
+        assert!(matches!(
+            validate_weth_calldata(&None, Some(U256::ZERO)),
+            WethValidation::Invalid { .. }
+        ));
+        assert!(matches!(
+            validate_weth_calldata(&Some(Bytes::new()), None),
+            WethValidation::Invalid { .. }
+        ));
+        assert!(matches!(
+            validate_weth_calldata(&None, None),
+            WethValidation::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_withdraw_with_valid_amount_unwrap() {
+        // withdraw with valid amount → Unwrap
+        let call = IWETH::withdrawCall {
+            wad: U256::from(1_000_000_000_000_000_000u64),
+        };
+        let data = Some(Bytes::from(call.abi_encode()));
+        match validate_weth_calldata(&data, None) {
+            WethValidation::Unwrap(amount) => {
+                assert_eq!(amount, U256::from(1_000_000_000_000_000_000u64));
+            }
+            other => panic!("expected Unwrap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn weth_withdraw_with_zero_amount_invalid() {
+        // withdraw with amount == 0 → Invalid
+        let call = IWETH::withdrawCall { wad: U256::ZERO };
+        let data = Some(Bytes::from(call.abi_encode()));
+        assert!(matches!(
+            validate_weth_calldata(&data, None),
+            WethValidation::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_unknown_selector_invalid() {
+        // unknown selector → Invalid
+        let data = Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]));
+        assert!(matches!(
+            validate_weth_calldata(&data, None),
+            WethValidation::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_approve_selector_invalid() {
+        // WETH approve → Invalid (not allowed)
+        let call = IWETH::approveCall {
+            guy: Address::ZERO,
+            wad: U256::from(1000u64),
+        };
+        let data = Some(Bytes::from(call.abi_encode()));
+        assert!(matches!(
+            validate_weth_calldata(&data, None),
+            WethValidation::Invalid { reason } if reason.contains("only deposit and withdraw")
+        ));
+    }
+
+    #[test]
+    fn weth_transfer_selector_invalid() {
+        // WETH transfer → Invalid (not allowed)
+        let call = IWETH::transferCall {
+            dst: Address::ZERO,
+            wad: U256::from(1000u64),
+        };
+        let data = Some(Bytes::from(call.abi_encode()));
+        assert!(matches!(
+            validate_weth_calldata(&data, None),
+            WethValidation::Invalid { reason } if reason.contains("only deposit and withdraw")
+        ));
+    }
+
+    #[test]
+    fn weth_short_calldata_invalid() {
+        // short calldata (1-3 bytes) → Invalid
+        assert!(matches!(
+            validate_weth_calldata(&Some(Bytes::from(vec![0xd0])), None),
+            WethValidation::Invalid { .. }
+        ));
+        assert!(matches!(
+            validate_weth_calldata(&Some(Bytes::from(vec![0xd0, 0xe3])), None),
+            WethValidation::Invalid { .. }
+        ));
+        assert!(matches!(
+            validate_weth_calldata(&Some(Bytes::from(vec![0xd0, 0xe3, 0x0d])), None),
+            WethValidation::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn weth_malformed_withdraw_invalid() {
+        // malformed withdraw (selector only, wrong length) → Invalid
+        let data = Some(Bytes::from(vec![0x2e, 0x1a, 0x7d, 0x4d]));
+        assert!(matches!(
+            validate_weth_calldata(&data, None),
+            WethValidation::Invalid { .. }
+        ));
     }
 }

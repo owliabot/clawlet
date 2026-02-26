@@ -375,10 +375,18 @@ pub async fn handle_send_raw(
             _ => {}
         }
 
+        // For swapExactETHForTokens, the actual amount is req.value (ETH sent as msg.value),
+        // not swap_params.amount_in (which is 0).
+        let amount_str = if swap_params.function == "swapExactETHForTokens" {
+            value.to_string()
+        } else {
+            swap_params.amount_in.to_string()
+        };
+
         (
             swap_params.function,
             format!("{}", swap_params.token_in),
-            swap_params.amount_in.to_string(),
+            amount_str,
         )
     } else {
         // ---- WETH calldata validation ----

@@ -2655,4 +2655,316 @@ mod tests {
     // Excess ETH would strand in the NonfungiblePositionManager contract since
     // multicall/refundETH are denied. This requires parsing amountDesired fields
     // and accounting for slippage, so it's deferred as a follow-up.
+
+    // ---- ERC-20 fallback handler tests ----
+
+    use clawlet_evm::abi::IERC20;
+
+    /// Unknown address + valid ERC-20 transfer calldata → passes validation,
+    /// reaches "send tx" stage (fails on missing adapter, not on validation).
+    #[tokio::test]
+    async fn send_raw_erc20_transfer_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::transferCall {
+            _to: Address::ZERO,
+            _value: U256::from(1_000_000u64),
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                // Should fail on missing adapter, not on validation
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 approve with valid calldata → passes validation.
+    #[tokio::test]
+    async fn send_raw_erc20_approve_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+            .parse()
+            .unwrap();
+        let call = IERC20::approveCall {
+            _spender: Address::with_last_byte(1),
+            _value: U256::MAX,
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 transferFrom with valid calldata → passes validation.
+    #[tokio::test]
+    async fn send_raw_erc20_transfer_from_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::transferFromCall {
+            _from: Address::with_last_byte(2),
+            _to: Address::with_last_byte(3),
+            _value: U256::from(500u64),
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 permit with valid calldata → passes validation.
+    #[tokio::test]
+    async fn send_raw_erc20_permit_passes_validation() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::permitCall {
+            owner: Address::with_last_byte(1),
+            spender: Address::with_last_byte(2),
+            value: U256::from(1_000_000u64),
+            deadline: U256::from(9999999999u64),
+            v: 27,
+            r: alloy::primitives::B256::ZERO,
+            s: alloy::primitives::B256::ZERO,
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 call with nonzero value → rejected (non-payable).
+    #[tokio::test]
+    async fn send_raw_erc20_nonzero_value_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::transferCall {
+            _to: Address::ZERO,
+            _value: U256::from(1_000u64),
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: Some(U256::from(1_000_000_000_000_000_000u64)), // 1 ETH
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("non-payable"),
+                    "expected non-payable error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// Unknown address + unknown selector → rejected (not ERC-20 either).
+    #[tokio::test]
+    async fn send_raw_unknown_address_unknown_selector_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let unknown_addr: Address = "0x0000000000000000000000000000000000000042"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: unknown_addr,
+            value: None,
+            data: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("not a known contract"),
+                    "expected 'not a known contract' error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// Unknown address + ERC-20 read-only function (balanceOf) → rejected.
+    #[tokio::test]
+    async fn send_raw_erc20_read_only_denied() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::balanceOfCall {
+            _owner: Address::ZERO,
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("not a known contract"),
+                    "expected denial, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 transfer with malformed args → rejected with error.
+    #[tokio::test]
+    async fn send_raw_erc20_malformed_args_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        // transfer selector + garbage
+        let data = Bytes::from(vec![0xa9, 0x05, 0x9c, 0xbb, 0xff, 0xff]);
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(data),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("malformed calldata for ERC-20 transfer"),
+                    "expected malformed error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 transfer denied by restrictive policy.
+    #[tokio::test]
+    async fn send_raw_erc20_transfer_policy_denied() {
+        let (state, _temp) = mock_app_state_restrictive();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let call = IERC20::transferCall {
+            _to: Address::ZERO,
+            _value: U256::from(1_000u64),
+        };
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("policy denied"),
+                    "expected policy denied, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
 }

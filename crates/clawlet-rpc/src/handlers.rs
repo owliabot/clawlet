@@ -11,10 +11,10 @@ use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::send_raw_validation::{
-    identify_target, validate_erc20_calldata, validate_liquidity_calldata,
-    validate_nft_position_calldata, validate_swap_calldata, validate_weth_calldata,
-    Erc20Validation, LiquidityValidation, NftPositionValidation, SendRawTarget, SwapValidation,
-    WethValidation,
+    identify_target, validate_aave_pool_calldata, validate_erc20_calldata,
+    validate_liquidity_calldata, validate_nft_position_calldata, validate_swap_calldata,
+    validate_weth_calldata, AavePoolValidation, Erc20Validation, LiquidityValidation,
+    NftPositionValidation, SendRawTarget, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -305,7 +305,8 @@ fn try_erc20_calldata(
 ///    `addLiquidity`, `addLiquidityETH`, `removeLiquidity`, `removeLiquidityETH`
 /// 3. **WETH/WBNB/WMATIC** — `deposit()`, `withdraw(uint256)`, plus ERC-20 operations (`transfer`, `approve`, `transferFrom`, `permit`)
 /// 4. **Uniswap V3 NonfungiblePositionManager** — `mint`, `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`
-/// 5. **ERC-20 tokens** — `transfer`, `approve`, `transferFrom`, `permit` (any address not matching 1–4)
+/// 5. **Aave V3 Pool** — `supply`, `withdraw`, `borrow`, `repay`, `setUserUseReserveAsCollateral`
+/// 6. **ERC-20 tokens** — `transfer`, `approve`, `transferFrom`, `permit` (any address not matching 1–5)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -728,6 +729,86 @@ pub async fn handle_send_raw(
                     "function selector {sel_hex} is not allowed; \
                      only mint, increaseLiquidity, decreaseLiquidity, collect, and burn are permitted on NonfungiblePositionManager"
                 )));
+                }
+            }
+        }
+        SendRawTarget::AavePool => {
+            // ---- Aave V3 Pool calldata validation ----
+            // All Aave Pool functions are non-payable.
+            let value = req.value.unwrap_or(U256::ZERO);
+            if !value.is_zero() {
+                return Err(HandlerError::BadRequest(format!(
+                    "Aave Pool functions are non-payable but req.value is nonzero ({value})"
+                )));
+            }
+
+            match validate_aave_pool_calldata(&req.data) {
+                AavePoolValidation::Allowed(aave_params) => {
+                    let operation_type = match aave_params.function.as_str() {
+                        "supply" => "aave_supply",
+                        "withdraw" => "aave_withdraw",
+                        "borrow" => "aave_borrow",
+                        "repay" => "aave_repay",
+                        "setUserUseReserveAsCollateral" => "aave_set_collateral",
+                        _ => "aave_unknown",
+                    };
+
+                    RouterOp::Swap {
+                        operation_type: operation_type.to_string(),
+                        token_str: format!("{}", aave_params.asset),
+                        amount_str: aave_params.amount.to_string(),
+                    }
+                }
+                AavePoolValidation::NoSelector => {
+                    return Err(HandlerError::BadRequest(
+                        "send_raw requires calldata with a valid Aave Pool function selector"
+                            .into(),
+                    ));
+                }
+                AavePoolValidation::MalformedArgs { name, reason } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "function": name,
+                                "decode_error": reason,
+                            }),
+                            format!("denied: malformed calldata for {name}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "malformed calldata for {name}: ABI decode failed — {reason}"
+                    )));
+                }
+                AavePoolValidation::Denied { selector } => {
+                    let sel_hex = format!(
+                        "0x{:02x}{:02x}{:02x}{:02x}",
+                        selector[0], selector[1], selector[2], selector[3]
+                    );
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "selector": sel_hex,
+                            }),
+                            format!("denied: unsupported Aave Pool function selector {sel_hex}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "function selector {sel_hex} is not allowed; \
+                         only supply, withdraw, borrow, repay, and setUserUseReserveAsCollateral \
+                         are permitted on Aave Pool"
+                    )));
                 }
             }
         }
@@ -1174,7 +1255,9 @@ mod tests {
     use alloy::sol_types::SolCall;
 
     use clawlet_core::chain::SupportedChainId;
-    use clawlet_evm::send_raw_validation::{wrapped_native_address, IUniswapV2Router, IWETH};
+    use clawlet_evm::send_raw_validation::{
+        aave_pool_address, wrapped_native_address, IAavePool, IUniswapV2Router, IWETH,
+    };
 
     use crate::server::AppState;
 
@@ -3147,6 +3230,335 @@ mod tests {
                 );
             }
             other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    // ---- Aave Pool handler tests ----
+
+    #[tokio::test]
+    async fn send_raw_aave_supply_valid_reaches_adapter() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::supplyCall {
+            asset: usdc,
+            amount: U256::from(1_000_000u64),
+            onBehalfOf: Address::ZERO,
+            referralCode: 0,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter-stage failure, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_withdraw_valid_reaches_adapter() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::withdrawCall {
+            asset: usdc,
+            amount: U256::from(500_000u64),
+            to: Address::ZERO,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_borrow_valid_reaches_adapter() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::borrowCall {
+            asset: usdc,
+            amount: U256::from(2_000_000u64),
+            interestRateMode: U256::from(2u64),
+            referralCode: 0,
+            onBehalfOf: Address::ZERO,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_repay_valid_reaches_adapter() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::repayCall {
+            asset: usdc,
+            amount: U256::from(1_500_000u64),
+            interestRateMode: U256::from(2u64),
+            onBehalfOf: Address::ZERO,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_set_collateral_valid_reaches_adapter() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let weth = wrapped_native_address(SupportedChainId::Ethereum);
+
+        let call = IAavePool::setUserUseReserveAsCollateralCall {
+            asset: weth,
+            useAsCollateral: true,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(msg.contains("unsupported chain_id"));
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_nonpayable_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::supplyCall {
+            asset: usdc,
+            amount: U256::from(1_000_000u64),
+            onBehalfOf: Address::ZERO,
+            referralCode: 0,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: Some(U256::from(1_000_000_000u64)), // nonzero value
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("non-payable"),
+                    "expected non-payable rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_unknown_selector_denied() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("is not allowed"),
+                    "expected selector denial, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_malformed_calldata() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+
+        // supply selector (0x617ba037) with garbage args
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(vec![0x61, 0x7b, 0xa0, 0x37, 0xff, 0xff])),
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("malformed calldata for supply"),
+                    "expected malformed args error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_no_selector() {
+        let (state, _temp) = mock_app_state();
+
+        let pool = aave_pool_address(SupportedChainId::Ethereum);
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: None,
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("valid Aave Pool function selector"),
+                    "expected no-selector error, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_aave_works_on_other_chains() {
+        let (state, _temp) = mock_app_state();
+
+        // Test with Polygon Aave Pool address
+        let pool = aave_pool_address(SupportedChainId::Polygon);
+        let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let call = IAavePool::supplyCall {
+            asset: usdc,
+            amount: U256::from(1_000_000u64),
+            onBehalfOf: Address::ZERO,
+            referralCode: 0,
+        };
+
+        let req = SendRawRequest {
+            to: pool,
+            value: None,
+            data: Some(Bytes::from(call.abi_encode())),
+            chain_id: 137, // Polygon
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                // Should reach adapter stage, not validation failure
+                assert!(
+                    msg.contains("unsupported chain_id"),
+                    "expected adapter-stage failure on Polygon, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest for missing adapter, got {:?}", other),
         }
     }
 }

@@ -6,6 +6,7 @@
 //! - Uniswap V2 Router02 (`abi/IUniswapV2Router.json`)
 //! - WETH/WBNB/WMATIC (`abi/IWETH.json`)
 //! - Uniswap V3 NonfungiblePositionManager (`abi/INonfungiblePositionManager.json`)
+//! - Aave V3 Pool (`abi/IAavePool.json`)
 //! - ERC-20 tokens (transfer, approve, transferFrom, permit)
 
 use alloy::primitives::{address, Address, Bytes, U256};
@@ -41,6 +42,13 @@ sol!(
     #[sol(abi)]
     INonfungiblePositionManager,
     "abi/INonfungiblePositionManager.json"
+);
+
+// Load Aave V3 Pool interface from ABI JSON.
+sol!(
+    #[sol(abi)]
+    IAavePool,
+    "abi/IAavePool.json"
 );
 
 /// SwapRouter02 addresses per chain (from Uniswap official deployments).
@@ -100,6 +108,8 @@ pub enum SendRawTarget {
     Weth,
     /// Uniswap V3 NonfungiblePositionManager.
     NftPositionManager,
+    /// Aave V3 Pool.
+    AavePool,
     /// ERC-20 token (transfer, approve, transferFrom, permit).
     Erc20Token,
 }
@@ -118,6 +128,8 @@ pub fn identify_target(to: Address, chain: SupportedChainId) -> SendRawTarget {
         SendRawTarget::Weth
     } else if to == nft_position_manager_address(chain) {
         SendRawTarget::NftPositionManager
+    } else if to == aave_pool_address(chain) {
+        SendRawTarget::AavePool
     } else {
         SendRawTarget::Erc20Token
     }
@@ -136,6 +148,20 @@ pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
         }
         SupportedChainId::Base => address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
         SupportedChainId::Bnb => address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+    }
+}
+
+/// Aave V3 Pool addresses per chain.
+///
+/// Source: <https://docs.aave.com/developers/deployed-contracts/v3-mainnet>
+pub fn aave_pool_address(chain: SupportedChainId) -> Address {
+    match chain {
+        SupportedChainId::Ethereum => address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
+        SupportedChainId::Optimism | SupportedChainId::Polygon | SupportedChainId::Arbitrum => {
+            address!("794a61358D6845594F94dc1DB02A252b5b4814aD")
+        }
+        SupportedChainId::Base => address!("A238Dd80C259a72e81d7e4664a9801593F98d1c5"),
+        SupportedChainId::Bnb => address!("6807dc923806fE8Fd134338EABCA509979a7e0cB"),
     }
 }
 
@@ -825,6 +851,106 @@ pub fn validate_erc20_calldata(data: &Option<Bytes>) -> Erc20Validation {
                 }
             } else {
                 Erc20Validation::Denied { selector }
+            }
+        }
+    }
+}
+
+// ---- Aave V3 Pool validation ----
+
+/// Parsed Aave Pool call parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AavePoolParams {
+    /// Function name (e.g. "supply", "withdraw", "borrow", "repay", "setUserUseReserveAsCollateral").
+    pub function: String,
+    /// The asset address involved.
+    pub asset: Address,
+    /// The amount (zero for setUserUseReserveAsCollateral).
+    pub amount: U256,
+}
+
+/// Result of validating Aave Pool calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AavePoolValidation {
+    /// The calldata is a valid, ABI-decodable Aave Pool call.
+    Allowed(AavePoolParams),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed Aave Pool functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
+}
+
+/// Try to identify a known Aave Pool function name from a 4-byte selector.
+///
+/// Selectors:
+/// - supply:                          0x617ba037
+/// - withdraw:                        0x69328dec
+/// - borrow:                          0xa415bcad
+/// - repay:                           0x573ade81
+/// - setUserUseReserveAsCollateral:   0x5a3b74b9
+fn selector_name_aave_pool(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0x61, 0x7b, 0xa0, 0x37] => Some("supply"),
+        [0x69, 0x32, 0x8d, 0xec] => Some("withdraw"),
+        [0xa4, 0x15, 0xbc, 0xad] => Some("borrow"),
+        [0x57, 0x3a, 0xde, 0x81] => Some("repay"),
+        [0x5a, 0x3b, 0x74, 0xb9] => Some("setUserUseReserveAsCollateral"),
+        _ => None,
+    }
+}
+
+/// Validate Aave V3 Pool calldata.
+///
+/// Whitelists: supply, withdraw, borrow, repay, setUserUseReserveAsCollateral.
+/// All other functions are denied.
+pub fn validate_aave_pool_calldata(data: &Option<Bytes>) -> AavePoolValidation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return AavePoolValidation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    match IAavePool::IAavePoolCalls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                IAavePool::IAavePoolCalls::supply(c) => AavePoolParams {
+                    function: "supply".into(),
+                    asset: c.asset,
+                    amount: c.amount,
+                },
+                IAavePool::IAavePoolCalls::withdraw(c) => AavePoolParams {
+                    function: "withdraw".into(),
+                    asset: c.asset,
+                    amount: c.amount,
+                },
+                IAavePool::IAavePoolCalls::borrow(c) => AavePoolParams {
+                    function: "borrow".into(),
+                    asset: c.asset,
+                    amount: c.amount,
+                },
+                IAavePool::IAavePoolCalls::repay(c) => AavePoolParams {
+                    function: "repay".into(),
+                    asset: c.asset,
+                    amount: c.amount,
+                },
+                IAavePool::IAavePoolCalls::setUserUseReserveAsCollateral(c) => AavePoolParams {
+                    function: "setUserUseReserveAsCollateral".into(),
+                    asset: c.asset,
+                    amount: U256::ZERO,
+                },
+            };
+            AavePoolValidation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_aave_pool(selector) {
+                AavePoolValidation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                AavePoolValidation::Denied { selector }
             }
         }
     }
@@ -2452,6 +2578,217 @@ mod tests {
         assert!(matches!(
             validate_erc20_calldata(&Some(data)),
             Erc20Validation::Denied { .. }
+        ));
+    }
+
+    // ---- Aave Pool validation tests ----
+
+    #[test]
+    fn aave_pool_address_per_chain() {
+        assert_eq!(
+            identify_target(
+                address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"),
+                SupportedChainId::Ethereum
+            ),
+            SendRawTarget::AavePool
+        );
+        assert_eq!(
+            identify_target(
+                address!("794a61358D6845594F94dc1DB02A252b5b4814aD"),
+                SupportedChainId::Optimism
+            ),
+            SendRawTarget::AavePool
+        );
+        assert_eq!(
+            identify_target(
+                address!("794a61358D6845594F94dc1DB02A252b5b4814aD"),
+                SupportedChainId::Polygon
+            ),
+            SendRawTarget::AavePool
+        );
+        assert_eq!(
+            identify_target(
+                address!("794a61358D6845594F94dc1DB02A252b5b4814aD"),
+                SupportedChainId::Arbitrum
+            ),
+            SendRawTarget::AavePool
+        );
+        assert_eq!(
+            identify_target(
+                address!("A238Dd80C259a72e81d7e4664a9801593F98d1c5"),
+                SupportedChainId::Base
+            ),
+            SendRawTarget::AavePool
+        );
+        assert_eq!(
+            identify_target(
+                address!("6807dc923806fE8Fd134338EABCA509979a7e0cB"),
+                SupportedChainId::Bnb
+            ),
+            SendRawTarget::AavePool
+        );
+    }
+
+    #[test]
+    fn aave_pool_supply_valid() {
+        let call = IAavePool::supplyCall {
+            asset: USDC,
+            amount: U256::from(1_000_000u64),
+            onBehalfOf: Address::ZERO,
+            referralCode: 0,
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_aave_pool_calldata(&Some(data)) {
+            AavePoolValidation::Allowed(p) => {
+                assert_eq!(p.function, "supply");
+                assert_eq!(p.asset, USDC);
+                assert_eq!(p.amount, U256::from(1_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aave_pool_withdraw_valid() {
+        let call = IAavePool::withdrawCall {
+            asset: USDC,
+            amount: U256::from(500_000u64),
+            to: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_aave_pool_calldata(&Some(data)) {
+            AavePoolValidation::Allowed(p) => {
+                assert_eq!(p.function, "withdraw");
+                assert_eq!(p.asset, USDC);
+                assert_eq!(p.amount, U256::from(500_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aave_pool_borrow_valid() {
+        let call = IAavePool::borrowCall {
+            asset: USDC,
+            amount: U256::from(2_000_000u64),
+            interestRateMode: U256::from(2u64), // variable rate
+            referralCode: 0,
+            onBehalfOf: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_aave_pool_calldata(&Some(data)) {
+            AavePoolValidation::Allowed(p) => {
+                assert_eq!(p.function, "borrow");
+                assert_eq!(p.asset, USDC);
+                assert_eq!(p.amount, U256::from(2_000_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aave_pool_repay_valid() {
+        let call = IAavePool::repayCall {
+            asset: USDC,
+            amount: U256::from(1_500_000u64),
+            interestRateMode: U256::from(2u64),
+            onBehalfOf: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_aave_pool_calldata(&Some(data)) {
+            AavePoolValidation::Allowed(p) => {
+                assert_eq!(p.function, "repay");
+                assert_eq!(p.asset, USDC);
+                assert_eq!(p.amount, U256::from(1_500_000u64));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aave_pool_set_collateral_valid() {
+        let call = IAavePool::setUserUseReserveAsCollateralCall {
+            asset: WETH,
+            useAsCollateral: true,
+        };
+        let data = Bytes::from(call.abi_encode());
+        match validate_aave_pool_calldata(&Some(data)) {
+            AavePoolValidation::Allowed(p) => {
+                assert_eq!(p.function, "setUserUseReserveAsCollateral");
+                assert_eq!(p.asset, WETH);
+                assert_eq!(p.amount, U256::ZERO);
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aave_pool_no_selector() {
+        assert_eq!(
+            validate_aave_pool_calldata(&None),
+            AavePoolValidation::NoSelector
+        );
+        assert_eq!(
+            validate_aave_pool_calldata(&Some(Bytes::new())),
+            AavePoolValidation::NoSelector
+        );
+        assert_eq!(
+            validate_aave_pool_calldata(&Some(Bytes::from(vec![0x61, 0x7b, 0xa0]))),
+            AavePoolValidation::NoSelector
+        );
+    }
+
+    #[test]
+    fn aave_pool_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn aave_pool_supply_selector_only_malformed() {
+        let data = Bytes::from(vec![0x61, 0x7b, 0xa0, 0x37]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::MalformedArgs { name, .. } if name == "supply"
+        ));
+    }
+
+    #[test]
+    fn aave_pool_withdraw_selector_only_malformed() {
+        let data = Bytes::from(vec![0x69, 0x32, 0x8d, 0xec]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::MalformedArgs { name, .. } if name == "withdraw"
+        ));
+    }
+
+    #[test]
+    fn aave_pool_borrow_selector_only_malformed() {
+        let data = Bytes::from(vec![0xa4, 0x15, 0xbc, 0xad]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::MalformedArgs { name, .. } if name == "borrow"
+        ));
+    }
+
+    #[test]
+    fn aave_pool_repay_selector_only_malformed() {
+        let data = Bytes::from(vec![0x57, 0x3a, 0xde, 0x81]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::MalformedArgs { name, .. } if name == "repay"
+        ));
+    }
+
+    #[test]
+    fn aave_pool_set_collateral_selector_only_malformed() {
+        let data = Bytes::from(vec![0x5a, 0x3b, 0x74, 0xb9]);
+        assert!(matches!(
+            validate_aave_pool_calldata(&Some(data)),
+            AavePoolValidation::MalformedArgs { name, .. } if name == "setUserUseReserveAsCollateral"
         ));
     }
 }

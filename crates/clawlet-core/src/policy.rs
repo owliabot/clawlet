@@ -182,6 +182,19 @@ impl PolicyEngine {
         Ok(())
     }
 
+    /// Check whether a token is in the allowed token list.
+    ///
+    /// Returns `true` if the token matches (case-insensitive) any entry in
+    /// `allowed_tokens`, or if the allowlist is empty (all tokens allowed).
+    pub fn is_token_allowed(&self, token: &str) -> bool {
+        self.policy.allowed_tokens.is_empty()
+            || self
+                .policy
+                .allowed_tokens
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(token))
+    }
+
     /// Check whether a transfer is allowed by the policy.
     ///
     /// If allowed and `amount_usd` is `Some`, the amount is added to the daily spending tracker.

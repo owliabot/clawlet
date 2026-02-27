@@ -11,10 +11,10 @@ use clawlet_core::audit::AuditEvent;
 use clawlet_core::chain::SupportedChainId;
 use clawlet_core::policy::PolicyDecision;
 use clawlet_evm::send_raw_validation::{
-    identify_target, validate_erc20_calldata, validate_liquidity_calldata,
-    validate_nft_position_calldata, validate_swap_calldata, validate_weth_calldata,
-    Erc20Validation, LiquidityValidation, NftPositionValidation, SendRawTarget, SwapValidation,
-    WethValidation,
+    identify_target, validate_aave_pool_calldata, validate_erc20_calldata,
+    validate_liquidity_calldata, validate_nft_position_calldata, validate_swap_calldata,
+    validate_weth_calldata, AavePoolValidation, Erc20Validation, LiquidityValidation,
+    NftPositionValidation, SendRawTarget, SwapValidation, WethValidation,
 };
 use clawlet_evm::tx::{
     build_erc20_transfer, build_eth_transfer, build_raw_tx, send_transaction, RawTxRequest,
@@ -305,7 +305,8 @@ fn try_erc20_calldata(
 ///    `addLiquidity`, `addLiquidityETH`, `removeLiquidity`, `removeLiquidityETH`
 /// 3. **WETH/WBNB/WMATIC** — `deposit()`, `withdraw(uint256)`, plus ERC-20 operations (`transfer`, `approve`, `transferFrom`, `permit`)
 /// 4. **Uniswap V3 NonfungiblePositionManager** — `mint`, `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`
-/// 5. **ERC-20 tokens** — `transfer`, `approve`, `transferFrom`, `permit` (any address not matching 1–4)
+/// 5. **Aave V3 Pool** — `supply`, `withdraw`, `borrow`, `repay`, `setUserUseReserveAsCollateral`
+/// 6. **ERC-20 tokens** — `transfer`, `approve`, `transferFrom`, `permit` (any address not matching 1–5)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -728,6 +729,86 @@ pub async fn handle_send_raw(
                     "function selector {sel_hex} is not allowed; \
                      only mint, increaseLiquidity, decreaseLiquidity, collect, and burn are permitted on NonfungiblePositionManager"
                 )));
+                }
+            }
+        }
+        SendRawTarget::AavePool => {
+            // ---- Aave V3 Pool calldata validation ----
+            // All Aave Pool functions are non-payable.
+            let value = req.value.unwrap_or(U256::ZERO);
+            if !value.is_zero() {
+                return Err(HandlerError::BadRequest(format!(
+                    "Aave Pool functions are non-payable but req.value is nonzero ({value})"
+                )));
+            }
+
+            match validate_aave_pool_calldata(&req.data) {
+                AavePoolValidation::Allowed(aave_params) => {
+                    let operation_type = match aave_params.function.as_str() {
+                        "supply" => "aave_supply",
+                        "withdraw" => "aave_withdraw",
+                        "borrow" => "aave_borrow",
+                        "repay" => "aave_repay",
+                        "setUserUseReserveAsCollateral" => "aave_set_collateral",
+                        _ => "aave_unknown",
+                    };
+
+                    RouterOp::Swap {
+                        operation_type: operation_type.to_string(),
+                        token_str: format!("{}", aave_params.asset),
+                        amount_str: aave_params.amount.to_string(),
+                    }
+                }
+                AavePoolValidation::NoSelector => {
+                    return Err(HandlerError::BadRequest(
+                        "send_raw requires calldata with a valid Aave Pool function selector"
+                            .into(),
+                    ));
+                }
+                AavePoolValidation::MalformedArgs { name, reason } => {
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "function": name,
+                                "decode_error": reason,
+                            }),
+                            format!("denied: malformed calldata for {name}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "malformed calldata for {name}: ABI decode failed — {reason}"
+                    )));
+                }
+                AavePoolValidation::Denied { selector } => {
+                    let sel_hex = format!(
+                        "0x{:02x}{:02x}{:02x}{:02x}",
+                        selector[0], selector[1], selector[2], selector[3]
+                    );
+                    {
+                        let event = AuditEvent::new(
+                            "send_raw",
+                            json!({
+                                "to": format!("{}", req.to),
+                                "chain_id": chain_id,
+                                "selector": sel_hex,
+                            }),
+                            format!("denied: unsupported Aave Pool function selector {sel_hex}"),
+                        );
+                        if let Ok(mut audit) = state.audit.lock() {
+                            let _ = audit.log_event(event);
+                        }
+                    }
+                    return Err(HandlerError::BadRequest(format!(
+                        "function selector {sel_hex} is not allowed; \
+                         only supply, withdraw, borrow, repay, and setUserUseReserveAsCollateral \
+                         are permitted on Aave Pool"
+                    )));
                 }
             }
         }

@@ -332,7 +332,8 @@ pub async fn handle_send_raw(
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
     // ---- Identify target contract type ----
-    let target = identify_target(req.to, supported_chain);
+    let allowed_tokens = &state.policy.allowed_tokens();
+    let target = identify_target(req.to, supported_chain, allowed_tokens);
 
     // ---- Operation-specific validation and policy checks ----
     //
@@ -724,39 +725,36 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        None => {
-            // Fallback: try ERC-20 token operations, but only if the target
-            // address is in the allowed token list (prevents arbitrary-address abuse).
-            let token_addr_str = format!("{}", req.to);
-            if !state.policy.is_token_allowed(&token_addr_str) {
-                {
-                    let event = AuditEvent::new(
-                        "send_raw",
-                        json!({
-                            "to": &token_addr_str,
-                            "chain_id": chain_id,
-                        }),
-                        format!(
-                            "denied: target address {} is not a known contract and not in allowed token list",
-                            req.to
-                        ),
-                    );
-                    if let Ok(mut audit) = state.audit.lock() {
-                        let _ = audit.log_event(event);
-                    }
-                }
-                return Err(HandlerError::BadRequest(format!(
-                    "target address {} is not a known contract and not in the allowed token list for chain {chain_id}",
-                    req.to
-                )));
-            }
-
+        Some(SendRawTarget::Erc20Token) => {
+            // ERC-20 token identified via allowed token list
             let (op, tok, amt) = try_erc20_calldata(state, &req, chain_id)?;
             RouterOp::Swap {
                 operation_type: op,
                 token_str: tok,
                 amount_str: amt,
             }
+        }
+        None => {
+            {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                    }),
+                    format!(
+                        "denied: target address {} is not a known contract and not in allowed token list",
+                        req.to
+                    ),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+            }
+            return Err(HandlerError::BadRequest(format!(
+                "target address {} is not a known contract and not in the allowed token list for chain {chain_id}",
+                req.to
+            )));
         }
     };
 

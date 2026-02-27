@@ -195,6 +195,11 @@ impl PolicyEngine {
                 .any(|t| t.eq_ignore_ascii_case(token))
     }
 
+    /// Returns a reference to the allowed tokens list.
+    pub fn allowed_tokens(&self) -> &[String] {
+        &self.policy.allowed_tokens
+    }
+
     /// Check whether a transfer is allowed by the policy.
     ///
     /// If allowed and `amount_usd` is `Some`, the amount is added to the daily spending tracker.

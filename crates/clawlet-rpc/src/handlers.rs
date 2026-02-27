@@ -303,8 +303,9 @@ fn try_erc20_calldata(
 /// 1. **Uniswap V3 SwapRouter02** — `exactInputSingle`, `exactInput`, `exactOutputSingle`, `exactOutput`
 /// 2. **Uniswap V2 Router02** — `swapExactTokensForTokens`, `swapExactETHForTokens`, `swapExactTokensForETH`,
 ///    `addLiquidity`, `addLiquidityETH`, `removeLiquidity`, `removeLiquidityETH`
-/// 3. **WETH/WBNB/WMATIC** — `deposit()`, `withdraw(uint256)`
+/// 3. **WETH/WBNB/WMATIC** — `deposit()`, `withdraw(uint256)`, plus ERC-20 operations (`transfer`, `approve`, `transferFrom`, `permit`)
 /// 4. **Uniswap V3 NonfungiblePositionManager** — `mint`, `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`
+/// 5. **ERC-20 tokens** — `transfer`, `approve`, `transferFrom`, `permit` (any address not matching 1–4)
 ///
 /// Additionally enforces policy (allowed chains, allowed tokens, etc.).
 pub async fn handle_send_raw(
@@ -526,11 +527,31 @@ pub async fn handle_send_raw(
             }
         }
         SendRawTarget::Weth => {
-            // WETH is also an ERC-20 token. Try ERC-20 validation first
-            // (transfer, approve, transferFrom, permit), then fall through
-            // to WETH-specific validation (deposit, withdraw).
-            if let Ok(erc20_op) = try_erc20_calldata(state, &req, chain_id) {
-                let (op, tok, amt) = erc20_op;
+            // WETH is also an ERC-20 token. Try ERC-20 validation first:
+            // - Allowed → use ERC-20 path
+            // - MalformedArgs → fail immediately (known ERC-20 selector, bad encoding)
+            // - NoSelector/Denied → fall through to WETH deposit/withdraw
+            let erc20_check = validate_erc20_calldata(&req.data);
+            if let Erc20Validation::MalformedArgs { name, reason } = erc20_check {
+                let event = AuditEvent::new(
+                    "send_raw",
+                    json!({
+                        "to": format!("{}", req.to),
+                        "chain_id": chain_id,
+                        "function": name,
+                        "decode_error": &reason,
+                    }),
+                    format!("denied: malformed ERC-20 calldata for {name} on WETH"),
+                );
+                if let Ok(mut audit) = state.audit.lock() {
+                    let _ = audit.log_event(event);
+                }
+                return Err(HandlerError::BadRequest(format!(
+                    "malformed calldata for ERC-20 {name}: ABI decode failed — {reason}"
+                )));
+            }
+            if matches!(erc20_check, Erc20Validation::Allowed(_)) {
+                let (op, tok, amt) = try_erc20_calldata(state, &req, chain_id)?;
                 RouterOp::Swap {
                     operation_type: op,
                     token_str: tok,
@@ -2965,12 +2986,13 @@ mod tests {
         }
     }
 
-    /// ERC-20 transfer denied by policy — token address not in allowed token list.
+    /// ERC-20 transfer denied by policy — token address string doesn't match
+    /// allowed_tokens entries (which are symbols like "USDC", not addresses).
     #[tokio::test]
     async fn send_raw_erc20_transfer_policy_denied() {
         let (state, _temp) = mock_app_state_restrictive();
 
-        // This address is not in the restrictive policy's allowed_tokens (["USDC"])
+        // Address string won't match allowed_tokens symbol "USDC"
         let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
             .parse()
             .unwrap();
@@ -3000,7 +3022,7 @@ mod tests {
         }
     }
 
-    /// Unknown address not in allowed token list → rejected by policy.
+    /// Unknown address rejected by policy (address string doesn't match allowed_tokens symbols).
     #[tokio::test]
     async fn send_raw_unknown_address_policy_denied() {
         let (state, _temp) = mock_app_state_restrictive();

@@ -956,7 +956,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn old_swap_router_v1_returns_erc20() {
         let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
         for chain in SupportedChainId::ALL {

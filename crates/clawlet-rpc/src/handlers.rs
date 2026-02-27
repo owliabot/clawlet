@@ -285,22 +285,8 @@ fn try_erc20_calldata(
             )))
         }
         Erc20Validation::NoSelector | Erc20Validation::Denied { .. } => {
-            {
-                let event = AuditEvent::new(
-                    "send_raw",
-                    json!({
-                        "to": format!("{}", req.to),
-                        "chain_id": chain_id,
-                    }),
-                    format!(
-                        "denied: calldata does not match any allowed ERC-20 function on {}",
-                        req.to
-                    ),
-                );
-                if let Ok(mut audit) = state.audit.lock() {
-                    let _ = audit.log_event(event);
-                }
-            }
+            // No audit logging here — callers decide whether this is a final
+            // denial (Erc20Token path) or a speculative try (Weth fallback).
             Err(HandlerError::BadRequest(format!(
                 "calldata on {} does not match any allowed ERC-20 function \
                  (transfer, approve, transferFrom, permit)",
@@ -725,12 +711,27 @@ pub async fn handle_send_raw(
             }
         }
         SendRawTarget::Erc20Token => {
-            // ERC-20 token identified via allowed token list
-            let (op, tok, amt) = try_erc20_calldata(state, &req, chain_id)?;
-            RouterOp::Swap {
-                operation_type: op,
-                token_str: tok,
-                amount_str: amt,
+            match try_erc20_calldata(state, &req, chain_id) {
+                Ok((op, tok, amt)) => RouterOp::Swap {
+                    operation_type: op,
+                    token_str: tok,
+                    amount_str: amt,
+                },
+                Err(err) => {
+                    // Log denial for ERC-20 target (final decision point)
+                    let event = AuditEvent::new(
+                        "send_raw",
+                        json!({
+                            "to": format!("{}", req.to),
+                            "chain_id": chain_id,
+                        }),
+                        format!("denied: ERC-20 validation failed on {}", req.to),
+                    );
+                    if let Ok(mut audit) = state.audit.lock() {
+                        let _ = audit.log_event(event);
+                    }
+                    return Err(err);
+                }
             }
         }
     };

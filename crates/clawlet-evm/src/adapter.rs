@@ -86,7 +86,7 @@ impl EvmAdapter {
 
     /// Queries the ERC-20 token balance for an owner address.
     pub async fn get_erc20_balance(&self, token_address: Address, owner: Address) -> Result<U256> {
-        let call = IERC20::balanceOfCall { owner };
+        let call = IERC20::balanceOfCall { _owner: owner };
         let data = call.abi_encode();
 
         let result: Bytes = self

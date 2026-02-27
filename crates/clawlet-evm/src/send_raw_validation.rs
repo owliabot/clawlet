@@ -6,11 +6,14 @@
 //! - Uniswap V2 Router02 (`abi/IUniswapV2Router.json`)
 //! - WETH/WBNB/WMATIC (`abi/IWETH.json`)
 //! - Uniswap V3 NonfungiblePositionManager (`abi/INonfungiblePositionManager.json`)
+//! - ERC-20 tokens (transfer, approve, transferFrom, permit)
 
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
 use alloy::sol_types::SolInterface;
 use clawlet_core::chain::SupportedChainId;
+
+use crate::abi::IERC20;
 
 // Load UniswapV3 SwapRouter02 (IV3SwapRouter) interface from ABI JSON.
 sol!(
@@ -93,26 +96,30 @@ pub enum SendRawTarget {
     UniswapV3Router,
     /// Uniswap V2 Router02.
     UniswapV2Router,
-    /// Wrapped native token (WETH/WBNB/WMATIC).
+    /// Wrapped native token (WETH/WBNB/WMATIC) — also supports ERC-20 operations.
     Weth,
     /// Uniswap V3 NonfungiblePositionManager.
     NftPositionManager,
+    /// ERC-20 token (transfer, approve, transferFrom, permit).
+    Erc20Token,
 }
 
 /// Identify the target contract type from a `to` address and chain.
 ///
-/// Returns `None` if the address is not a known whitelisted contract.
-pub fn identify_target(to: Address, chain: SupportedChainId) -> Option<SendRawTarget> {
+/// Known contracts (routers, WETH, NFT PM) are matched first.
+/// Any other address is treated as a potential ERC-20 token;
+/// policy checks downstream handle allowlist enforcement.
+pub fn identify_target(to: Address, chain: SupportedChainId) -> SendRawTarget {
     if to == swap_router_v3_address(chain) {
-        Some(SendRawTarget::UniswapV3Router)
+        SendRawTarget::UniswapV3Router
     } else if to == swap_router_v2_address(chain) {
-        Some(SendRawTarget::UniswapV2Router)
+        SendRawTarget::UniswapV2Router
     } else if to == wrapped_native_address(chain) {
-        Some(SendRawTarget::Weth)
+        SendRawTarget::Weth
     } else if to == nft_position_manager_address(chain) {
-        Some(SendRawTarget::NftPositionManager)
+        SendRawTarget::NftPositionManager
     } else {
-        None
+        SendRawTarget::Erc20Token
     }
 }
 
@@ -720,6 +727,109 @@ pub fn validate_liquidity_calldata(
     }
 }
 
+// ---- ERC-20 token validation ----
+
+/// Parsed ERC-20 call parameters for policy checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Erc20Params {
+    /// Function name (e.g. "transfer", "approve", "transferFrom", "permit").
+    pub function: String,
+    /// The spender (approve/permit) or recipient (transfer/transferFrom).
+    pub spender_or_recipient: Address,
+    /// The amount/value.
+    pub amount: U256,
+    /// For transferFrom/permit: the `from`/`owner` address.
+    pub from: Option<Address>,
+}
+
+/// Result of validating ERC-20 calldata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Erc20Validation {
+    /// The calldata is a valid, ABI-decodable ERC-20 call.
+    Allowed(Erc20Params),
+    /// The calldata is missing or too short to contain a function selector.
+    NoSelector,
+    /// The function selector is not one of the allowed ERC-20 functions.
+    Denied { selector: [u8; 4] },
+    /// The function selector matches but ABI decoding failed (malformed args).
+    MalformedArgs { name: String, reason: String },
+}
+
+/// Try to identify a known ERC-20 function name from a 4-byte selector.
+///
+/// Selectors:
+/// - transfer:     0xa9059cbb
+/// - approve:      0x095ea7b3
+/// - transferFrom: 0x23b872dd
+/// - permit:       0xd505accf
+fn selector_name_erc20(selector: [u8; 4]) -> Option<&'static str> {
+    match selector {
+        [0xa9, 0x05, 0x9c, 0xbb] => Some("transfer"),
+        [0x09, 0x5e, 0xa7, 0xb3] => Some("approve"),
+        [0x23, 0xb8, 0x72, 0xdd] => Some("transferFrom"),
+        [0xd5, 0x05, 0xac, 0xcf] => Some("permit"),
+        _ => None,
+    }
+}
+
+/// Validate ERC-20 token calldata.
+///
+/// Whitelists: transfer, approve, transferFrom, permit.
+pub fn validate_erc20_calldata(data: &Option<Bytes>) -> Erc20Validation {
+    let data = match data {
+        Some(d) if d.len() >= 4 => d,
+        _ => return Erc20Validation::NoSelector,
+    };
+    let selector: [u8; 4] = [data[0], data[1], data[2], data[3]];
+
+    match IERC20::IERC20Calls::abi_decode(data) {
+        Ok(call) => {
+            let params = match &call {
+                IERC20::IERC20Calls::transfer(c) => Erc20Params {
+                    function: "transfer".into(),
+                    spender_or_recipient: c._to,
+                    amount: c._value,
+                    from: None,
+                },
+                IERC20::IERC20Calls::approve(c) => Erc20Params {
+                    function: "approve".into(),
+                    spender_or_recipient: c._spender,
+                    amount: c._value,
+                    from: None,
+                },
+                IERC20::IERC20Calls::transferFrom(c) => Erc20Params {
+                    function: "transferFrom".into(),
+                    spender_or_recipient: c._to,
+                    amount: c._value,
+                    from: Some(c._from),
+                },
+                IERC20::IERC20Calls::permit(c) => Erc20Params {
+                    function: "permit".into(),
+                    spender_or_recipient: c.spender,
+                    amount: c.value,
+                    from: Some(c.owner),
+                },
+                // Other IERC20 functions (balanceOf, allowance, name, symbol, decimals)
+                // are read-only and not allowed via send_raw.
+                _ => {
+                    return Erc20Validation::Denied { selector };
+                }
+            };
+            Erc20Validation::Allowed(params)
+        }
+        Err(err) => {
+            if let Some(name) = selector_name_erc20(selector) {
+                Erc20Validation::MalformedArgs {
+                    name: name.to_string(),
+                    reason: err.to_string(),
+                }
+            } else {
+                Erc20Validation::Denied { selector }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,7 +846,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Ethereum V2
         assert_eq!(
@@ -744,7 +854,7 @@ mod tests {
                 address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
                 SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Optimism V3
@@ -753,7 +863,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Optimism V2
         assert_eq!(
@@ -761,7 +871,7 @@ mod tests {
                 address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
                 SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Polygon V3
@@ -770,7 +880,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Polygon V2
         assert_eq!(
@@ -778,7 +888,7 @@ mod tests {
                 address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
                 SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Arbitrum V3
@@ -787,7 +897,7 @@ mod tests {
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
                 SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Arbitrum V2
         assert_eq!(
@@ -795,7 +905,7 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Base V3
@@ -804,7 +914,7 @@ mod tests {
                 address!("2626664c2603336E57B271c5C0b26F421741e481"),
                 SupportedChainId::Base
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Base V2
         assert_eq!(
@@ -812,7 +922,7 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Base
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // BNB V3
@@ -821,7 +931,7 @@ mod tests {
                 address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
                 SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // BNB V2
         assert_eq!(
@@ -829,29 +939,30 @@ mod tests {
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
                 SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
     }
 
     #[test]
-    fn wrong_router_denied() {
+    fn unknown_address_returns_erc20() {
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(random, chain).is_none(),
-                "random address should be denied on {chain}"
+            assert_eq!(
+                identify_target(random, chain),
+                SendRawTarget::Erc20Token,
+                "unknown address should return Erc20Token on {chain}"
             );
         }
     }
 
     #[test]
-    fn old_swap_router_v1_denied() {
-        // The old SwapRouter (0xE592...) should NOT be allowed
+    fn old_swap_router_v1_returns_erc20() {
         let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
         for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(v1_router, chain).is_none(),
-                "SwapRouter V1 should be denied on {chain}"
+            assert_eq!(
+                identify_target(v1_router, chain),
+                SendRawTarget::Erc20Token,
+                "SwapRouter V1 should return Erc20Token on {chain}"
             );
         }
     }
@@ -1888,19 +1999,19 @@ mod tests {
         let shared = address!("C36442b4a4522E871399CD717aBDD847Ab11FE88");
         assert_eq!(
             identify_target(shared, SupportedChainId::Ethereum),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
             identify_target(shared, SupportedChainId::Optimism),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
             identify_target(shared, SupportedChainId::Polygon),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
             identify_target(shared, SupportedChainId::Arbitrum),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
 
         // Base has a different address
@@ -1909,7 +2020,7 @@ mod tests {
                 address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
                 SupportedChainId::Base
             ),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
         // BNB has a different address
         assert_eq!(
@@ -1917,15 +2028,16 @@ mod tests {
                 address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
                 SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
 
-        // Random address should not match
+        // Random address returns Erc20Token (policy check handles rejection)
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(random, chain).is_none(),
-                "random address should not match on {chain}"
+            assert_eq!(
+                identify_target(random, chain),
+                SendRawTarget::Erc20Token,
+                "random address should return Erc20Token on {chain}"
             );
         }
     }
@@ -2163,6 +2275,183 @@ mod tests {
         assert!(matches!(
             validate_nft_position_calldata(&Some(data)),
             NftPositionValidation::Denied { .. }
+        ));
+    }
+
+    // ---- ERC-20 validation tests ----
+
+    fn encode_erc20_transfer() -> Bytes {
+        let call = IERC20::transferCall {
+            _to: USDC,
+            _value: U256::from(1_000_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_approve() -> Bytes {
+        let call = IERC20::approveCall {
+            _spender: USDC,
+            _value: U256::MAX,
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_transfer_from() -> Bytes {
+        let call = IERC20::transferFromCall {
+            _from: WETH,
+            _to: USDC,
+            _value: U256::from(5_000u64),
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    fn encode_erc20_permit() -> Bytes {
+        let call = IERC20::permitCall {
+            owner: WETH,
+            spender: USDC,
+            value: U256::from(1_000_000u64),
+            deadline: U256::from(9999999999u64),
+            v: 27,
+            r: alloy::primitives::B256::ZERO,
+            s: alloy::primitives::B256::ZERO,
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    #[test]
+    fn erc20_transfer_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_transfer())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "transfer");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(1_000_000u64));
+                assert!(p.from.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_approve_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_approve())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "approve");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::MAX);
+                assert!(p.from.is_none());
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_transfer_from_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_transfer_from())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "transferFrom");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(5_000u64));
+                assert_eq!(p.from, Some(WETH));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_permit_valid() {
+        match validate_erc20_calldata(&Some(encode_erc20_permit())) {
+            Erc20Validation::Allowed(p) => {
+                assert_eq!(p.function, "permit");
+                assert_eq!(p.spender_or_recipient, USDC);
+                assert_eq!(p.amount, U256::from(1_000_000u64));
+                assert_eq!(p.from, Some(WETH));
+            }
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn erc20_no_selector() {
+        assert_eq!(validate_erc20_calldata(&None), Erc20Validation::NoSelector);
+        assert_eq!(
+            validate_erc20_calldata(&Some(Bytes::new())),
+            Erc20Validation::NoSelector
+        );
+        assert_eq!(
+            validate_erc20_calldata(&Some(Bytes::from(vec![0xa9, 0x05, 0x9c]))),
+            Erc20Validation::NoSelector
+        );
+    }
+
+    #[test]
+    fn erc20_unknown_selector_denied() {
+        let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x00]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { selector } if selector == [0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn erc20_transfer_selector_only_malformed() {
+        let data = Bytes::from(vec![0xa9, 0x05, 0x9c, 0xbb]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "transfer"
+        ));
+    }
+
+    #[test]
+    fn erc20_approve_selector_only_malformed() {
+        let data = Bytes::from(vec![0x09, 0x5e, 0xa7, 0xb3]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "approve"
+        ));
+    }
+
+    #[test]
+    fn erc20_transfer_from_selector_only_malformed() {
+        let data = Bytes::from(vec![0x23, 0xb8, 0x72, 0xdd]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "transferFrom"
+        ));
+    }
+
+    #[test]
+    fn erc20_permit_selector_only_malformed() {
+        let data = Bytes::from(vec![0xd5, 0x05, 0xac, 0xcf]);
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::MalformedArgs { name, .. } if name == "permit"
+        ));
+    }
+
+    #[test]
+    fn erc20_balance_of_denied() {
+        // balanceOf is read-only, not allowed via send_raw
+        let call = IERC20::balanceOfCall {
+            _owner: Address::ZERO,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn erc20_allowance_denied() {
+        // allowance is read-only, not allowed via send_raw
+        let call = IERC20::allowanceCall {
+            _owner: Address::ZERO,
+            _spender: USDC,
+        };
+        let data = Bytes::from(call.abi_encode());
+        assert!(matches!(
+            validate_erc20_calldata(&Some(data)),
+            Erc20Validation::Denied { .. }
         ));
     }
 }

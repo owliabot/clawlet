@@ -3089,4 +3089,64 @@ mod tests {
             other => panic!("expected BadRequest for missing adapter, got {:?}", other),
         }
     }
+
+    /// ERC-20 target with no calldata (None) → rejected (NoSelector).
+    #[tokio::test]
+    async fn send_raw_erc20_no_calldata_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: None,
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("does not match any allowed ERC-20 function"),
+                    "expected ERC-20 NoSelector denial, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
+
+    /// ERC-20 target with short calldata (<4 bytes) → rejected (NoSelector).
+    #[tokio::test]
+    async fn send_raw_erc20_short_calldata_rejected() {
+        let (state, _temp) = mock_app_state();
+
+        let token_addr: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+
+        let req = SendRawRequest {
+            to: token_addr,
+            value: None,
+            data: Some(Bytes::from(vec![0xa9, 0x05])), // < 4 bytes
+            chain_id: 1,
+            gas_limit: None,
+        };
+
+        let result = handle_send_raw(&state, req).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HandlerError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("does not match any allowed ERC-20 function"),
+                    "expected ERC-20 NoSelector denial, got: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {:?}", other),
+        }
+    }
 }

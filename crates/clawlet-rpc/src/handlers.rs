@@ -332,8 +332,7 @@ pub async fn handle_send_raw(
         .map_err(|e| HandlerError::BadRequest(e.to_string()))?;
 
     // ---- Identify target contract type ----
-    let allowed_tokens = &state.policy.allowed_tokens();
-    let target = identify_target(req.to, supported_chain, allowed_tokens);
+    let target = identify_target(req.to, supported_chain);
 
     // ---- Operation-specific validation and policy checks ----
     //
@@ -355,7 +354,7 @@ pub async fn handle_send_raw(
     }
 
     let resolved_op = match target {
-        Some(target @ (SendRawTarget::UniswapV3Router | SendRawTarget::UniswapV2Router)) => {
+        target @ (SendRawTarget::UniswapV3Router | SendRawTarget::UniswapV2Router) => {
             // ---- Swap calldata validation ----
             let swap_result = validate_swap_calldata(&req.data, target, supported_chain);
 
@@ -540,7 +539,7 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        Some(SendRawTarget::Weth) => {
+        SendRawTarget::Weth => {
             // WETH is also an ERC-20 token. Try ERC-20 validation first
             // (transfer, approve, transferFrom, permit), then fall through
             // to WETH-specific validation (deposit, withdraw).
@@ -594,7 +593,7 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        Some(SendRawTarget::NftPositionManager) => {
+        SendRawTarget::NftPositionManager => {
             // ---- NonfungiblePositionManager calldata validation ----
             match validate_nft_position_calldata(&req.data) {
                 NftPositionValidation::Allowed(nft_params) => {
@@ -725,7 +724,7 @@ pub async fn handle_send_raw(
                 }
             }
         }
-        Some(SendRawTarget::Erc20Token) => {
+        SendRawTarget::Erc20Token => {
             // ERC-20 token identified via allowed token list
             let (op, tok, amt) = try_erc20_calldata(state, &req, chain_id)?;
             RouterOp::Swap {
@@ -733,28 +732,6 @@ pub async fn handle_send_raw(
                 token_str: tok,
                 amount_str: amt,
             }
-        }
-        None => {
-            {
-                let event = AuditEvent::new(
-                    "send_raw",
-                    json!({
-                        "to": format!("{}", req.to),
-                        "chain_id": chain_id,
-                    }),
-                    format!(
-                        "denied: target address {} is not a known contract and not in allowed token list",
-                        req.to
-                    ),
-                );
-                if let Ok(mut audit) = state.audit.lock() {
-                    let _ = audit.log_event(event);
-                }
-            }
-            return Err(HandlerError::BadRequest(format!(
-                "target address {} is not a known contract and not in the allowed token list for chain {chain_id}",
-                req.to
-            )));
         }
     };
 
@@ -2987,9 +2964,9 @@ mod tests {
         }
     }
 
-    /// ERC-20 transfer denied — token address not in allowed token list.
+    /// ERC-20 transfer denied by policy — token address not in allowed token list.
     #[tokio::test]
-    async fn send_raw_erc20_transfer_not_in_allowed_list() {
+    async fn send_raw_erc20_transfer_policy_denied() {
         let (state, _temp) = mock_app_state_restrictive();
 
         // This address is not in the restrictive policy's allowed_tokens (["USDC"])
@@ -3014,24 +2991,24 @@ mod tests {
         match result.unwrap_err() {
             HandlerError::BadRequest(msg) => {
                 assert!(
-                    msg.contains("not in the allowed token list"),
-                    "expected allowed-list rejection, got: {msg}"
+                    msg.contains("policy denied"),
+                    "expected policy denied, got: {msg}"
                 );
             }
             other => panic!("expected BadRequest, got {:?}", other),
         }
     }
 
-    /// Unknown address not in allowed token list → rejected before ERC-20 validation.
+    /// Unknown address not in allowed token list → rejected by policy.
     #[tokio::test]
-    async fn send_raw_unknown_address_not_in_allowed_list() {
+    async fn send_raw_unknown_address_policy_denied() {
         let (state, _temp) = mock_app_state_restrictive();
 
         let unknown_addr: Address = "0x0000000000000000000000000000000000000042"
             .parse()
             .unwrap();
 
-        // Valid ERC-20 transfer calldata, but token address not in allowed list
+        // Valid ERC-20 transfer calldata, but token address not in policy allowed list
         let call = IERC20::transferCall {
             _to: Address::ZERO,
             _value: U256::from(1_000u64),
@@ -3050,8 +3027,8 @@ mod tests {
         match result.unwrap_err() {
             HandlerError::BadRequest(msg) => {
                 assert!(
-                    msg.contains("not in the allowed token list"),
-                    "expected allowed-list rejection, got: {msg}"
+                    msg.contains("policy denied"),
+                    "expected policy denied, got: {msg}"
                 );
             }
             other => panic!("expected BadRequest, got {:?}", other),

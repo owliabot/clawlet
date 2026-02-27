@@ -106,37 +106,20 @@ pub enum SendRawTarget {
 
 /// Identify the target contract type from a `to` address and chain.
 ///
-/// `allowed_tokens` is the policy's allowed token list; when non-empty,
-/// only addresses in this list can be identified as `Erc20Token`.
-/// When empty, all unknown addresses are treated as potential ERC-20 tokens.
-///
-/// Returns `None` if the address is not a known contract and not in the
-/// allowed token list.
-pub fn identify_target(
-    to: Address,
-    chain: SupportedChainId,
-    allowed_tokens: &[String],
-) -> Option<SendRawTarget> {
+/// Known contracts (routers, WETH, NFT PM) are matched first.
+/// Any other address is treated as a potential ERC-20 token;
+/// policy checks downstream handle allowlist enforcement.
+pub fn identify_target(to: Address, chain: SupportedChainId) -> SendRawTarget {
     if to == swap_router_v3_address(chain) {
-        Some(SendRawTarget::UniswapV3Router)
+        SendRawTarget::UniswapV3Router
     } else if to == swap_router_v2_address(chain) {
-        Some(SendRawTarget::UniswapV2Router)
+        SendRawTarget::UniswapV2Router
     } else if to == wrapped_native_address(chain) {
-        Some(SendRawTarget::Weth)
+        SendRawTarget::Weth
     } else if to == nft_position_manager_address(chain) {
-        Some(SendRawTarget::NftPositionManager)
+        SendRawTarget::NftPositionManager
     } else {
-        // Check if target is in allowed token list → ERC-20 token
-        let addr_str = format!("{to}");
-        let is_allowed = allowed_tokens.is_empty()
-            || allowed_tokens
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(&addr_str));
-        if is_allowed {
-            Some(SendRawTarget::Erc20Token)
-        } else {
-            None
-        }
+        SendRawTarget::Erc20Token
     }
 }
 
@@ -861,152 +844,126 @@ mod tests {
         assert_eq!(
             identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-                SupportedChainId::Ethereum,
-                &[]
+                SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Ethereum V2
         assert_eq!(
             identify_target(
                 address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
-                SupportedChainId::Ethereum,
-                &[]
+                SupportedChainId::Ethereum
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Optimism V3
         assert_eq!(
             identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-                SupportedChainId::Optimism,
-                &[]
+                SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Optimism V2
         assert_eq!(
             identify_target(
                 address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
-                SupportedChainId::Optimism,
-                &[]
+                SupportedChainId::Optimism
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Polygon V3
         assert_eq!(
             identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-                SupportedChainId::Polygon,
-                &[]
+                SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Polygon V2
         assert_eq!(
             identify_target(
                 address!("edf6066a2b290C185783862C7F4776A2C8077AD1"),
-                SupportedChainId::Polygon,
-                &[]
+                SupportedChainId::Polygon
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Arbitrum V3
         assert_eq!(
             identify_target(
                 address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
-                SupportedChainId::Arbitrum,
-                &[]
+                SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Arbitrum V2
         assert_eq!(
             identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-                SupportedChainId::Arbitrum,
-                &[]
+                SupportedChainId::Arbitrum
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // Base V3
         assert_eq!(
             identify_target(
                 address!("2626664c2603336E57B271c5C0b26F421741e481"),
-                SupportedChainId::Base,
-                &[]
+                SupportedChainId::Base
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // Base V2
         assert_eq!(
             identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-                SupportedChainId::Base,
-                &[]
+                SupportedChainId::Base
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
 
         // BNB V3
         assert_eq!(
             identify_target(
                 address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
-                SupportedChainId::Bnb,
-                &[]
+                SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::UniswapV3Router)
+            SendRawTarget::UniswapV3Router
         );
         // BNB V2
         assert_eq!(
             identify_target(
                 address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24"),
-                SupportedChainId::Bnb,
-                &[]
+                SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::UniswapV2Router)
+            SendRawTarget::UniswapV2Router
         );
     }
 
     #[test]
-    fn wrong_router_denied() {
-        let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
-        // Non-empty allowed list that doesn't include the random address
-        let allowed = vec!["USDC".to_string()];
-        for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(random, chain, &allowed).is_none(),
-                "random address should be denied on {chain}"
-            );
-        }
-    }
-
-    #[test]
-    fn wrong_router_erc20_fallback() {
-        // With empty allowed list (all allowed), random address → Erc20Token
+    fn unknown_address_returns_erc20() {
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         for chain in SupportedChainId::ALL {
             assert_eq!(
-                identify_target(random, chain, &[]),
-                Some(SendRawTarget::Erc20Token),
-                "random address with empty allowed list should be Erc20Token on {chain}"
+                identify_target(random, chain),
+                SendRawTarget::Erc20Token,
+                "unknown address should return Erc20Token on {chain}"
             );
         }
     }
 
     #[test]
-    fn old_swap_router_v1_denied() {
-        // The old SwapRouter (0xE592...) should NOT be allowed
+    #[test]
+    fn old_swap_router_v1_returns_erc20() {
         let v1_router = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
-        let allowed = vec!["USDC".to_string()];
         for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(v1_router, chain, &allowed).is_none(),
-                "SwapRouter V1 should be denied on {chain}"
+            assert_eq!(
+                identify_target(v1_router, chain),
+                SendRawTarget::Erc20Token,
+                "SwapRouter V1 should return Erc20Token on {chain}"
             );
         }
     }
@@ -2042,48 +1999,46 @@ mod tests {
         // Ethereum, Optimism, Polygon, Arbitrum share the same address
         let shared = address!("C36442b4a4522E871399CD717aBDD847Ab11FE88");
         assert_eq!(
-            identify_target(shared, SupportedChainId::Ethereum, &[]),
-            Some(SendRawTarget::NftPositionManager)
+            identify_target(shared, SupportedChainId::Ethereum),
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
-            identify_target(shared, SupportedChainId::Optimism, &[]),
-            Some(SendRawTarget::NftPositionManager)
+            identify_target(shared, SupportedChainId::Optimism),
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
-            identify_target(shared, SupportedChainId::Polygon, &[]),
-            Some(SendRawTarget::NftPositionManager)
+            identify_target(shared, SupportedChainId::Polygon),
+            SendRawTarget::NftPositionManager
         );
         assert_eq!(
-            identify_target(shared, SupportedChainId::Arbitrum, &[]),
-            Some(SendRawTarget::NftPositionManager)
+            identify_target(shared, SupportedChainId::Arbitrum),
+            SendRawTarget::NftPositionManager
         );
 
         // Base has a different address
         assert_eq!(
             identify_target(
                 address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
-                SupportedChainId::Base,
-                &[]
+                SupportedChainId::Base
             ),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
         // BNB has a different address
         assert_eq!(
             identify_target(
                 address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
-                SupportedChainId::Bnb,
-                &[]
+                SupportedChainId::Bnb
             ),
-            Some(SendRawTarget::NftPositionManager)
+            SendRawTarget::NftPositionManager
         );
 
-        // Random address should not match when allowed list is non-empty
+        // Random address returns Erc20Token (policy check handles rejection)
         let random = address!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
-        let allowed = vec!["USDC".to_string()];
         for chain in SupportedChainId::ALL {
-            assert!(
-                identify_target(random, chain, &allowed).is_none(),
-                "random address should not match on {chain}"
+            assert_eq!(
+                identify_target(random, chain),
+                SendRawTarget::Erc20Token,
+                "random address should return Erc20Token on {chain}"
             );
         }
     }

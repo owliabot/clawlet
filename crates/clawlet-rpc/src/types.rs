@@ -370,6 +370,7 @@ pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
         8453 => Cow::Borrowed("Base"),
         42161 => Cow::Borrowed("Arbitrum"),
         43114 => Cow::Borrowed("Avalanche"),
+        11155111 => Cow::Borrowed("Sepolia"),
         _ => Cow::Owned(format!("Unknown ({chain_id})")),
     }
 }

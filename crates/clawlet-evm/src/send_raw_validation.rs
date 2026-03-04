@@ -67,6 +67,8 @@ fn swap_router_v3_address(chain: SupportedChainId) -> Address {
         SupportedChainId::Base => address!("2626664c2603336E57B271c5C0b26F421741e481"),
         // BNB Chain has its own deployment
         SupportedChainId::Bnb => address!("B971eF87ede563556b2ED4b1C0b0019111Dd85d2"),
+        // Sepolia testnet
+        SupportedChainId::Sepolia => address!("3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae484"),
     }
 }
 
@@ -80,6 +82,7 @@ fn swap_router_v2_address(chain: SupportedChainId) -> Address {
             address!("4752ba5DBc23f44D87826276BF6Fd6b1C372aD24")
         }
         SupportedChainId::Optimism => address!("4A7b5Da61326A6379179b40d00F57E5bbDC962c2"),
+        SupportedChainId::Sepolia => address!("C532a74256D3Db42D0Bf7a0400fEFDbad7694008"),
     }
 }
 
@@ -94,6 +97,7 @@ pub fn wrapped_native_address(chain: SupportedChainId) -> Address {
         SupportedChainId::Arbitrum => address!("82aF49447D8a07e3bd95BD0d56f35241523fBab1"),
         SupportedChainId::Base => address!("4200000000000000000000000000000000000006"),
         SupportedChainId::Optimism => address!("4200000000000000000000000000000000000006"),
+        SupportedChainId::Sepolia => address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14"),
     }
 }
 
@@ -148,6 +152,7 @@ pub fn nft_position_manager_address(chain: SupportedChainId) -> Address {
         }
         SupportedChainId::Base => address!("03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
         SupportedChainId::Bnb => address!("7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+        SupportedChainId::Sepolia => address!("1238536071E1c677A632429e3655c799b22cDA52"),
     }
 }
 
@@ -162,6 +167,7 @@ pub fn aave_pool_address(chain: SupportedChainId) -> Address {
         }
         SupportedChainId::Base => address!("A238Dd80C259a72e81d7e4664a9801593F98d1c5"),
         SupportedChainId::Bnb => address!("6807dc923806fE8Fd134338EABCA509979a7e0cB"),
+        SupportedChainId::Sepolia => address!("6Ae43d3271ff6888e7Fc43Fd7321a503ff738951"),
     }
 }
 

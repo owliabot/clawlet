@@ -26,7 +26,8 @@ use crate::server::AppState;
 use crate::types::{
     AddressResponse, Amount, BalanceQuery, BalanceResponse, ChainInfo, ChainsResponse,
     ExecuteRequest, ExecuteResponse, ExecuteStatus, HandlerError, SendRawRequest, SendRawResponse,
-    SkillSummary, SkillsResponse, TokenSpec, TransferRequest, TransferResponse, TransferStatus,
+    SkillSummary, SkillsResponse, TokenBalance, TokenSpec, TransferRequest, TransferResponse,
+    TransferStatus,
 };
 
 // ---- Handlers ----
@@ -62,7 +63,12 @@ pub fn handle_address(state: &AppState) -> Result<AddressResponse, HandlerError>
     Ok(AddressResponse { address })
 }
 
-/// Query ETH balance for the given address and chain.
+/// Query ETH balance and allowed-token balances for the given address and chain.
+///
+/// The `tokens` field in the response is populated from `policy.allowed_tokens`:
+/// any entry that is a valid EVM address (0x-prefixed) is queried on-chain.
+/// Symbol-only entries (e.g. "USDC") are skipped — they require a token registry.
+/// Individual token query failures are silently skipped to keep the response partial.
 pub async fn handle_balance(
     state: &AppState,
     params: BalanceQuery,
@@ -80,6 +86,36 @@ pub async fn handle_balance(
 
     let eth = from_raw(wei, 18);
 
+    // Query balances for each allowed token that is a valid ERC-20 address.
+    let allowed_tokens = state.policy.policy().allowed_tokens.clone();
+    let mut tokens: Vec<TokenBalance> = Vec::new();
+    for token_str in &allowed_tokens {
+        // Only query tokens specified as EVM addresses (0x-prefixed hex).
+        // Symbol-only entries (e.g. "USDC") can't be resolved without a registry.
+        let Ok(token_address) = token_str.parse::<alloy::primitives::Address>() else {
+            continue;
+        };
+
+        // Fetch token info and balance; skip on error (don't fail the whole request).
+        let info = match adapter.get_erc20_info(token_address).await {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let raw = match adapter
+            .get_erc20_balance(token_address, params.address)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        tokens.push(TokenBalance {
+            symbol: info.symbol,
+            balance: from_raw(raw, info.decimals as u32),
+            address: token_address,
+        });
+    }
+
     // Log the balance query to audit
     {
         let event = AuditEvent::new(
@@ -87,6 +123,7 @@ pub async fn handle_balance(
             json!({
                 "address": format!("{}", params.address),
                 "chain_id": chain_id,
+                "token_count": tokens.len(),
             }),
             "ok",
         );
@@ -95,10 +132,7 @@ pub async fn handle_balance(
         }
     }
 
-    Ok(BalanceResponse {
-        eth,
-        tokens: vec![],
-    })
+    Ok(BalanceResponse { eth, tokens })
 }
 
 /// Execute a transfer within policy limits.

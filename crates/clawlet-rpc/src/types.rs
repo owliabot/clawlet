@@ -356,7 +356,8 @@ pub fn is_testnet(chain_id: u64) -> bool {
         | 84531    // Base Goerli
         | 84532    // Base Sepolia
         | 11155420 // Optimism Sepolia
-        | 421614 // Arbitrum Sepolia
+        | 421614   // Arbitrum Sepolia
+        | 11155111 // Sepolia
     )
 }
 
@@ -370,6 +371,7 @@ pub fn chain_name(chain_id: u64) -> Cow<'static, str> {
         8453 => Cow::Borrowed("Base"),
         42161 => Cow::Borrowed("Arbitrum"),
         43114 => Cow::Borrowed("Avalanche"),
+        11155111 => Cow::Borrowed("Sepolia"),
         _ => Cow::Owned(format!("Unknown ({chain_id})")),
     }
 }

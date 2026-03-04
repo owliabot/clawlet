@@ -356,8 +356,7 @@ pub fn is_testnet(chain_id: u64) -> bool {
         | 84531    // Base Goerli
         | 84532    // Base Sepolia
         | 11155420 // Optimism Sepolia
-        | 421614   // Arbitrum Sepolia
-        | 11155111 // Sepolia
+        | 421614 // Arbitrum Sepolia
     )
 }
 

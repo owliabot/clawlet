@@ -23,17 +23,20 @@ pub enum SupportedChainId {
     Base = 8453,
     /// Arbitrum
     Arbitrum = 42161,
+    /// Sepolia testnet
+    Sepolia = 11155111,
 }
 
 impl SupportedChainId {
     /// All supported chain IDs.
-    pub const ALL: [SupportedChainId; 6] = [
+    pub const ALL: [SupportedChainId; 7] = [
         Self::Ethereum,
         Self::Optimism,
         Self::Bnb,
         Self::Polygon,
         Self::Base,
         Self::Arbitrum,
+        Self::Sepolia,
     ];
 
     /// Returns the numeric chain ID.
@@ -50,12 +53,13 @@ impl SupportedChainId {
             Self::Polygon => "Polygon",
             Self::Base => "Base",
             Self::Arbitrum => "Arbitrum",
+            Self::Sepolia => "Sepolia",
         }
     }
 
     /// Whether this is a testnet (none of the supported chains are).
     pub const fn is_testnet(self) -> bool {
-        false
+        matches!(self, Self::Sepolia)
     }
 }
 
@@ -70,6 +74,7 @@ impl TryFrom<u64> for SupportedChainId {
             137 => Ok(Self::Polygon),
             8453 => Ok(Self::Base),
             42161 => Ok(Self::Arbitrum),
+            11155111 => Ok(Self::Sepolia),
             _ => Err(UnsupportedChainError(value)),
         }
     }
